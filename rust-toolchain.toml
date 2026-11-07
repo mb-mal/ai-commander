@@ -1,0 +1,5 @@
+[toolchain]
+# GNU toolchain: fully self-contained (no MSVC Build Tools required).
+# On machines with VS "C++ build tools" installed, delete this file to build
+# with the default MSVC toolchain instead.
+channel = "stable-x86_64-pc-windows-gnu"

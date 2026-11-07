@@ -1,0 +1,8 @@
+# Rust build output
+/target
+
+# local toolchain bits (dlltool.exe/as.exe fetched by scripts/fetch-tools.sh)
+/tools/mingw-bin
+
+# runtime artifacts
+*.log

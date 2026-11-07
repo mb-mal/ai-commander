@@ -1,0 +1,237 @@
+//! Pluggable AI harness backends. A *harness* (opencode, hermes-agent, deepseek
+//! harness, …) is a running agent runtime we chat with. All backends stream
+//! their updates through a single `BackendEvent` channel tagged with harness id.
+
+pub mod opencode;
+
+use std::path::Path;
+use std::path::PathBuf;
+
+use async_trait::async_trait;
+use anyhow::Result;
+
+use crate::config::HarnessCfg;
+use crate::config::ModelRef;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    User,
+    Assistant,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionInfo {
+    pub native_id: String,
+    pub title: String,
+    pub updated_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelInfo {
+    pub provider_id: String,
+    pub model_id: String,
+    pub name: String,
+}
+
+impl ModelInfo {
+    pub fn display(&self) -> String {
+        if self.name.is_empty() {
+            format!("{}/{}", self.provider_id, self.model_id)
+        } else {
+            format!("{}/{} — {}", self.provider_id, self.model_id, self.name)
+        }
+    }
+
+    pub fn matches(&self, needle: &str) -> bool {
+        let needle = needle.to_lowercase();
+        self.display().to_lowercase().contains(&needle)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentInfo {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AttachmentMeta {
+    pub path: PathBuf,
+    pub filename: String,
+    pub size: u64,
+    pub mime: String,
+}
+
+impl AttachmentMeta {
+    pub fn from_path(path: &Path) -> AttachmentMeta {
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        AttachmentMeta {
+            path: path.to_path_buf(),
+            filename: path
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.to_string_lossy().into_owned()),
+            size,
+            mime: mime_for(path),
+        }
+    }
+
+    pub fn size_label(&self) -> String {
+        if self.size >= 1_048_576 {
+            format!("{:.1}M", self.size as f64 / 1_048_576.0)
+        } else if self.size >= 1024 {
+            format!("{:.1}k", self.size as f64 / 1024.0)
+        } else {
+            format!("{}b", self.size)
+        }
+    }
+}
+
+/// MIME by extension — good enough for chat attachments.
+pub fn mime_for(path: &Path) -> String {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "txt" | "md" | "log" | "csv" | "toml" | "ini" | "cfg" | "yaml" | "yml" | "json"
+        | "xml" | "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "c" | "h" | "cpp" | "hpp"
+        | "go" | "java" | "kt" | "sh" | "bat" | "ps1" | "lua" | "rb" | "php" | "cs"
+        | "html" | "css" | "scss" | "sql" | "r" | "m" => "text/plain",
+        "mp3" | "wav" | "ogg" | "flac" => "audio/ogg", // generic; opencode decides
+        "mp4" | "mkv" | "webm" | "mov" => "video/mp4",
+        "zip" => "application/zip",
+        "gz" | "tgz" => "application/gzip",
+        "tar" => "application/x-tar",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartKind {
+    Text,
+    Reasoning,
+    Tool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RenderPart {
+    pub part_id: String,
+    pub kind: PartKind,
+    pub text: String,
+}
+
+/// A chat message rendered in UI. Assistant messages keep ordered parts
+/// (reasoning / tool calls / text) so agent activity is visible.
+#[derive(Debug, Clone)]
+pub struct ChatMsg {
+    pub msg_id: String,
+    pub role: Role,
+    pub parts: Vec<RenderPart>,
+    pub attachments: Vec<AttachmentMeta>,
+}
+
+#[derive(Debug, Clone)]
+pub enum BackendEvent {
+    /// Connected and healthy; carries server version
+    Connected { harness: String, version: String },
+    /// Session list refresh (all sessions of one harness)
+    Sessions { harness: String, list: Vec<SessionInfo> },
+    /// Sessions of this harness changed server-side — UI should re-fetch
+    SessionsChanged { harness: String },
+    /// A draft chat got a real session after first message
+    SessionCreated { harness: String, native_id: String, title: String },
+    /// History loaded for a session
+    History {
+        harness: String,
+        native_id: String,
+        msgs: Vec<ChatMsg>,
+    },
+    /// Streaming delta for one assistant part (append `delta` chars)
+    PartDelta {
+        harness: String,
+        native_id: String,
+        msg_id: String,
+        part_id: String,
+        kind: PartKind,
+        delta: String,
+    },
+    /// A part appeared/changed without a delta (replace text)
+    PartUpdated {
+        harness: String,
+        native_id: String,
+        msg_id: String,
+        part: RenderPart,
+    },
+    /// Assistant message finished (or aborted) for the session
+    StreamDone { harness: String, native_id: String },
+    StreamError {
+        harness: String,
+        native_id: String,
+        error: String,
+    },
+    Models { harness: String, models: Vec<ModelInfo> },
+    Agents { harness: String, agents: Vec<AgentInfo> },
+    /// Global backend error (connection etc.)
+    Error { harness: String, error: String },
+}
+
+pub struct SendOpts<'a> {
+    pub model: Option<&'a ModelRef>,
+    pub agent: Option<&'a str>,
+}
+
+#[async_trait]
+#[allow(dead_code)]
+pub trait Backend: Send + Sync {
+    fn harness_id(&self) -> &str;
+
+    /// Ensure the harness server is running; returns its version.
+    async fn connect(&self) -> Result<String>;
+
+    async fn refresh_sessions(&self) -> Result<Vec<SessionInfo>>;
+    async fn create_session(&self, title: &str) -> Result<SessionInfo>;
+    async fn rename_session(&self, native_id: &str, title: &str) -> Result<()>;
+    async fn delete_session(&self, native_id: &str) -> Result<()>;
+    async fn load_history(&self, native_id: &str) -> Result<Vec<ChatMsg>>;
+    async fn send(&self, native_id: &str, text: &str, attachments: &[AttachmentMeta], opts: SendOpts<'_>) -> Result<()>;
+    async fn abort(&self, native_id: &str) -> Result<()>;
+
+    async fn list_models(&self) -> Result<Vec<ModelInfo>>;
+    async fn list_agents(&self) -> Result<Vec<AgentInfo>>;
+
+    /// Kill spawned server (if any). Called on app exit.
+    fn shutdown(&self);
+
+    fn is_connected(&self) -> bool;
+}
+
+/// Instantiate a backend by harness config kind.
+pub fn create_backend(cfg: &HarnessCfg, events: tokio::sync::mpsc::UnboundedSender<BackendEvent>) -> Result<std::sync::Arc<dyn Backend>> {
+    match cfg.kind.as_str() {
+        "opencode" => Ok(std::sync::Arc::new(opencode::OpenCodeBackend::new(cfg.clone(), events))),
+        other => anyhow::bail!("harness kind '{other}' is not supported yet"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mime_detect() {
+        assert_eq!(mime_for(Path::new("/x/photo.PNG")), "image/png");
+        assert_eq!(mime_for(Path::new("/x/doc.md")), "text/plain");
+        assert_eq!(mime_for(Path::new("/x/report.pdf")), "application/pdf");
+        assert_eq!(mime_for(Path::new("/x/blob.xyz")), "application/octet-stream");
+    }
+}

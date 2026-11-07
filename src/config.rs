@@ -1,0 +1,260 @@
+//! Persistent configuration: `%APPDATA%/ai-commander/config.toml` (or XDG on unix).
+
+use std::fs;
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+
+use crate::i18n::Lang;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelRef {
+    pub provider_id: String,
+    pub model_id: String,
+}
+
+impl ModelRef {
+    pub fn display(&self) -> String {
+        format!("{}/{}", self.provider_id, self.model_id)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct HarnessCfg {
+    /// Short tag shown in UI, e.g. "oc"
+    pub id: String,
+    /// Display name, e.g. "OpenCode"
+    pub name: String,
+    /// Backend kind: "opencode" for now; "hermes"/"deepseek-harness" reserved
+    pub kind: String,
+    pub enabled: bool,
+    /// Empty = autostart local server, otherwise connect to this URL
+    pub server_url: String,
+    /// OPENCODE_SERVER_PASSWORD of the external server (Basic auth, user "opencode")
+    pub server_password: String,
+    /// Directory the harness server runs in (empty = process cwd)
+    pub workdir: String,
+    /// Sub-agent name for the harness (opencode: build/plan/…)
+    pub agent: String,
+    pub default_model: Option<ModelRef>,
+}
+
+impl HarnessCfg {
+    pub fn opencode_default() -> Self {
+        HarnessCfg {
+            id: "oc".into(),
+            name: "OpenCode".into(),
+            kind: "opencode".into(),
+            enabled: true,
+            server_url: String::new(),
+            server_password: String::new(),
+            workdir: String::new(),
+            agent: "build".into(),
+            default_model: None, // picked live from GET /api/model on first Ctrl+K
+        }
+    }
+
+    pub fn reserved_stub(id: &str, name: &str, kind: &str) -> Self {
+        HarnessCfg {
+            id: id.into(),
+            name: name.into(),
+            kind: kind.into(),
+            enabled: false,
+            server_url: String::new(),
+            server_password: String::new(),
+            workdir: String::new(),
+            agent: String::new(),
+            default_model: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub lang: Lang,
+    pub profile_name: String,
+    pub harnesses: Vec<HarnessCfg>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            lang: Lang::En,
+            profile_name: whoami(),
+            harnesses: vec![
+                HarnessCfg::opencode_default(),
+                HarnessCfg::reserved_stub("hermes", "Hermes Agent", "hermes"),
+                HarnessCfg::reserved_stub("dsh", "DeepSeek Harness", "deepseek-harness"),
+            ],
+        }
+    }
+}
+
+fn whoami() -> String {
+    // Demo profile — shown in the header, sidebar and settings
+    "@tsingular".into()
+}
+
+pub fn config_dir() -> PathBuf {
+    let base = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("ai-commander");
+    let _ = fs::create_dir_all(&base);
+    base
+}
+
+pub fn config_path() -> PathBuf {
+    config_dir().join("config.toml")
+}
+
+impl Config {
+    pub fn load() -> Result<Config> {
+        let path = config_path();
+        if !path.exists() {
+            let cfg = Config::default();
+            cfg.save()?;
+            return Ok(cfg);
+        }
+        let raw = fs::read_to_string(&path).context("read config.toml")?;
+        let cfg: Config = toml::from_str(&raw).context("parse config.toml")?;
+        Ok(cfg)
+    }
+
+    pub fn save(&self) -> Result<()> {
+        let path = config_path();
+        let raw = toml::to_string_pretty(self).context("serialize config")?;
+        fs::write(&path, raw).context("write config.toml")?;
+        Ok(())
+    }
+
+    pub fn harness(&self, id: &str) -> Option<&HarnessCfg> {
+        self.harnesses.iter().find(|h| h.id == id)
+    }
+
+    pub fn harness_mut(&mut self, id: &str) -> Option<&mut HarnessCfg> {
+        self.harnesses.iter_mut().find(|h| h.id == id)
+    }
+
+    /// First enabled harness id
+    pub fn default_harness_id(&self) -> String {
+        self.harnesses
+            .iter()
+            .find(|h| h.enabled)
+            .map(|h| h.id.clone())
+            .unwrap_or_else(|| "oc".into())
+    }
+}
+
+// --- toml (de)serialization mirrors ---
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ModelToml {
+    provider: String,
+    model: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct HarnessToml {
+    id: String,
+    name: String,
+    kind: String,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    server_url: String,
+    #[serde(default)]
+    server_password: String,
+    #[serde(default)]
+    workdir: String,
+    #[serde(default)]
+    agent: String,
+    default_model: Option<ModelToml>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ConfigToml {
+    lang: String,
+    profile_name: String,
+    harness: Vec<HarnessToml>,
+}
+
+impl serde::Serialize for Config {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let cfg = ConfigToml {
+            lang: self.lang.code().into(),
+            profile_name: self.profile_name.clone(),
+            harness: self
+                .harnesses
+                .iter()
+                .map(|h| HarnessToml {
+                    id: h.id.clone(),
+                    name: h.name.clone(),
+                    kind: h.kind.clone(),
+                    enabled: h.enabled,
+                    server_url: h.server_url.clone(),
+                    server_password: h.server_password.clone(),
+                    workdir: h.workdir.clone(),
+                    agent: h.agent.clone(),
+                    default_model: h.default_model.as_ref().map(|m| ModelToml {
+                        provider: m.provider_id.clone(),
+                        model: m.model_id.clone(),
+                    }),
+                })
+                .collect(),
+        };
+        cfg.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Config {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = ConfigToml::deserialize(deserializer)?;
+        Ok(Config {
+            lang: Lang::parse(&raw.lang),
+            profile_name: raw.profile_name,
+            harnesses: raw
+                .harness
+                .into_iter()
+                .map(|h| HarnessCfg {
+                    id: h.id,
+                    name: h.name,
+                    kind: h.kind,
+                    enabled: h.enabled,
+                    server_url: h.server_url,
+                    server_password: h.server_password,
+                    workdir: h.workdir,
+                    agent: h.agent,
+                    default_model: h.default_model.map(|m| ModelRef {
+                        provider_id: m.provider,
+                        model_id: m.model,
+                    }),
+                })
+                .collect(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_roundtrip() {
+        let mut cfg = Config::default();
+        cfg.lang = Lang::Ru;
+        cfg.profile_name = "@tsingular".into();
+        cfg.harness_mut("oc").unwrap().default_model = Some(ModelRef {
+            provider_id: "deepseek".into(),
+            model_id: "deepseek-chat".into(),
+        });
+        let raw = toml::to_string_pretty(&cfg).unwrap();
+        let back: Config = toml::from_str(&raw).unwrap();
+        assert_eq!(back.lang, Lang::Ru);
+        assert_eq!(back.profile_name, "@tsingular");
+        assert_eq!(
+            back.harness("oc").unwrap().default_model.as_ref().unwrap().display(),
+            "deepseek/deepseek-chat"
+        );
+        assert!(back.harness("hermes").unwrap().enabled == false);
+    }
+}
