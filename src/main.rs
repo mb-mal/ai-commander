@@ -46,6 +46,7 @@ struct Args {
     server: String,
     lang: String,
     workdir: String,
+    harness: String,
 }
 
 fn parse_args() -> Args {
@@ -59,6 +60,7 @@ fn parse_args() -> Args {
             "--server" => args.server = it.next().unwrap_or_default(),
             "--lang" => args.lang = it.next().unwrap_or_default(),
             "--workdir" => args.workdir = it.next().unwrap_or_default(),
+            "--harness" => args.harness = it.next().unwrap_or_default(),
             "--version" | "-V" => {
                 println!("ai-commander {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
@@ -96,10 +98,10 @@ async fn main() -> Result<()> {
     apply_overrides(&mut cfg, &args);
 
     if args.check {
-        return run_check(cfg).await;
+        return run_check(cfg, &args.harness).await;
     }
     if !args.send.is_empty() {
-        return run_send(cfg, &args.send, args.wait_secs.max(5)).await;
+        return run_send(cfg, &args.send, args.wait_secs.max(5), &args.harness).await;
     }
 
     run_tui(cfg).await
@@ -107,21 +109,21 @@ async fn main() -> Result<()> {
 
 // ---------------- headless E2E: send a message, watch the live stream ----------------
 
-async fn run_send(cfg: Config, text: &str, wait_secs: u64) -> Result<()> {
+async fn run_send(cfg: Config, text: &str, wait_secs: u64, harness_id: &str) -> Result<()> {
     use backend::{create_backend, BackendEvent, PartKind, SendOpts};
     use std::time::Instant;
 
     let harness_cfg = cfg
         .harnesses
         .iter()
-        .find(|h| h.enabled && h.kind == "opencode")
+        .find(|h| h.enabled && backend::supported_kind(&h.kind) && (harness_id.is_empty() || h.id == harness_id))
         .cloned()
-        .ok_or_else(|| anyhow::anyhow!("no enabled opencode harness in config"))?;
+        .ok_or_else(|| anyhow::anyhow!("no enabled harness '{}' in config", harness_id))?;
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let b = create_backend(&harness_cfg, tx)?;
     let version = b.connect().await?;
-    println!("connected: opencode v{version}");
+    println!("connected: {} v{version}", harness_cfg.kind);
 
     let session = b.create_session("ai-commander e2e").await?;
     println!("session: {}", session.native_id);
@@ -204,15 +206,15 @@ async fn run_send(cfg: Config, text: &str, wait_secs: u64) -> Result<()> {
 
 // ---------------- headless check ----------------
 
-async fn run_check(cfg: Config) -> Result<()> {
+async fn run_check(cfg: Config, harness_id: &str) -> Result<()> {
     use backend::create_backend;
 
     let harness_cfg = cfg
         .harnesses
         .iter()
-        .find(|h| h.enabled && h.kind == "opencode")
+        .find(|h| h.enabled && backend::supported_kind(&h.kind) && (harness_id.is_empty() || h.id == harness_id))
         .cloned()
-        .ok_or_else(|| anyhow::anyhow!("no enabled opencode harness in config"))?;
+        .ok_or_else(|| anyhow::anyhow!("no enabled harness '{}' in config", harness_id))?;
 
     println!(
         "ai-commander --check: harness {} [{}] kind={}",
@@ -227,7 +229,7 @@ async fn run_check(cfg: Config) -> Result<()> {
     let b = create_backend(&harness_cfg, tx)?;
 
     let version = b.connect().await?;
-    println!("connected: opencode v{version}");
+    println!("connected: {} v{version}", harness_cfg.kind);
 
     let models = b.list_models().await?;
     println!("\nmodels ({})", models.len());

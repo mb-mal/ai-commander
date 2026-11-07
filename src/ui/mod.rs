@@ -247,7 +247,7 @@ impl App {
             return Some(Arc::clone(b));
         }
         let cfg = self.cfg.harness(harness)?.clone();
-        if !cfg.enabled || cfg.kind != "opencode" {
+        if !cfg.enabled || !backend::supported_kind(&cfg.kind) {
             return None;
         }
         let backend = match backend::create_backend(&cfg, self.events_tx.clone()) {
@@ -331,7 +331,7 @@ impl App {
     pub fn flattened_sessions(&self) -> Vec<(String, String, String, i64)> {
         let mut out = Vec::new();
         for h in &self.cfg.harnesses {
-            if !h.enabled || h.kind != "opencode" {
+            if !h.enabled || !backend::supported_kind(&h.kind) {
                 continue;
             }
             if let Some(list) = self.sessions.get(&h.id) {
@@ -480,9 +480,17 @@ impl App {
         if !self.streaming {
             return;
         }
-        // The opencode server build exposes no abort endpoint. Esc detaches:
-        // live deltas are hidden; the finished turn reloads via history on
-        // StreamDone, and the next prompt "steers" (interrupts) server-side.
+        // opencode's server exposes no abort endpoint: Esc detaches, the
+        // finished turn reloads via history on StreamDone, the next prompt
+        // steers. Hermes is a child process — Esc really kills it.
+        if let Some(b) = self.backends.get(&self.cur.harness).cloned() {
+            if !self.cur.native_id.is_empty() && !self.cur.native_id.starts_with("pending-") {
+                let native_id = self.cur.native_id.clone();
+                tokio::spawn(async move {
+                    let _ = b.abort(&native_id).await;
+                });
+            }
+        }
         self.streaming = false;
         self.follow = false;
         self.toast(self.tr(Str::StopNote), false);
@@ -1311,7 +1319,7 @@ impl App {
 
     fn switch_harness(&mut self, idx: usize) {
         let Some(h) = self.cfg.harnesses.get(idx).cloned() else { return };
-        if h.kind != "opencode" {
+        if !backend::supported_kind(&h.kind) {
             self.toast(format!("{}: {}", h.name, self.tr(Str::SettingsDisabledKind)), true);
             return;
         }
@@ -1511,7 +1519,7 @@ impl App {
                 h.workdir.clone(),
                 h.agent.clone(),
                 h.default_model.as_ref().map(|m| m.display()).unwrap_or_default(),
-                h.kind == "opencode",
+                backend::supported_kind(&h.kind),
             ),
             None => ("—".into(), String::new(), false, String::new(), String::new(), String::new(), String::new(), String::new(), false),
         };

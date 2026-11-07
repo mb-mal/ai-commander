@@ -11,6 +11,14 @@ auto-starts `opencode serve`, streams replies over SSE, pulls the live model
 list (`GET /api/model` — deepseek-flash, GLM, local MLX models) and supports
 attachments (images/files → base64 data-URL).
 
+The second harness is **Hermes Agent** (CLI): ai-commander drives the
+`hermes chat` subprocess per message, streams its `--format stream-json`
+deltas, keeps a local session registry with accumulated history (the CLI has
+no session-list API), attaches images via `--image`, picks models from its
+provider cache, and `Esc` really kills the running turn. Enable it with
+`Ctrl+H` in the app or `enabled = true` in config. More harnesses
+(deepseek-harness…) slot in as new `trait Backend` implementations.
+
 ## Features
 
 - ChatGPT layout: session history on the left, chat in the centre, composer

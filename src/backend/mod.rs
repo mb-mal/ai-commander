@@ -2,6 +2,7 @@
 //! harness, …) is a running agent runtime we chat with. All backends stream
 //! their updates through a single `BackendEvent` channel tagged with harness id.
 
+pub mod hermes;
 pub mod opencode;
 
 use std::path::Path;
@@ -219,8 +220,14 @@ pub trait Backend: Send + Sync {
 pub fn create_backend(cfg: &HarnessCfg, events: tokio::sync::mpsc::UnboundedSender<BackendEvent>) -> Result<std::sync::Arc<dyn Backend>> {
     match cfg.kind.as_str() {
         "opencode" => Ok(std::sync::Arc::new(opencode::OpenCodeBackend::new(cfg.clone(), events))),
+        "hermes" => Ok(std::sync::Arc::new(hermes::HermesBackend::new(cfg.clone(), events))),
         other => anyhow::bail!("harness kind '{other}' is not supported yet"),
     }
+}
+
+/// Kinds the app can currently drive.
+pub fn supported_kind(kind: &str) -> bool {
+    matches!(kind, "opencode" | "hermes")
 }
 
 #[cfg(test)]

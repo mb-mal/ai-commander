@@ -199,7 +199,7 @@ fn draw_sidebar(app: &mut App, f: &mut Frame, area: Rect) {
     hits.push(Some(super::HitTarget::NewChat));
 
     for h in &app.cfg.harnesses {
-        if !h.enabled || h.kind != "opencode" {
+        if !h.enabled || !crate::backend::supported_kind(&h.kind) {
             continue;
         }
         let empty: Vec<crate::backend::SessionInfo> = Vec::new();
