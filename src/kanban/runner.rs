@@ -64,6 +64,13 @@ pub fn on_progress(board: &mut BoardStore, task_id: &str, delta: &str, reply: &m
     board.renew_lease(task_id);
 }
 
+/// Lease-only heartbeat (for callers that track replies separately, e.g. TUI).
+pub fn on_progress_no_reply(board: &mut BoardStore, task_id: &str, delta: &str) {
+    if !delta.is_empty() {
+        board.renew_lease(task_id);
+    }
+}
+
 /// Classify the accumulated reply and transition the task (Б8: StreamDone
 /// must finish the task, not just clear a busy flag).
 pub fn on_stream_done(board: &mut BoardStore, task_id: &str, reply: &str) -> Result<Task, String> {
