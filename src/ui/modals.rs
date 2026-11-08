@@ -100,7 +100,7 @@ fn draw_agents_panel(app: &mut App, f: &mut Frame, size: Rect) {
             "Agents & teams"
         },
     );
-    let roles = crate::kanban::roles::RoleSet::load(&std::env::current_dir().unwrap_or_default());
+    let roles = crate::kanban::roles::RoleSet::cached(&std::env::current_dir().unwrap_or_default());
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     lines.push(Line::from(Span::styled(

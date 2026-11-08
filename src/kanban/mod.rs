@@ -130,6 +130,20 @@ pub struct Comment {
     pub ts_ms: i64,
 }
 
+/// Д8: a concrete output of a task turn — files written, the worktree branch,
+/// a report link. Handoffs and DONE turns attach these so the next owner can
+/// find the work without scraping the chat log.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Artifact {
+    /// "file" | "branch" | "link" | "text"
+    pub kind: String,
+    /// path / branch name / URL / short value
+    pub value: String,
+    /// role id that produced it
+    pub by: String,
+    pub ts_ms: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Task {
     pub id: String,
@@ -148,6 +162,9 @@ pub struct Task {
     /// task thread: comments, handoffs, system notes (agent inbox)
     #[serde(default)]
     pub comments: Vec<Comment>,
+    /// Д8: concrete outputs (files/branches/links) produced by task turns
+    #[serde(default)]
+    pub artifacts: Vec<Artifact>,
     /// DAG: task ids that must be Done/Cancelled before this one launches
     #[serde(default)]
     pub depends_on: Vec<String>,
@@ -380,6 +397,19 @@ pub fn board_tool_call(
             )?;
             Ok(format!("handed off to {:?}; status {:?}", t.role, t.status))
         }
+        "board.artifact" => {
+            let t = board.add_artifact(
+                &str_arg("task_id"),
+                &str_arg("kind"),
+                &str_arg("value"),
+                role,
+            )?;
+            Ok(format!(
+                "artifact attached to {} ({} total)",
+                t.id,
+                t.artifacts.len()
+            ))
+        }
         "board.read_inbox" => {
             let id = str_arg("task_id");
             let since = args.get("since_ms").and_then(Value::as_i64).unwrap_or(0);
@@ -423,6 +453,7 @@ mod tests {
             harness: Some("oc".into()),
             role: None,
             comments: Vec::new(),
+            artifacts: Vec::new(),
             depends_on: Vec::new(),
             session_id: None,
             attempts: 0,

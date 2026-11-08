@@ -91,6 +91,7 @@ mod tests {
                     text: "t".into(),
                     ts_ms: 1,
                 }],
+                artifacts: Vec::new(),
                 depends_on: Vec::new(),
                 session_id: None,
                 attempts: 1,

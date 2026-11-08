@@ -389,6 +389,7 @@ impl BoardStore {
             harness: None,
             role: None,
             comments: Vec::new(),
+            artifacts: Vec::new(),
             depends_on: Vec::new(),
             session_id: None,
             attempts: 0,
@@ -449,6 +450,33 @@ impl BoardStore {
             self.budget_ok(task_id)?;
         }
         {
+            // Д4: dependencies gate EVERY Start — manual board action or
+            // daemon alike; a dep that is not Done/Cancelled blocks the launch
+            if action == TaskAction::Start {
+                let blocking: Vec<String> = self
+                    .proj
+                    .tasks
+                    .iter()
+                    .find(|t| t.id == task_id)
+                    .map(|t| &t.depends_on)
+                    .map(|deps| {
+                        deps.iter()
+                            .filter(|d| {
+                                self.proj.tasks.iter().find(|x| x.id == **d).is_some_and(|x| {
+                                    !matches!(x.status, TaskStatus::Done | TaskStatus::Cancelled)
+                                })
+                            })
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !blocking.is_empty() {
+                    return Err(format!(
+                        "task {task_id} blocked by unfinished dependencies: {}",
+                        blocking.join(", ")
+                    ));
+                }
+            }
             let Some(t) = self.proj.tasks.iter_mut().find(|t| t.id == task_id) else {
                 return Err(format!("task {task_id} not found"));
             };
@@ -636,6 +664,46 @@ impl BoardStore {
         let snap = t.clone();
         self.commit(task_id, &format!("comment:{kind}"), Some(snap))?;
         Ok(())
+    }
+
+    /// Д8: attach a concrete output (file/branch/link) to a task. Attached
+    /// artifacts survive handoffs and are visible to the next owner.
+    pub fn add_artifact(
+        &mut self,
+        task_id: &str,
+        kind: &str,
+        value: &str,
+        by: &str,
+    ) -> Result<Task, String> {
+        let value = value.trim();
+        if value.is_empty() {
+            return Err("artifact value is required".into());
+        }
+        let kind = match kind {
+            "" => "text",
+            "file" | "branch" | "link" | "text" => kind,
+            other => return Err(format!("unknown artifact kind {other}")),
+        };
+        let Some(t) = self.proj.tasks.iter_mut().find(|t| t.id == task_id) else {
+            return Err(format!("task {task_id} not found"));
+        };
+        // de-dup: re-attaching the same value is a no-op
+        let dupe = t
+            .artifacts
+            .iter()
+            .any(|a| a.kind == kind && a.value == value);
+        if !dupe {
+            t.artifacts.push(super::Artifact {
+                kind: kind.to_string(),
+                value: value.to_string(),
+                by: by.to_string(),
+                ts_ms: crate::kanban::now_ms(),
+            });
+        }
+        t.updated_ms = crate::kanban::now_ms();
+        let snap = t.clone();
+        self.commit(task_id, "artifact", Some(snap.clone()))?;
+        Ok(snap)
     }
 
     /// Structured handoff contract (review §7): summary is mandatory, the
@@ -1063,6 +1131,45 @@ mod tests {
         let inbox = b.read_inbox(&t.id, ts).unwrap();
         assert_eq!(inbox.len(), 1);
         assert!(inbox[0].text.contains("second"));
+    }
+
+    /// Д8: artifacts are first-class — attached by the working role, they
+    /// survive a handoff so the next owner finds the work.
+    #[test]
+    fn artifacts_survive_handoff() {
+        let mut b = BoardStore::open_memory();
+        let t = b.add_task("implement feature");
+        b.transition(&t.id, TaskAction::Promote).unwrap();
+        b.assign_with_role(&t.id, Some("oc".into()), Some("coder".into()))
+            .unwrap();
+
+        let updated = b
+            .add_artifact(&t.id, "file", "src/feature.rs", "coder")
+            .unwrap();
+        assert_eq!(updated.artifacts.len(), 1);
+        assert_eq!(updated.artifacts[0].value, "src/feature.rs");
+        assert_eq!(updated.artifacts[0].by, "coder");
+
+        // invalid input is rejected
+        assert!(b.add_artifact(&t.id, "file", "  ", "coder").is_err());
+        assert!(b.add_artifact(&t.id, "bogus", "x", "coder").is_err());
+
+        // re-attaching the same artifact is a no-op (no duplicates)
+        let updated = b
+            .add_artifact(&t.id, "file", "src/feature.rs", "coder")
+            .unwrap();
+        assert_eq!(updated.artifacts.len(), 1, "duplicate artifact rejected");
+
+        // handoff keeps the artifacts visible to the new owner
+        let updated = b
+            .handoff(&t.id, "coder", "reviewer", "draft done, please review", "")
+            .unwrap();
+        assert_eq!(
+            updated.artifacts.len(),
+            1,
+            "artifacts must survive a handoff (Д8)"
+        );
+        assert_eq!(updated.role.as_deref(), Some("reviewer"));
     }
 
     #[test]

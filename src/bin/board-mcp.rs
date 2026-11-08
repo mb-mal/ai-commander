@@ -105,6 +105,13 @@ fn tools() -> Value {
              "task_id": {"type": "string"}, "to_role": {"type": "string"},
              "summary": {"type": "string"}, "open_questions": {"type": "string"}},
              "required": ["task_id", "to_role", "summary"]}},
+        {"name": "board.artifact",
+         "description": "Attach a concrete output of your work to the task: a file path, branch name, link or short text. Artifacts survive handoffs and are shown to the next owner.",
+         "inputSchema": {"type": "object", "properties": {
+             "task_id": {"type": "string"},
+             "kind": {"type": "string", "enum": ["file","branch","link","text"]},
+             "value": {"type": "string"}},
+             "required": ["task_id", "value"]}},
         {"name": "board.read_inbox",
          "description": "Read task thread entries newer than since_ms (epoch ms, default 0).",
          "inputSchema": {"type": "object", "properties": {
@@ -205,6 +212,19 @@ fn call_tool(
                 &str_arg("open_questions"),
             )?;
             Ok(format!("handed off to {:?}; status {:?}", t.role, t.status))
+        }
+        "board.artifact" => {
+            let t = board.add_artifact(
+                &str_arg("task_id"),
+                &str_arg("kind"),
+                &str_arg("value"),
+                role,
+            )?;
+            Ok(format!(
+                "artifact attached to {} ({} total)",
+                t.id,
+                t.artifacts.len()
+            ))
         }
         "board.read_inbox" => {
             let id = str_arg("task_id");

@@ -148,3 +148,37 @@ fn launch_runs_in_worktree() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Д4: a manual Start of a task whose dependencies are not Done must be
+/// refused — the DAG gates every Start, not just the daemon scheduler.
+#[test]
+fn manual_start_blocked_by_unfinished_dependency() {
+    let mut b = BoardStore::open_memory();
+    let a = b.add_task("dependency A");
+    let c = b.add_task("child C");
+    b.set_depends(&c.id, vec![a.id.clone()]).unwrap();
+    b.transition(&c.id, TaskAction::Promote).unwrap(); // → Ready
+
+    // A is still Backlog (not Done/Cancelled) → Start must fail
+    let err = b.transition(&c.id, TaskAction::Start).unwrap_err();
+    assert!(
+        err.contains(&a.id),
+        "error must name the blocking dependency: {err}"
+    );
+    assert_eq!(
+        b.projection().tasks.iter().find(|t| t.id == c.id).unwrap().status,
+        TaskStatus::Ready,
+        "blocked task must stay Ready"
+    );
+
+    // finish A → Start goes through
+    b.transition(&a.id, TaskAction::Promote).unwrap();
+    b.transition(&a.id, TaskAction::Start).unwrap();
+    b.transition(&a.id, TaskAction::Finish).unwrap(); // → Review
+    b.transition(&a.id, TaskAction::Approve).unwrap(); // → Done
+    b.transition(&c.id, TaskAction::Start).unwrap();
+    assert_eq!(
+        b.projection().tasks.iter().find(|t| t.id == c.id).unwrap().status,
+        TaskStatus::InProgress
+    );
+}
