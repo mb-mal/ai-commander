@@ -204,32 +204,29 @@ impl OpenCodeBackend {
 
     /// Health probe: v2 serves it under /api (auth); plain /global/health
     /// answers 200 with SPA HTML on some builds, so it's only a fallback signal.
+    /// Health probe. This opencode build has no dedicated working health
+    /// route (/api/global/health is 404 with auth; /global/health answers
+    /// 200 with SPA HTML), so "alive" = the API itself responds:
+    /// GET /api/session with auth -> 2xx. Plain /global/health 200 is kept
+    /// as a legacy fallback signal (body ignored).
     async fn healthy(&self, base: &str) -> Option<Value> {
-        let looks_alive = |body: &str| !body.trim_start().starts_with('<'); // SPA HTML is not the API
         if let Ok(r) = self
             .http
-            .get(format!("{base}/api/global/health"))
+            .get(format!("{base}/api/session"))
             .timeout(Duration::from_millis(1500))
             .send()
             .await
         {
             if r.status().is_success() {
                 let body = r.text().await.unwrap_or_default();
-                if !looks_alive(&body) {
-                    return None; // an HTML page answered, not the API
-                }
                 if let Ok(v) = serde_json::from_str::<Value>(&body) {
-                    if v.get("data").is_some()
-                        || v.get("healthy").is_some()
-                        || v.get("version").is_some()
-                    {
-                        return Some(v);
-                    }
+                    return Some(v);
                 }
-                return Some(Value::Null); // 200, non-HTML (some builds send an empty body)
+                return Some(Value::Null);
             }
         }
-        // legacy fallback
+        // legacy fallback: any 200 means "the port speaks HTTP" — a wrong
+        // server will still fail later on the authed API calls
         if let Ok(r) = self
             .bare
             .get(format!("{base}/global/health"))
@@ -238,10 +235,7 @@ impl OpenCodeBackend {
             .await
         {
             if r.status().is_success() {
-                let body = r.text().await.unwrap_or_default();
-                if looks_alive(&body) {
-                    return Some(Value::Null);
-                }
+                return Some(Value::Null);
             }
         }
         None
