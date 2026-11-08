@@ -427,6 +427,7 @@ async fn run_task(cfg: Config, title: &str, wait_secs: u64, harness_id: &str) ->
         ai_commander::kanban::TurnOutcome::Finished => TaskAction::Finish,
         ai_commander::kanban::TurnOutcome::Blocked => TaskAction::Block,
         ai_commander::kanban::TurnOutcome::NeedsHuman => TaskAction::Ask,
+        ai_commander::kanban::TurnOutcome::Failed => TaskAction::Interrupt,
     };
     let final_task = board
         .transition(&task.id, action)

@@ -919,6 +919,7 @@ impl App {
                         kanban::TurnOutcome::Finished => kanban::TaskAction::Finish,
                         kanban::TurnOutcome::Blocked => kanban::TaskAction::Block,
                         kanban::TurnOutcome::NeedsHuman => kanban::TaskAction::Ask,
+                        kanban::TurnOutcome::Failed => kanban::TaskAction::Interrupt,
                     };
                     let mut b = self.board.lock().unwrap();
                     if let Ok(t) = b.transition(&task.id, action) {
