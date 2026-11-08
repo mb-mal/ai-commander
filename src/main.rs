@@ -523,15 +523,28 @@ async fn run_daemon(cfg: Config) -> Result<()> {
             ai_commander::log_info!("daemon", "trigger spawned {id}");
         }
 
-        // 2) watchdog pass (retry / escalate)
+        // 2) watchdog: scan stuck tasks → abort their sessions → apply (Б6)
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
-        for (id, label) in board.watchdog_pass(now) {
-            println!("[watchdog] {id}: {label}");
-            ai_commander::log_info!("daemon", "watchdog {id}: {label}");
-            busy.remove(&id);
+        let stuck = board.watchdog_scan(now);
+        if !stuck.is_empty() {
+            for st in &stuck {
+                // abort the running session BEFORE retrying (no duplicate agents)
+                if let Some(b) = backends.get(&st.harness) {
+                    println!(
+                        "[watchdog] aborting {} session {}",
+                        st.task_id, st.session_id
+                    );
+                    let _ = b.abort(&st.session_id).await;
+                }
+            }
+            for (id, label) in board.watchdog_apply(&stuck) {
+                println!("[watchdog] {id}: {label}");
+                ai_commander::log_info!("daemon", "watchdog {id}: {label}");
+                busy.remove(&id);
+            }
         }
 
         // 3) launch one Ready task per idle harness
