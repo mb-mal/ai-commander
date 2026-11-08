@@ -163,13 +163,18 @@ and start/finish are ownership-checked. Handoffs carry a validated contract
 new owner. Artifacts (`file`/`branch`/`link`/`text`) are first-class task
 outputs — they survive handoffs, so the next owner finds the work.
 
-**Single owner + IPC**: the redb store takes an exclusive lock, so exactly
-one process (TUI or daemon) owns the board and serves board tool calls on a
-loopback socket (port published in `<config>/board.port`, overridable with
-`AI_COMMANDER_BOARD_PORT`). `board-mcp` connects to that owner as a client
-— it never opens the redb file while an owner is alive and never creates a
-second store. Only when nobody owns the board does it open the store
-directly.
+**Single owner + IPC (hardened in v4)**: the redb store takes an exclusive
+lock, so exactly one process (TUI or daemon) owns the board and serves
+board tool calls on a loopback socket. `<config>/board.port` (mode 0600)
+holds the port AND a 32-byte transport token that every request must
+present. The acting role comes from a role token the owner mints at agent
+launch (`AI_COMMANDER_BOARD_TOKEN` env of board-mcp) — a `role` field in
+the request body is ignored, so no client can impersonate another role.
+The first line that is not a JSON object closes the connection, which
+kills stray HTTP probes (e.g. blind `no-cors` POSTs from web pages) on the
+request line. `board-mcp` connects to the owner as a client — it never
+opens the redb file while an owner is alive and never creates a second
+store. Only when nobody owns the board does it open the store directly.
 
 - ACP harness: the board server is injected automatically into every task
   session with a role (`session/new mcpServers`, typed schema entries)
@@ -237,7 +242,8 @@ Blockers from the v2 review addressed:
 - **Б2** ACP backend builds every message from the `agent-client-protocol`
   schema types (initialize, session/new, session/load, session/prompt,
   session/cancel, mcpServers entries); the `fake-acp-agent` conformance
-  binary validates every client message against the schema
+  binary validates every client message against the schema (see v4 below
+  for the permission half)
 - **Б3** cron schedules disabled (were spawning a task every 60 s) until a
   real parser is in place
 - **Б4** worktree: commits agent work before merge, refuses `--force` on a
@@ -299,3 +305,30 @@ Security fixes:
 **Mikhail Malyshev** — Telegram & YouTube: **@tsingular**
 
 In-app About: `F1` → `A` (or `Ctrl+A`). © 2026 Mikhail Malyshev
+
+## v4 review fixes
+
+- **IPC security (urgent)**: transport token (32 bytes, 0600 port file)
+  mandatory in every request; the first non-JSON line closes the
+  connection (HTTP dies on its request line); the acting role comes from a
+  per-role token minted by the owner at launch — the body `role` field is
+  ignored, killing both self-approval spoofs and web-page injections
+  (tests: `http_request_is_rejected_and_connection_closed`,
+  `request_without_or_wrong_token_rejected`,
+  `approve_with_spoofed_role_rejected`, `port_file_is_owner_only`)
+- **a2a module removed**: the disabled gateway was dead code with an
+  unauthenticated HTTP surface (`POST /board` took the role from the body)
+- **Д1**: the lease renews on `PartUpdated` too (tool-call progress, no
+  delta text) and `LEASE_MS` is 5 minutes — a 3-minute silent tool call is
+  not interrupted
+- **Н2 leftover**: a turn whose stream errored is Failed even if `DONE:`
+  was printed before the break (`on_stream_done_ex`, wired in TUI+daemon)
+- **failed Start escalates**: a Start that cannot begin (broken
+  worktree/branch) goes to NeedsHuman instead of retry-looping every 30 s
+  (FSM: Ready + Ask → NeedsHuman)
+- **Б2 permissions (ACP)**: typed `RequestPermissionRequest` (label from
+  `name`), jsonrpc ids kept raw (string ids route), the reply picks the
+  option by schema `kind` with no first-option fallback (else `cancelled`),
+  and cancelling the turn answers every pending request with `cancelled`
+  as the spec requires; `fake-acp-agent` drives allow / always / reject /
+  cancel-during-request scenarios end to end
