@@ -355,7 +355,10 @@ impl BoardStore {
         self.store.read_since(since, n).unwrap_or_default()
     }
 
-    fn commit(&mut self, task_id: &str, action: &str, task: Option<Task>) {
+    /// The ONLY mutation path (review v2 Б7): write the event to the journal
+    /// FIRST; on success fold it into the projection. On failure the caller
+    /// sees the error — the projection stays untouched.
+    fn commit(&mut self, task_id: &str, action: &str, task: Option<Task>) -> Result<(), String> {
         let seq = self.store.last_seq().unwrap_or(0) + 1;
         let ev = StoredEvent {
             seq,
@@ -365,8 +368,12 @@ impl BoardStore {
             task,
         };
         let ev_for_fold = ev.clone();
-        if self.store.append(ev, &self.proj).is_ok() {
-            self.proj = fold(self.proj.clone(), &[ev_for_fold]);
+        match self.store.append(ev, &self.proj) {
+            Ok(()) => {
+                self.proj = fold(self.proj.clone(), &[ev_for_fold]);
+                Ok(())
+            }
+            Err(e) => Err(format!("journal write failed: {e:#}")),
         }
     }
 
@@ -396,7 +403,11 @@ impl BoardStore {
             updated_ms: crate::kanban::now_ms(),
         };
         self.proj.tasks.push(t.clone());
-        self.commit(&t.id, "created", Some(t.clone()));
+        // Б7: journal is the source of truth; on failure the projection entry
+        // is stale — log loudly so the discrepancy is visible
+        if let Err(e) = self.commit(&t.id, "created", Some(t.clone())) {
+            crate::log_error!("kanban", "add_task journal write failed: {e}");
+        }
         t
     }
 
@@ -469,7 +480,7 @@ impl BoardStore {
             .find(|t| t.id == task_id)
             .cloned()
             .unwrap();
-        self.commit(task_id, &format!("transition:{action:?}"), Some(t.clone()));
+        self.commit(task_id, &format!("transition:{action:?}"), Some(t.clone()))?;
         Ok(t)
     }
 
@@ -480,7 +491,7 @@ impl BoardStore {
         t.title = title.to_string();
         t.updated_ms = crate::kanban::now_ms();
         let snap = t.clone();
-        self.commit(task_id, "edited", Some(snap));
+        self.commit(task_id, "edited", Some(snap))?;
         Ok(())
     }
 
@@ -498,7 +509,7 @@ impl BoardStore {
         t.role = role;
         t.updated_ms = crate::kanban::now_ms();
         let snap = t.clone();
-        self.commit(task_id, "assigned", Some(snap));
+        self.commit(task_id, "assigned", Some(snap))?;
         Ok(())
     }
 
@@ -509,7 +520,7 @@ impl BoardStore {
         t.harness = harness;
         t.updated_ms = crate::kanban::now_ms();
         let snap = t.clone();
-        self.commit(task_id, "assigned", Some(snap));
+        self.commit(task_id, "assigned", Some(snap))?;
         Ok(())
     }
 
@@ -518,7 +529,7 @@ impl BoardStore {
             t.session_id = Some(session_id.to_string());
             t.updated_ms = crate::kanban::now_ms();
             let snap = t.clone();
-            self.commit(task_id, "linked", Some(snap));
+            let _ = self.commit(task_id, "linked", Some(snap));
         }
     }
 
@@ -537,7 +548,7 @@ impl BoardStore {
             t.session_id = Some(new.to_string());
             t.updated_ms = crate::kanban::now_ms();
             let snap = t.clone();
-            self.commit(&id, "rebound", Some(snap));
+            let _ = self.commit(&id, "rebound", Some(snap));
         }
     }
 
@@ -575,7 +586,7 @@ impl BoardStore {
             .find(|t| t.id == child.id)
             .cloned()
             .unwrap();
-        self.commit(&child.id, "delegated", Some(snap));
+        self.commit(&child.id, "delegated", Some(snap))?;
         Ok(child)
     }
 
@@ -618,7 +629,7 @@ impl BoardStore {
         });
         t.updated_ms = crate::kanban::now_ms();
         let snap = t.clone();
-        self.commit(task_id, &format!("comment:{kind}"), Some(snap));
+        self.commit(task_id, &format!("comment:{kind}"), Some(snap))?;
         Ok(())
     }
 
@@ -680,7 +691,7 @@ Open questions: {open_questions}"
             .find(|t| t.id == task_id)
             .cloned()
             .unwrap();
-        self.commit(task_id, "handoff", Some(t.clone()));
+        self.commit(task_id, "handoff", Some(t.clone()))?;
         Ok(t)
     }
 
@@ -702,13 +713,30 @@ Open questions: {open_questions}"
     /// Set DAG dependencies (forward references to not-yet-created task ids
     /// are allowed; a missing dependency counts as settled at launch time).
     pub fn set_depends(&mut self, task_id: &str, deps: Vec<String>) -> Result<(), String> {
+        // cycle detection: DFS through the hypothetical graph (review v2)
+        {
+            let mut hypothetical = self.proj.clone();
+            if let Some(t) = hypothetical.tasks.iter_mut().find(|t| t.id == task_id) {
+                t.depends_on = deps.clone();
+            }
+            let mut visited = std::collections::HashSet::new();
+            let mut stack = vec![task_id.to_string()];
+            while let Some(cur) = stack.pop() {
+                if !visited.insert(cur.clone()) {
+                    return Err(format!("dependency cycle detected involving {cur}"));
+                }
+                if let Some(t) = hypothetical.tasks.iter().find(|t| t.id == cur) {
+                    stack.extend(t.depends_on.iter().cloned());
+                }
+            }
+        }
         let Some(t) = self.proj.tasks.iter_mut().find(|t| t.id == task_id) else {
             return Err("task not found".into());
         };
         t.depends_on = deps;
         t.updated_ms = crate::kanban::now_ms();
         let snap = t.clone();
-        self.commit(task_id, "depends", Some(snap));
+        self.commit(task_id, "depends", Some(snap))?;
         Ok(())
     }
 
@@ -1125,6 +1153,29 @@ mod tests {
         assert_eq!(acted.len(), 1);
         assert_eq!(acted[0].1, "escalated", "run budget escalates, not retries");
         assert_eq!(b.projection().tasks[0].status, TaskStatus::NeedsHuman);
+    }
+
+    #[test]
+    fn dag_cycle_detection() {
+        let mut b = BoardStore::open_memory();
+        let t1 = b.add_task("a");
+        let t2 = b.add_task("b");
+        let t3 = b.add_task("c");
+        b.set_depends(&t2.id, vec![t1.id.clone()]).unwrap();
+        b.set_depends(&t3.id, vec![t2.id.clone()]).unwrap();
+        // t1 depends on t3 → cycle t1→t3→t2→t1
+        assert!(
+            b.set_depends(&t1.id, vec![t3.id.clone()]).is_err(),
+            "cycle must be rejected"
+        );
+        // self-dependency
+        assert!(
+            b.set_depends(&t1.id, vec![t1.id.clone()]).is_err(),
+            "self-dep must be rejected"
+        );
+        // valid chain still works
+        let t4 = b.add_task("d");
+        assert!(b.set_depends(&t4.id, vec![t3.id.clone()]).is_ok());
     }
 
     #[test]

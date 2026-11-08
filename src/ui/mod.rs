@@ -261,9 +261,10 @@ pub struct App {
     pub board_sel: Option<String>,
     /// (harness, session) -> accumulated agent reply for a task turn
     pub task_replies: std::collections::HashMap<(String, String), String>,
-    /// render cache: (msg_id, part_id) -> (width, text_len, rendered lines)
+    /// render cache: (harness, session, msg_id, part_id) -> (width, text_len, lines)
+    #[allow(clippy::type_complexity)]
     pub render_cache: std::collections::HashMap<
-        (String, String),
+        (String, String, String, String),
         (usize, usize, Vec<ratatui::text::Line<'static>>),
     >,
 
@@ -486,6 +487,7 @@ impl App {
             .and_then(|l| l.iter().find(|s| s.native_id == native_id))
             .map(|s| s.title.clone())
             .unwrap_or_default();
+        self.render_cache.clear(); // stale keys from the previous chat
         self.cur = CurrentChat {
             harness: harness.into(),
             native_id: native_id.into(),

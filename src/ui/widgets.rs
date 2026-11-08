@@ -498,7 +498,12 @@ pub fn build_chat_lines(app: &mut App, width: usize) -> Vec<Line<'static>> {
                 }
                 out.push(Line::from(header));
                 for part in &msg.parts {
-                    let key = (msg.msg_id.clone(), part.part_id.clone());
+                    let key = (
+                        app.cur.harness.clone(),
+                        app.cur.native_id.clone(),
+                        msg.msg_id.clone(),
+                        part.part_id.clone(),
+                    );
                     let entry = app.render_cache.entry(key).or_insert((0, 0, Vec::new()));
                     if entry.0 != width || entry.1 != part.text.len() {
                         *entry = (
@@ -528,7 +533,12 @@ pub fn build_chat_lines(app: &mut App, width: usize) -> Vec<Line<'static>> {
                     match part.kind {
                         PartKind::Text => {
                             any = true;
-                            let key = (msg.msg_id.clone(), part.part_id.clone());
+                            let key = (
+                                app.cur.harness.clone(),
+                                app.cur.native_id.clone(),
+                                msg.msg_id.clone(),
+                                part.part_id.clone(),
+                            );
                             let entry = app.render_cache.entry(key).or_insert((0, 0, Vec::new()));
                             if entry.0 != width || entry.1 != part.text.len() {
                                 let md = super::markdown::render_markdown(&part.text, th);
