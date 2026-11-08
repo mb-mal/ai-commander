@@ -42,6 +42,12 @@ pub enum TaskStatus {
     Cancelled,
 }
 
+impl std::fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
 impl TaskStatus {
     pub const ALL: [TaskStatus; 8] = [
         TaskStatus::Backlog,
@@ -203,6 +209,8 @@ impl Kanban {
     }
 }
 
+pub mod a2a;
+pub mod otel;
 pub mod roles;
 pub mod store;
 pub mod worktree;

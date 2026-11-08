@@ -485,9 +485,14 @@ async fn run_daemon(cfg: Config) -> Result<()> {
     if backends.is_empty() {
         anyhow::bail!("daemon: no usable harness backends");
     }
-    println!("daemon up: {} harness(es); Ctrl+C to stop", backends.len());
-
     let mut board = BoardStore::open_redb(&ai_commander::kanban::Kanban::path())?;
+
+    // A2A gateway: share the daemon's single redb connection
+    if let Ok(g) = ai_commander::kanban::a2a::A2aGateway::spawn(board.gateway_handle()) {
+        println!("a2a gateway: {}", g.agent_card_url());
+    }
+
+    let mut otel_last_seq: u64 = 0;
     let mut busy: std::collections::HashSet<String> = std::collections::HashSet::new();
     loop {
         // 1) drain finished turns
@@ -580,6 +585,32 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                 b.shutdown();
             }
             return Ok(());
+        }
+        // OTel export: new events since the last pass -> spans.jsonl
+        {
+            let last = board.last_events(usize::MAX);
+            if let Some(newest) = last.last() {
+                if newest.seq > otel_last_seq {
+                    let fresh: Vec<_> = last
+                        .iter()
+                        .filter(|e| e.seq > otel_last_seq)
+                        .cloned()
+                        .collect();
+                    if let Ok(n) = ai_commander::kanban::otel::export_events(
+                        &ai_commander::kanban::Kanban::path()
+                            .parent()
+                            .unwrap_or(std::path::Path::new("."))
+                            .join("otel"),
+                        &fresh,
+                        "ai-commander",
+                    ) {
+                        otel_last_seq = newest.seq;
+                        if n > 0 {
+                            println!("[otel] exported {n} spans");
+                        }
+                    }
+                }
+            }
         }
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let _ = Instant::now();

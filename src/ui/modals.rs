@@ -16,6 +16,7 @@ use crate::i18n::{Lang, Str, t};
 pub fn draw_modal(app: &mut App, f: &mut Frame, size: Rect) {
     match app.modal.clone() {
         Some(Modal::Help) => draw_help(app, f, size),
+        Some(Modal::AgentsPanel) => draw_agents_panel(app, f, size),
         Some(Modal::About) => draw_about(app, f, size),
         Some(Modal::Settings { sel }) => draw_settings(app, f, size, sel),
         Some(Modal::ModelPicker { filter, sel, .. }) => {
@@ -84,6 +85,116 @@ fn row_rect(inner: Rect, i: usize) -> Rect {
         width: inner.width,
         height: 1,
     }
+}
+
+/// Agents & teams panel: roles with harness/model, teams, harness statuses.
+fn draw_agents_panel(app: &mut App, f: &mut Frame, size: Rect) {
+    let lang = app.lang();
+    let inner = dialog_frame(
+        app,
+        f,
+        centered(size, 64, 18),
+        if lang == Lang::Ru {
+            "Агенты и команды"
+        } else {
+            "Agents & teams"
+        },
+    );
+    let roles = crate::kanban::roles::RoleSet::load(&std::env::current_dir().unwrap_or_default());
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    lines.push(Line::from(Span::styled(
+        if lang == Lang::Ru {
+            " Роли (.ai-commander/agents)"
+        } else {
+            " Roles (.ai-commander/agents)"
+        },
+        TH.dlg_bold(TH.dlg_accent),
+    )));
+    if roles.roles.is_empty() {
+        lines.push(Line::from(Span::styled(
+            if lang == Lang::Ru {
+                "   нет — T создаст из шаблона"
+            } else {
+                "   none — T creates from a template"
+            },
+            TH.dlg_dim_style(),
+        )));
+    }
+    for (id, r) in roles.roles.iter().take(8) {
+        let busy = app
+            .board
+            .lock()
+            .unwrap()
+            .projection()
+            .tasks
+            .iter()
+            .filter(|t| {
+                t.role.as_deref() == Some(id) && t.status == crate::kanban::TaskStatus::InProgress
+            })
+            .count();
+        let status = if busy > 0 {
+            format!("▸ {busy} running")
+        } else {
+            "idle".to_string()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {id:<12}"), TH.dlg_bold(TH.dlg_fg)),
+            Span::styled(format!("{:<18}", r.name), TH.dlg_normal()),
+            Span::styled(format!("{:<14}", r.harness), TH.dlg_dim_style()),
+            Span::styled(status, TH.dlg_accent_style()),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        if lang == Lang::Ru {
+            " Харнессы"
+        } else {
+            " Harnesses"
+        },
+        TH.dlg_bold(TH.dlg_accent),
+    )));
+    for h in app
+        .cfg
+        .harnesses
+        .iter()
+        .filter(|h| crate::backend::supported_kind(&h.kind))
+    {
+        let state = if !h.enabled {
+            "off"
+        } else if app.backends.contains_key(&h.id) {
+            if app.busy.iter().any(|(hid, _)| hid == &h.id) {
+                "busy"
+            } else {
+                "ready"
+            }
+        } else {
+            "…"
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {:<8}", h.id), TH.dlg_bold(TH.dlg_fg)),
+            Span::styled(format!("{:<22}", h.name), TH.dlg_normal()),
+            Span::styled(state.to_string(), TH.dlg_accent_style()),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!(
+            " T: {} · Esc: {}",
+            if lang == Lang::Ru {
+                "новая роль из шаблона"
+            } else {
+                "new role from template"
+            },
+            if lang == Lang::Ru {
+                "закрыть"
+            } else {
+                "close"
+            }
+        ),
+        TH.dlg_dim_style(),
+    )));
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 fn draw_help(app: &mut App, f: &mut Frame, size: Rect) {

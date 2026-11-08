@@ -167,6 +167,20 @@ new owner.
 - any harness: `ai-commander --print-mcp-config` prints the snippet for
   its own MCP config
 
+### Activity feed, agents panel, A2A, OTel
+
+- **Ctrl+L** — collapsible activity feed (bottom): the board's event log tail,
+  task ids + actions + statuses
+- **Ctrl+U** — agents & teams panel: roles (name/harness/status), harness
+  backends (ready/busy/off); `T` opens the role wizard (coder/reviewer/
+  planner/tester → `.ai-commander/agents/<id>.md`)
+- **Approvals counter** in the header (`⚠ approvals:N`) while permission
+  requests are pending
+- **A2A gateway** (daemon): `GET /.well-known/agent.json` Agent Card;
+  `message/send` creates a board task — external A2A agents join the board
+- **OTel export** (daemon): board events → OTLP JSON spans in
+  `<config>/otel/ai-commander-spans.jsonl` (one resourceSpans line per event)
+
 ### Worktree isolation, triggers, budgets
 
 - **Git worktree per code task**: Start creates `ai-commander/t-XXXX` in
