@@ -16,8 +16,15 @@ The second harness is **Hermes Agent** (CLI): ai-commander drives the
 deltas, keeps a local session registry with accumulated history (the CLI has
 no session-list API), attaches images via `--image`, picks models from its
 provider cache, and `Esc` really kills the running turn. Enable it with
-`Ctrl+H` in the app or `enabled = true` in config. More harnesses
-(deepseek-harness…) slot in as new `trait Backend` implementations.
+`Ctrl+H` in the app or `enabled = true` in config.
+
+The third harness is **DeepSeek Harness (`dsh`)** — also subprocess-driven via
+`dsh --profile headless --json` (NDJSON `session`/`thinking`/`text`/`final`
+events; thinking and answer arrive as cumulative replacements). The headless
+profile's `--session-id` adopts a session but does not replay prior turns
+into the model context, so the backend folds the stored conversation into the
+task text itself. `DEEPSEEK_API_KEY` is taken from the environment or reused
+from the local opencode auth store; `Esc` kills the running turn.
 
 ## Features
 
