@@ -249,20 +249,27 @@ pub enum TurnOutcome {
     Finished,   // → Review
     Blocked,    // → Blocked
     NeedsHuman, // → NeedsHuman
+    Failed,     // → retry (empty/short reply, review v2 Б5)
 }
 
+/// Classify an agent reply. An empty or trivially-short reply is a failure
+/// (review v2 Б5: "done" was inferred from any text, including errors and
+/// timeouts). `DONE:` prefix → Finished; `BLOCKED:` → Blocked; `ASK:` →
+/// NeedsHuman; anything else ≥ 20 chars is treated as a finished summary.
 pub fn classify_reply(reply: &str) -> TurnOutcome {
-    let head: String = reply
-        .trim()
-        .chars()
-        .take(16)
-        .collect::<String>()
-        .to_uppercase();
+    let trimmed = reply.trim();
+    if trimmed.len() < 20 {
+        return TurnOutcome::Failed;
+    }
+    let head: String = trimmed.chars().take(16).collect::<String>().to_uppercase();
     if head.starts_with("BLOCKED") {
         TurnOutcome::Blocked
     } else if head.starts_with("ASK") {
         TurnOutcome::NeedsHuman
+    } else if head.starts_with("DONE") {
+        TurnOutcome::Finished
     } else {
+        // a substantive reply without an explicit marker: treat as a summary
         TurnOutcome::Finished
     }
 }
@@ -342,13 +349,25 @@ mod tests {
 
     #[test]
     fn classify() {
-        assert_eq!(classify_reply("DONE: ready"), TurnOutcome::Finished);
         assert_eq!(
-            classify_reply("  blocked: no api key"),
+            classify_reply("DONE: ready to ship the feature"),
+            TurnOutcome::Finished
+        );
+        assert_eq!(
+            classify_reply("  blocked: no api key available"),
             TurnOutcome::Blocked
         );
-        assert_eq!(classify_reply("ASK: which model?"), TurnOutcome::NeedsHuman);
-        assert_eq!(classify_reply("всё сделано"), TurnOutcome::Finished);
+        assert_eq!(
+            classify_reply("ASK: which model should I use?"),
+            TurnOutcome::NeedsHuman
+        );
+        assert_eq!(
+            classify_reply("всё сделано, тесты прошли успешно"),
+            TurnOutcome::Finished
+        );
+        // review v2 Б5: short/empty replies are failures
+        assert_eq!(classify_reply(""), TurnOutcome::Failed);
+        assert_eq!(classify_reply("ok"), TurnOutcome::Failed);
     }
 
     #[test]
