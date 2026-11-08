@@ -11,7 +11,7 @@ use ai_commander::backend::{BackendEvent, SendOpts, create_backend};
 use ai_commander::config::HarnessCfg;
 
 /// Both tests set FAKE_ACP_LOG (process-global env) — serialize them.
-static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn fake_cfg(exe: &str, workdir: &str) -> HarnessCfg {
     HarnessCfg {
@@ -30,7 +30,7 @@ fn fake_cfg(exe: &str, workdir: &str) -> HarnessCfg {
 
 #[tokio::test]
 async fn acp_backend_speaks_schema_canonical_protocol() {
-    let _env_guard = ENV_LOCK.lock().unwrap();
+    let _env_guard = ENV_LOCK.lock().await;
     let exe = env!("CARGO_BIN_EXE_fake-acp-agent");
     let workdir = std::env::temp_dir()
         .join(format!("aic-fakeacp-{}", std::process::id()))
@@ -217,7 +217,7 @@ async fn permission_scenario(tag: &str, user_reply: Option<String>, expected_log
 
 #[tokio::test]
 async fn acp_permission_replies_match_schema_kinds() {
-    let _env_guard = ENV_LOCK.lock().unwrap();
+    let _env_guard = ENV_LOCK.lock().await;
     permission_scenario("once", Some("once".into()), "PERM selected allow_once").await;
     permission_scenario(
         "always",
