@@ -671,9 +671,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                         ai_commander::kanban::runner::launch_failed(&mut b, &task.id);
                         println!("[escalate] {} → NeedsHuman (launch failure)", task.id);
                     } else {
-                        let _ = ai_commander::kanban::runner::on_stream_done(
-                            &mut b, &task.id, "",
-                        );
+                        let _ = ai_commander::kanban::runner::on_stream_done(&mut b, &task.id, "");
                     }
                     busy.remove(&task.id);
                 }
