@@ -165,6 +165,7 @@ async fn run_send(cfg: Config, text: &str, wait_secs: u64, harness_id: &str) -> 
             model: model.as_ref(),
             agent: agent.as_deref(),
             mcp_role: None,
+            cwd: None,
         },
     )
     .await?;
@@ -379,6 +380,7 @@ async fn run_task(cfg: Config, title: &str, wait_secs: u64, harness_id: &str) ->
             model: model.as_ref(),
             agent: agent.as_deref(),
             mcp_role: None,
+            cwd: None,
         },
     )
     .await?;

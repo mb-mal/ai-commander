@@ -578,7 +578,9 @@ impl Backend for AcpBackend {
         let user_text = text.to_string();
         let mcp_role = opts.mcp_role.map(str::to_owned);
         let blocks_clone = blocks.clone();
-        let cwd_clone = cwd.clone();
+        let cwd_base = cwd.clone();
+        // Н3: owned copy for the thread (opts.cwd borrows from the caller)
+        let cwd_override = opts.cwd.map(|p| p.to_path_buf());
 
         std::thread::spawn(move || {
             let rpc = |method: &str, params: Value| -> mpsc::Receiver<Value> {
@@ -596,20 +598,25 @@ impl Backend for AcpBackend {
             // board MCP server: same binaries dir, role token via env
             let mcp_servers = |role: Option<&str>| -> Value {
                 match role.and_then(board_mcp_entry) {
-                    Some(entry) => json!({"board": entry}),
-                    None => json!({}),
+                    Some(entry) => json!([entry]),
+                    None => json!([]),
                 }
             };
+            // Н3: prefer the task's worktree cwd over the harness default
+            let cwd_str = cwd_override
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or(cwd_base.clone());
             let real_id: String = if resume {
                 let _load = rpc(
                     "session/load",
-                    json!({"sessionId": sent_id, "cwd": cwd_clone, "mcpServers": mcp_servers(mcp_role.as_deref())}),
+                    json!({"sessionId": sent_id, "cwd": cwd_str, "mcpServers": mcp_servers(mcp_role.as_deref())}),
                 );
                 sent_id.clone()
             } else {
                 let rx = rpc(
                     "session/new",
-                    json!({"cwd": cwd_clone, "mcpServers": mcp_servers(mcp_role.as_deref())}),
+                    json!({"cwd": cwd_str, "mcpServers": mcp_servers(mcp_role.as_deref())}),
                 );
                 match rx.recv_timeout(Duration::from_secs(20)) {
                     Ok(v) => {

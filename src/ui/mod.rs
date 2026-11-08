@@ -614,6 +614,7 @@ impl App {
                         model: model.as_ref(),
                         agent: agent.as_deref(),
                         mcp_role: None,
+                        cwd: None,
                     },
                 )
                 .await

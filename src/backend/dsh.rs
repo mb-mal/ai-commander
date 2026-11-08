@@ -342,7 +342,7 @@ impl Backend for DshBackend {
         native_id: &str,
         text: &str,
         _attachments: &[AttachmentMeta],
-        _opts: SendOpts<'_>,
+        opts: SendOpts<'_>,
     ) -> Result<()> {
         // headless dsh has no attachment flag yet
         let history: Vec<StoredMsg> = self
@@ -363,8 +363,12 @@ impl Backend for DshBackend {
         }
         extra.push("-".into()); // task over stdin
 
-        let mut child = self
-            .build_command(&extra)
+        let mut cmd = self.build_command(&extra);
+        // Н3: prefer the task's worktree cwd over the harness default
+        if let Some(cwd) = opts.cwd {
+            cmd.current_dir(cwd);
+        }
+        let mut child = cmd
             .spawn()
             .map_err(|e| anyhow!("spawn dsh headless: {e}"))?;
         let mut stdin = child.stdin.take();

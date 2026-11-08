@@ -15,6 +15,8 @@ pub struct LaunchCtx {
     pub model: Option<crate::config::ModelRef>,
     pub agent: Option<String>,
     pub mcp_role: Option<String>,
+    /// Н3: the worktree path the agent should work in (set by launch_task)
+    pub cwd: Option<std::path::PathBuf>,
 }
 
 /// Build the launch context for a task: role instructions prefix the prompt,
@@ -54,7 +56,48 @@ pub fn launch_ctx(task: &Task, cfg: &Config, roles: &RoleSet) -> LaunchCtx {
         model,
         agent,
         mcp_role: task.role.clone(),
+        cwd: None, // set by launch_task after the worktree is created
     }
+}
+
+/// Н3: launch a task in its worktree — Start (creates worktree) →
+/// create_session(cwd=worktree) → send. Returns the linked session id.
+pub async fn launch_task(
+    backend: &Arc<dyn Backend>,
+    board: &mut BoardStore,
+    task: &Task,
+    cfg: &Config,
+    roles: &RoleSet,
+) -> anyhow::Result<String> {
+    // 1. Start first — this creates the worktree (Н3: agent must work there)
+    let repo = std::env::current_dir().unwrap_or_default();
+    let _started = board
+        .transition_in(&repo, &task.id, TaskAction::Start)
+        .map_err(|e| anyhow::anyhow!("Start failed: {e}"))?;
+
+    // 2. Find the worktree path (created by transition_in's Start hook)
+    let worktree = crate::kanban::worktree::worktree_path(&repo, task);
+    let cwd = if worktree.exists() {
+        worktree
+    } else {
+        // not a git repo or worktree failed — use the repo dir
+        repo.clone()
+    };
+
+    // 3. Build the launch context with the worktree cwd
+    let mut ctx = launch_ctx(task, cfg, roles);
+    ctx.cwd = Some(cwd);
+
+    // 4. Create the session (backends should use ctx.cwd as the working dir)
+    let session = backend
+        .create_session(&task.title)
+        .await
+        .map_err(|e| anyhow::anyhow!("create_session: {e:#}"))?;
+    board.link_session(&task.id, &session.native_id);
+
+    // 5. Send with the worktree cwd
+    send_task(backend, task, &ctx, &session.native_id).await?;
+    Ok(session.native_id)
 }
 
 /// Handle a PartDelta for a task: renew the lease (heartbeat Б6) and
@@ -132,6 +175,7 @@ pub async fn send_task(
                 model: ctx.model.as_ref(),
                 agent: ctx.agent.as_deref(),
                 mcp_role: ctx.mcp_role.as_deref(),
+                cwd: ctx.cwd.as_deref(),
             },
         )
         .await
