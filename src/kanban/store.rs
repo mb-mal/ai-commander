@@ -403,6 +403,7 @@ impl BoardStore {
             session_id: None,
             attempts: 0,
             started_ms: None,
+            lease_until_ms: None,
             max_attempts: crate::kanban::default_max_attempts(),
             schedule: String::new(),
             budget_usd: 0.0,
@@ -475,7 +476,9 @@ impl BoardStore {
             t.updated_ms = crate::kanban::now_ms();
             if action == TaskAction::Start {
                 t.attempts += 1;
-                t.started_ms = Some(crate::kanban::now_ms());
+                let now = crate::kanban::now_ms();
+                t.started_ms = Some(now);
+                t.lease_until_ms = Some(now + crate::kanban::LEASE_MS);
             }
             if matches!(
                 next,
@@ -778,6 +781,21 @@ Open questions: {open_questions}"
             .collect()
     }
 
+    /// Heartbeat (review v2 Б6): renew the lease on an agent progress event.
+    /// The watchdog won't touch a task whose lease is still valid.
+    pub fn renew_lease(&mut self, task_id: &str) {
+        self.renew_lease_at(task_id, crate::kanban::now_ms());
+    }
+
+    /// Clock-aware variant for tests.
+    pub fn renew_lease_at(&mut self, task_id: &str, now: i64) {
+        if let Some(t) = self.proj.tasks.iter_mut().find(|t| t.id == task_id) {
+            if t.status == TaskStatus::InProgress {
+                t.lease_until_ms = Some(now + crate::kanban::LEASE_MS);
+            }
+        }
+    }
+
     /// Detect stuck tasks WITHOUT mutating: returns them for the caller to
     /// abort their sessions first. Then call `watchdog_apply` to transition.
     pub fn watchdog_scan(&self, now: i64) -> Vec<StuckTask> {
@@ -785,15 +803,13 @@ Open questions: {open_questions}"
             .tasks
             .iter()
             .filter(|t| {
-                let stuck = t
-                    .started_ms
-                    .map(|s| now - s > crate::kanban::STUCK_AFTER_MS)
-                    .unwrap_or(false);
+                // Б6: use the lease (heartbeat-renewed) instead of raw start time
+                let lease_expired = t.lease_until_ms.map(|l| now > l).unwrap_or(true); // no lease = treat as expired
                 let over_budget = t
                     .started_ms
                     .map(|s| t.run_budget_secs > 0 && now - s > t.run_budget_secs * 1000)
                     .unwrap_or(false);
-                t.status == TaskStatus::InProgress && (stuck || over_budget)
+                t.status == TaskStatus::InProgress && (lease_expired || over_budget)
             })
             .filter_map(|t| {
                 let (harness, session) = match (&t.harness, &t.session_id) {
@@ -1220,6 +1236,44 @@ mod tests {
         assert_eq!(acted.len(), 1);
         assert_eq!(acted[0].1, "escalated", "run budget escalates, not retries");
         assert_eq!(b.projection().tasks[0].status, TaskStatus::NeedsHuman);
+    }
+
+    #[test]
+    fn lease_heartbeat_prevents_interruption() {
+        let mut b = BoardStore::open_memory();
+        let t = b.add_task("long task");
+        b.transition(&t.id, TaskAction::Promote).unwrap();
+        // link a session so watchdog_scan can see it (it filters sessionless tasks)
+        b.assign(&t.id, Some("oc".into())).unwrap();
+        b.link_session(&t.id, "ses_test");
+        b.transition(&t.id, TaskAction::Start).unwrap();
+
+        // simulate 30 minutes of activity with heartbeats every 30 s
+        let start = crate::kanban::now_ms();
+        for i in 0..60 {
+            let now = start + i * 30_000; // 30s intervals
+            b.renew_lease_at(&t.id, now); // heartbeat at the simulated time
+            // watchdog at this moment: lease still valid → NOT stuck
+            let stuck = b.watchdog_scan(now);
+            assert!(
+                stuck.is_empty(),
+                "active task must not be interrupted at {i} seconds"
+            );
+        }
+
+        // now the agent goes silent: after lease expires, watchdog fires
+        let last_lease = b.projection().tasks[0].lease_until_ms.unwrap();
+        let stuck = b.watchdog_scan(last_lease + 1);
+        assert_eq!(stuck.len(), 1, "expired lease must trigger watchdog");
+        assert_eq!(stuck[0].task_id, t.id);
+
+        // run_budget escalation still works independently of lease
+        b.proj.tasks[0].run_budget_secs = 60;
+        b.proj.tasks[0].started_ms = Some(start - 120_000); // 2 min ago
+        b.renew_lease_at(&t.id, start + 1_800_000); // lease valid at 30min mark
+        let stuck = b.watchdog_scan(start + 1_800_000);
+        assert_eq!(stuck.len(), 1, "run_budget must override lease");
+        assert_eq!(stuck[0].disposition, "escalated");
     }
 
     #[test]

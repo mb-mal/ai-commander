@@ -12,6 +12,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+/// Lease duration: renewed on every agent progress event.
+pub const LEASE_MS: i64 = 60_000; // 1 minute without output → stuck
+
 pub fn default_max_attempts() -> u32 {
     3
 }
@@ -152,6 +155,10 @@ pub struct Task {
     /// wall-clock of the current Start (for the stuck-task watchdog)
     #[serde(default)]
     pub started_ms: Option<i64>,
+    /// lease expiry: renewed by agent progress events (heartbeat); the
+    /// watchdog only intervenes when this has passed (review v2 Б6)
+    #[serde(default)]
+    pub lease_until_ms: Option<i64>,
     /// max attempts before the task escalates to NeedsHuman
     #[serde(default = "default_max_attempts")]
     pub max_attempts: u32,
@@ -411,6 +418,7 @@ mod tests {
             session_id: None,
             attempts: 0,
             started_ms: None,
+            lease_until_ms: None,
             max_attempts: default_max_attempts(),
             schedule: String::new(),
             budget_usd: 0.0,
