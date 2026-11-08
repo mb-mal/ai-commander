@@ -274,6 +274,124 @@ pub fn classify_reply(reply: &str) -> TurnOutcome {
     }
 }
 
+/// Execute a board.* tool call (shared by the board-mcp binary and the A2A
+/// gateway's /board proxy endpoint). Returns human-readable text or an error.
+pub fn board_tool_call(
+    name: &str,
+    args: &serde_json::Value,
+    role: &str,
+    board: &mut store::BoardStore,
+) -> Result<String, String> {
+    use serde_json::Value;
+
+    if role.is_empty() {
+        return Err("no role token: set AI_COMMANDER_ROLE for this MCP server".into());
+    }
+    let str_arg = |k: &str| {
+        args.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    match name {
+        "board.create_task" => {
+            let title = str_arg("title");
+            if title.trim().is_empty() {
+                return Err("title is required".into());
+            }
+            let t = match args.get("parent_id").and_then(Value::as_str) {
+                Some(parent) if !parent.is_empty() => board.add_subtask(parent, &title)?,
+                _ => board.add_task(&title),
+            };
+            if let Some(deps) = args.get("depends_on").and_then(Value::as_array) {
+                let ids: Vec<String> = deps
+                    .iter()
+                    .filter_map(|d| d.as_str().map(str::to_owned))
+                    .collect();
+                board.set_depends(&t.id, ids)?;
+            }
+            Ok(format!("created {} '{}' in Backlog", t.id, t.title))
+        }
+        "board.update_task" => {
+            let id = str_arg("task_id");
+            let action = match str_arg("action").as_str() {
+                "promote" => TaskAction::Promote,
+                "start" => TaskAction::Start,
+                "finish" => TaskAction::Finish,
+                "approve" => TaskAction::Approve,
+                "rework" => TaskAction::Rework,
+                "cancel" => TaskAction::Cancel,
+                other => return Err(format!("unknown action {other}")),
+            };
+            let t = board
+                .projection()
+                .tasks
+                .iter()
+                .find(|t| t.id == id)
+                .cloned()
+                .ok_or_else(|| format!("task {id} not found"))?;
+            if matches!(action, TaskAction::Start | TaskAction::Finish)
+                && t.role.as_deref().is_some_and(|r| r != role)
+            {
+                return Err(format!("task is assigned to {:?}, not to you", t.role));
+            }
+            if matches!(action, TaskAction::Approve | TaskAction::Rework)
+                && t.role.as_deref() == Some(role)
+            {
+                return Err(
+                    "you cannot approve your own work — a different role must review".into(),
+                );
+            }
+            let t = board.transition(&id, action)?;
+            Ok(format!("{} → {:?}", t.id, t.status))
+        }
+        "board.comment" => {
+            let id = str_arg("task_id");
+            let text = str_arg("text");
+            if text.trim().is_empty() {
+                return Err("text is required".into());
+            }
+            board.comment(&id, role, "comment", &text)?;
+            Ok("comment posted".into())
+        }
+        "board.handoff" => {
+            let t = board.handoff(
+                &str_arg("task_id"),
+                role,
+                &str_arg("to_role"),
+                &str_arg("summary"),
+                &str_arg("open_questions"),
+            )?;
+            Ok(format!("handed off to {:?}; status {:?}", t.role, t.status))
+        }
+        "board.read_inbox" => {
+            let id = str_arg("task_id");
+            let since = args.get("since_ms").and_then(Value::as_i64).unwrap_or(0);
+            let inbox = board
+                .read_inbox(&id, since)
+                .ok_or_else(|| format!("task {id} not found"))?;
+            if inbox.is_empty() {
+                return Ok("inbox is empty".into());
+            }
+            Ok(inbox
+                .iter()
+                .map(|c| format!("[{}] {}: {}", c.kind, c.author, c.text.replace('\n', " ")))
+                .collect::<Vec<_>>()
+                .join(
+                    "
+",
+                ))
+        }
+        "board.ask_human" => {
+            let id = str_arg("task_id");
+            board.comment(&id, role, "system", &str_arg("text"))?;
+            board.transition(&id, TaskAction::Ask)?;
+            Ok("escalated to NeedsHuman".into())
+        }
+        other => Err(format!("unknown tool {other}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

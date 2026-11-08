@@ -14,6 +14,13 @@ pub struct A2aGateway {
     pub port: u16,
 }
 
+/// Read the port of a running gateway (written by A2aGateway::spawn).
+pub fn gateway_port() -> Option<u16> {
+    let port_file = crate::kanban::Kanban::path().parent()?.join("board-port");
+    let raw = std::fs::read_to_string(port_file).ok()?;
+    raw.trim().parse().ok()
+}
+
 impl A2aGateway {
     /// Bind 127.0.0.1:0 and serve in background threads until dropped.
     pub fn spawn(board: std::sync::Arc<std::sync::Mutex<BoardStore>>) -> Result<A2aGateway> {
@@ -25,6 +32,12 @@ impl A2aGateway {
                 std::thread::spawn(move || handle(stream, board));
             }
         });
+        // write the port so board-mcp can find the proxy when redb is locked
+        let port_file = crate::kanban::Kanban::path()
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("board-port");
+        let _ = std::fs::write(&port_file, port.to_string());
         Ok(A2aGateway { port })
     }
 
@@ -86,6 +99,28 @@ fn route(
 ) -> (&'static str, Value) {
     match (method, path) {
         ("GET", "/.well-known/agent.json") => ("200 OK", agent_card()),
+        // board-mcp proxy: POST /board {tool: "board.create_task", args: {...}}
+        ("POST", "/board") => {
+            let Ok(v) = serde_json::from_slice::<Value>(body) else {
+                return ("400 Bad Request", json!({"error": "invalid JSON"}));
+            };
+            let tool = v
+                .get("tool")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let args = v.get("args").cloned().unwrap_or(json!({}));
+            let role = v
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let mut b = board.lock().unwrap();
+            match crate::kanban::board_tool_call(&tool, &args, &role, &mut b) {
+                Ok(text) => ("200 OK", json!({"result": text})),
+                Err(e) => ("200 OK", json!({"error": e})),
+            }
+        }
         ("POST", "/") => {
             let Ok(v) = serde_json::from_slice::<Value>(body) else {
                 return ("400 Bad Request", json!({"error": "invalid JSON"}));
