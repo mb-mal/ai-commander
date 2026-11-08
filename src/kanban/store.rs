@@ -350,16 +350,6 @@ impl BoardStore {
         &self.proj
     }
 
-    /// The A2A gateway talks to the store directly (same redb connection),
-    /// wrapped so incoming tasks land as regular board events.
-    pub fn gateway_handle(&self) -> std::sync::Arc<std::sync::Mutex<BoardStore>> {
-        // a second BoardStore over the SAME Arc<EventStore> keeps one connection
-        std::sync::Arc::new(std::sync::Mutex::new(BoardStore {
-            store: std::sync::Arc::clone(&self.store),
-            proj: Kanban::default(),
-        }))
-    }
-
     pub fn last_events(&self, n: usize) -> Vec<StoredEvent> {
         let last = self.store.last_seq().unwrap_or(0);
         let since = last.saturating_sub(n as u64);

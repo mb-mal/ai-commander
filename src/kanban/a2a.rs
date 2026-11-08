@@ -14,13 +14,6 @@ pub struct A2aGateway {
     pub port: u16,
 }
 
-/// Read the port of a running gateway (written by A2aGateway::spawn).
-pub fn gateway_port() -> Option<u16> {
-    let port_file = crate::kanban::Kanban::path().parent()?.join("board-port");
-    let raw = std::fs::read_to_string(port_file).ok()?;
-    raw.trim().parse().ok()
-}
-
 impl A2aGateway {
     /// Bind 127.0.0.1:0 and serve in background threads until dropped.
     pub fn spawn(board: std::sync::Arc<std::sync::Mutex<BoardStore>>) -> Result<A2aGateway> {

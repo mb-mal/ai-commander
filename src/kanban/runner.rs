@@ -1,0 +1,183 @@
+//! TaskRunner: the single execution path for board tasks, used by both the
+//! TUI and the daemon (review v2 Б8+Б9). Builds the launch context from
+//! the task + role (instructions, model, MCP), tracks progress with
+//! heartbeats, and finishes the task on StreamDone via classify_reply.
+
+use std::sync::Arc;
+
+use crate::backend::{Backend, SendOpts};
+use crate::config::Config;
+use crate::kanban::store::BoardStore;
+use crate::kanban::{Task, TaskAction, TurnOutcome, classify_reply, roles::RoleSet};
+
+pub struct LaunchCtx {
+    pub prompt: String,
+    pub model: Option<crate::config::ModelRef>,
+    pub agent: Option<String>,
+    pub mcp_role: Option<String>,
+}
+
+/// Build the launch context for a task: role instructions prefix the prompt,
+/// role model overrides the harness default, mcp_role enables the board MCP.
+pub fn launch_ctx(task: &Task, cfg: &Config, roles: &RoleSet) -> LaunchCtx {
+    let mut prompt = crate::kanban::task_prompt(task);
+    if let Some(role_id) = &task.role {
+        if let Some(prefix) = roles.role_prompt(role_id) {
+            prompt = format!("{prefix}\n{prompt}");
+        }
+    }
+    let model = task
+        .role
+        .as_ref()
+        .and_then(|r| roles.roles.get(r))
+        .and_then(|r| r.model.clone())
+        .and_then(|m| {
+            m.split_once('/').map(|(p, m)| crate::config::ModelRef {
+                provider_id: p.to_string(),
+                model_id: m.to_string(),
+            })
+        })
+        .or_else(|| {
+            task.harness
+                .as_ref()
+                .and_then(|h| cfg.harness(h))
+                .and_then(|h| h.default_model.clone())
+        });
+    let agent = task
+        .harness
+        .as_ref()
+        .and_then(|h| cfg.harness(h))
+        .map(|h| h.agent.clone())
+        .filter(|a| !a.is_empty());
+    LaunchCtx {
+        prompt,
+        model,
+        agent,
+        mcp_role: task.role.clone(),
+    }
+}
+
+/// Handle a PartDelta for a task: renew the lease (heartbeat Б6) and
+/// accumulate the reply for classification.
+pub fn on_progress(board: &mut BoardStore, task_id: &str, delta: &str, reply: &mut String) {
+    reply.push_str(delta);
+    board.renew_lease(task_id);
+}
+
+/// Classify the accumulated reply and transition the task (Б8: StreamDone
+/// must finish the task, not just clear a busy flag).
+pub fn on_stream_done(board: &mut BoardStore, task_id: &str, reply: &str) -> Result<Task, String> {
+    let action = match classify_reply(reply) {
+        TurnOutcome::Finished => TaskAction::Finish,
+        TurnOutcome::Blocked => TaskAction::Block,
+        TurnOutcome::NeedsHuman => TaskAction::Ask,
+        TurnOutcome::Failed => TaskAction::Interrupt,
+    };
+    board.transition(task_id, action)
+}
+
+/// Send a task to its harness backend (shared by TUI and daemon).
+pub async fn send_task(
+    backend: &Arc<dyn Backend>,
+    _task: &Task,
+    ctx: &LaunchCtx,
+    session_id: &str,
+) -> anyhow::Result<()> {
+    backend
+        .send(
+            session_id,
+            &ctx.prompt,
+            &[],
+            SendOpts {
+                model: ctx.model.as_ref(),
+                agent: ctx.agent.as_deref(),
+                mcp_role: ctx.mcp_role.as_deref(),
+            },
+        )
+        .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kanban::TaskAction;
+    use crate::kanban::store::BoardStore;
+
+    #[test]
+    fn launch_ctx_includes_role_instructions_and_model() {
+        let mut roles = RoleSet::default();
+        roles.roles.insert(
+            "coder".into(),
+            crate::kanban::roles::Role {
+                name: "Coder".into(),
+                harness: "oc".into(),
+                model: Some("deepseek/deepseek-flash".into()),
+                autonomy: None,
+                instructions: "You write clean code. Run tests before DONE.".into(),
+            },
+        );
+        let cfg = crate::config::Config::default();
+
+        let mut b = BoardStore::open_memory();
+        let t = b.add_task("implement feature X");
+        b.assign_with_role(&t.id, Some("oc".into()), Some("coder".into()))
+            .unwrap();
+
+        let task = b.projection().tasks.last().unwrap().clone();
+        let ctx = launch_ctx(&task, &cfg, &roles);
+        assert!(
+            ctx.prompt.contains("You write clean code"),
+            "role instructions in prompt"
+        );
+        assert!(
+            ctx.prompt.contains("implement feature X"),
+            "task title in prompt"
+        );
+        assert_eq!(
+            ctx.model.as_ref().map(|m| m.display()),
+            Some("deepseek/deepseek-flash".to_string()),
+            "role model overrides harness default"
+        );
+        assert_eq!(
+            ctx.mcp_role.as_deref(),
+            Some("coder"),
+            "mcp_role for board MCP injection"
+        );
+    }
+
+    #[test]
+    fn on_stream_done_transitions_correctly() {
+        let mut b = BoardStore::open_memory();
+        let t = b.add_task("x");
+        b.transition(&t.id, TaskAction::Promote).unwrap();
+        b.transition(&t.id, TaskAction::Start).unwrap();
+
+        // done reply → Finish → Review
+        let task =
+            on_stream_done(&mut b, &t.id, "DONE: implemented and tested the feature").unwrap();
+        assert_eq!(task.status, crate::kanban::TaskStatus::Review);
+
+        // empty reply → Failed → Interrupt → Ready
+        let t2 = b.add_task("y");
+        b.transition(&t2.id, TaskAction::Promote).unwrap();
+        b.transition(&t2.id, TaskAction::Start).unwrap();
+        let task = on_stream_done(&mut b, &t2.id, "").unwrap();
+        assert_eq!(task.status, crate::kanban::TaskStatus::Ready);
+    }
+
+    #[test]
+    fn on_progress_renews_lease() {
+        let mut b = BoardStore::open_memory();
+        let t = b.add_task("active");
+        b.transition(&t.id, TaskAction::Promote).unwrap();
+        b.transition(&t.id, TaskAction::Start).unwrap();
+        let before = b.projection().tasks[0].lease_until_ms.unwrap();
+
+        let mut reply = String::new();
+        on_progress(&mut b, &t.id, "writing code…", &mut reply);
+
+        let after = b.projection().tasks[0].lease_until_ms.unwrap();
+        assert!(after >= before, "lease must not shrink");
+        assert!(reply.contains("writing code…"));
+    }
+}

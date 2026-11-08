@@ -493,14 +493,13 @@ async fn run_daemon(cfg: Config) -> Result<()> {
     }
     let mut board = BoardStore::open_redb(&ai_commander::kanban::Kanban::path())?;
 
-    // A2A gateway: disabled by default (review v2 security #1); opt-in AI_COMMANDER_A2A=1
+    // A2A gateway: disabled during the IPC owner refactor (the old
+    // gateway_handle created a second BoardStore that duplicated ids)
     if std::env::var("AI_COMMANDER_A2A")
         .map(|v| v == "1")
         .unwrap_or(false)
     {
-        if let Ok(g) = ai_commander::kanban::a2a::A2aGateway::spawn(board.gateway_handle()) {
-            println!("a2a gateway: {}", g.agent_card_url());
-        }
+        println!("a2a gateway: disabled during IPC owner refactor");
     }
 
     let mut otel_last_seq: u64 = 0;
