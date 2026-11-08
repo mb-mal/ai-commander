@@ -1,0 +1,826 @@
+//! ACP backend — Agent Client Protocol over stdio via `opencode acp`.
+//!
+//! The architecturally-correct harness connection: one long-lived agent
+//! process, typed ACP messages (schema crate), real cancellation
+//! (`session/cancel`) and real permission requests
+//! (`session/request_permission`). JSON-RPC framing is line-based over the
+//! child's stdio; request responses are routed through per-id channels.
+//!
+//! Flow: initialize → session/new (first turn; the real sessionId is
+//! announced via `SessionCreated`) → session/prompt → session/update
+//! notifications stream agent_message_chunk / agent_thought_chunk / tool_call
+//! → the prompt response (stopReason) finishes the turn.
+
+use std::collections::HashMap;
+use std::io::{BufRead, Write};
+use std::path::PathBuf;
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use anyhow::{Result, anyhow, bail};
+use async_trait::async_trait;
+use serde::Serialize;
+use serde_json::{Value, json};
+use tokio::sync::mpsc::UnboundedSender;
+
+use super::{
+    AgentInfo, AttachmentMeta, Backend, BackendEvent, ChatMsg, MAX_ATTACHMENT_BYTES, ModelInfo,
+    PartKind, RenderPart, Role, SendOpts, SessionInfo, kill_tree,
+};
+use crate::config::HarnessCfg;
+
+use agent_client_protocol::schema::v1::{
+    ContentBlock, SessionNotification, SessionUpdate, ToolCallStatus,
+};
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+struct StoredMsg {
+    role: String,
+    text: String,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+struct StoredSession {
+    native_id: String,
+    title: String,
+    updated_ms: i64,
+    msgs: Vec<StoredMsg>,
+}
+
+#[derive(Debug, Default, Serialize, serde::Deserialize)]
+struct AcpStore {
+    sessions: Vec<StoredSession>,
+}
+
+/// A server→client permission request awaiting the user's answer.
+#[derive(Clone)]
+struct PendingPermission {
+    jsonrpc_id: u64,
+    options: Vec<(String, String)>, // (optionId, label)
+}
+
+pub struct AcpBackend {
+    cfg: HarnessCfg,
+    events: UnboundedSender<BackendEvent>,
+    store_path: PathBuf,
+    store: Arc<Mutex<AcpStore>>,
+    connected: Arc<AtomicBool>,
+    writer: Arc<Mutex<Option<ChildStdin>>>,
+    next_id: Arc<AtomicU64>,
+    /// jsonrpc id -> channel for the waiting caller
+    pending: Arc<Mutex<HashMap<u64, mpsc::SyncSender<Value>>>>,
+    /// real sessionId -> id the UI tracks (pending-* on the first turn)
+    route: Arc<Mutex<HashMap<String, String>>>,
+    /// sent id -> accumulated assistant text of the current turn
+    acc: Arc<Mutex<HashMap<String, String>>>,
+    permissions: Arc<Mutex<Vec<PendingPermission>>>,
+    /// model list captured from the session/new response (configOptions)
+    models: Arc<Mutex<Vec<ModelInfo>>>,
+    child: Mutex<Option<Child>>,
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn persist_atomic(path: &std::path::Path, store: &AcpStore) {
+    let Ok(raw) = serde_json::to_vec_pretty(store) else {
+        return;
+    };
+    let tmp = path.with_extension("tmp");
+    if std::fs::write(&tmp, &raw).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
+}
+
+impl AcpBackend {
+    pub fn new(cfg: HarnessCfg, events: UnboundedSender<BackendEvent>) -> Self {
+        let store_path =
+            crate::config::config_dir().join(format!("harness-{}-sessions.json", cfg.id));
+        let store = std::fs::read(&store_path)
+            .ok()
+            .and_then(|raw| serde_json::from_slice(&raw).ok())
+            .unwrap_or_default();
+        AcpBackend {
+            cfg,
+            events,
+            store_path,
+            store: Arc::new(Mutex::new(store)),
+            connected: Arc::new(AtomicBool::new(false)),
+            writer: Arc::new(Mutex::new(None)),
+            next_id: Arc::new(AtomicU64::new(1)),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            route: Arc::new(Mutex::new(HashMap::new())),
+            acc: Arc::new(Mutex::new(HashMap::new())),
+            permissions: Arc::new(Mutex::new(Vec::new())),
+            models: Arc::new(Mutex::new(Vec::new())),
+            child: Mutex::new(None),
+        }
+    }
+
+    fn exe_path(&self) -> Result<PathBuf> {
+        if !self.cfg.server_url.is_empty() {
+            let p = PathBuf::from(&self.cfg.server_url);
+            if p.exists() {
+                return Ok(p);
+            }
+        }
+        if let Ok(p) = which::which("opencode") {
+            return Ok(p);
+        }
+        #[cfg(windows)]
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            let candidate = PathBuf::from(&appdata)
+                .join("npm")
+                .join("node_modules")
+                .join("@opencode")
+                .join("cli")
+                .join("bin")
+                .join("opencode.exe");
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+        }
+        bail!("opencode executable not found for the ACP harness")
+    }
+
+    fn cwd(&self) -> PathBuf {
+        if self.cfg.workdir.is_empty() {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        } else {
+            PathBuf::from(&self.cfg.workdir)
+        }
+    }
+
+    /// Fire a JSON-RPC request; the response is delivered to the returned
+    /// receiver by the reader thread.
+    fn call(&self, method: &str, params: Value) -> mpsc::Receiver<Value> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.pending.lock().unwrap().insert(id, tx);
+        let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        if let Some(w) = self.writer.lock().unwrap().as_mut() {
+            let _ = writeln!(w, "{msg}");
+            let _ = w.flush();
+        }
+        rx
+    }
+
+    fn notify(&self, method: &str, params: Value) {
+        let msg = json!({"jsonrpc": "2.0", "method": method, "params": params});
+        if let Some(w) = self.writer.lock().unwrap().as_mut() {
+            let _ = writeln!(w, "{msg}");
+            let _ = w.flush();
+        }
+    }
+
+    fn write_raw(&self, v: &Value) {
+        if let Some(w) = self.writer.lock().unwrap().as_mut() {
+            let _ = writeln!(w, "{v}");
+            let _ = w.flush();
+        }
+    }
+
+    /// Map a session/update notification to UI events (acc accumulates text).
+    fn handle_update(
+        events: &UnboundedSender<BackendEvent>,
+        acc: &Arc<Mutex<HashMap<String, String>>>,
+        harness: &str,
+        sent_id: &str,
+        note: SessionNotification,
+    ) {
+        let msg_id = format!("acp_{sent_id}");
+        match note.update {
+            SessionUpdate::AgentMessageChunk(c) => {
+                if let ContentBlock::Text(t) = c.content {
+                    if !t.text.is_empty() {
+                        acc.lock()
+                            .unwrap()
+                            .entry(sent_id.to_string())
+                            .or_default()
+                            .push_str(&t.text);
+                        let _ = events.send(BackendEvent::PartDelta {
+                            harness: harness.into(),
+                            native_id: sent_id.into(),
+                            msg_id,
+                            part_id: "t0".into(),
+                            kind: PartKind::Text,
+                            delta: t.text,
+                        });
+                    }
+                }
+            }
+            SessionUpdate::AgentThoughtChunk(c) => {
+                if let ContentBlock::Text(t) = c.content {
+                    if !t.text.is_empty() {
+                        let _ = events.send(BackendEvent::PartDelta {
+                            harness: harness.into(),
+                            native_id: sent_id.into(),
+                            msg_id,
+                            part_id: "r0".into(),
+                            kind: PartKind::Reasoning,
+                            delta: t.text,
+                        });
+                    }
+                }
+            }
+            SessionUpdate::ToolCall(tc) => {
+                let _ = events.send(BackendEvent::PartUpdated {
+                    harness: harness.into(),
+                    native_id: sent_id.into(),
+                    msg_id,
+                    part: RenderPart {
+                        part_id: format!("c_{}", tc.tool_call_id),
+                        kind: PartKind::Tool,
+                        text: format!("⚙ {}…", tc.title),
+                    },
+                });
+            }
+            SessionUpdate::ToolCallUpdate(u) => {
+                let status = u.fields.status.unwrap_or_default();
+                let mark = match status {
+                    ToolCallStatus::Pending => "…",
+                    ToolCallStatus::InProgress => "⚙",
+                    ToolCallStatus::Completed => "✓",
+                    ToolCallStatus::Failed => "⚠",
+                    _ => "⚙",
+                };
+                let title = u.fields.title.clone().unwrap_or_default();
+                let _ = events.send(BackendEvent::PartUpdated {
+                    harness: harness.into(),
+                    native_id: sent_id.into(),
+                    msg_id,
+                    part: RenderPart {
+                        part_id: format!("c_{}", u.tool_call_id),
+                        kind: PartKind::Tool,
+                        text: if title.is_empty() {
+                            format!("{mark} tool")
+                        } else {
+                            format!("{mark} {title}")
+                        },
+                    },
+                });
+            }
+            SessionUpdate::Plan(p) => {
+                let entries: Vec<String> = p.entries.iter().map(|e| e.content.clone()).collect();
+                let _ = events.send(BackendEvent::PartUpdated {
+                    harness: harness.into(),
+                    native_id: sent_id.into(),
+                    msg_id,
+                    part: RenderPart {
+                        part_id: "plan".into(),
+                        kind: PartKind::Tool,
+                        text: format!("▤ plan: {}", entries.join(" · ")),
+                    },
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
+#[async_trait]
+impl Backend for AcpBackend {
+    fn harness_id(&self) -> &str {
+        &self.cfg.id
+    }
+
+    async fn connect(&self) -> Result<String> {
+        if self.connected.load(Ordering::Relaxed) {
+            return Ok("acp".into());
+        }
+        let exe = self.exe_path()?;
+        let mut cmd = Command::new(&exe);
+        cmd.arg("acp").current_dir(self.cwd());
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| anyhow!("spawn opencode acp: {e}"))?;
+        *self.writer.lock().unwrap() = child.stdin.take();
+        let stdout = child.stdout.take();
+        *self.child.lock().unwrap() = Some(child);
+
+        // initialize; the response flips `connected` from the reader thread
+        let _init = self.call(
+            "initialize",
+            json!({
+                "protocolVersion": 1,
+                "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}}
+            }),
+        );
+
+        let events = self.events.clone();
+        let harness = self.cfg.id.clone();
+        let pending = Arc::clone(&self.pending);
+        let route = Arc::clone(&self.route);
+        let acc = Arc::clone(&self.acc);
+        let permissions = Arc::clone(&self.permissions);
+        let connected = Arc::clone(&self.connected);
+        let writer = Arc::clone(&self.writer);
+        std::thread::spawn(move || {
+            let Some(stdout) = stdout else { return };
+            let reader = std::io::BufReader::new(stdout);
+            for line in reader.lines() {
+                let Ok(line) = line else { break };
+                let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                let method = v
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if !method.is_empty() {
+                    let params = v.get("params").cloned().unwrap_or(Value::Null);
+                    match method.as_str() {
+                        "session/update" => {
+                            if let Ok(note) = serde_json::from_value::<SessionNotification>(params)
+                            {
+                                let real = note.session_id.to_string();
+                                let sent = route
+                                    .lock()
+                                    .unwrap()
+                                    .get(&real)
+                                    .cloned()
+                                    .unwrap_or(real.clone());
+                                Self::handle_update(&events, &acc, &harness, &sent, note);
+                            }
+                        }
+                        "session/request_permission" => {
+                            let sid = params
+                                .get("sessionId")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string();
+                            let options: Vec<(String, String)> = params
+                                .get("options")
+                                .and_then(Value::as_array)
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|o| {
+                                            let id = o
+                                                .get("optionId")
+                                                .and_then(Value::as_str)?
+                                                .to_string();
+                                            let label = o
+                                                .get("label")
+                                                .and_then(Value::as_str)
+                                                .unwrap_or(&id)
+                                                .to_string();
+                                            Some((id, label))
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            let Some(jsonrpc_id) = v.get("id").and_then(Value::as_u64) else {
+                                continue;
+                            };
+                            let title = options
+                                .iter()
+                                .map(|(_, l)| l.clone())
+                                .collect::<Vec<_>>()
+                                .join(" / ");
+                            let _ = events.send(BackendEvent::PermissionRequest {
+                                harness: harness.clone(),
+                                session_id: sid,
+                                request_id: format!("jsonrpc:{jsonrpc_id}"),
+                                title,
+                            });
+                            permissions.lock().unwrap().push(PendingPermission {
+                                jsonrpc_id,
+                                options,
+                            });
+                        }
+                        _ => {
+                            // fs/* and other client-side requests we do not serve
+                            if let Some(id) = v.get("id").and_then(Value::as_u64) {
+                                let reply = json!({"jsonrpc": "2.0", "id": id,
+                                    "error": {"code": -32601, "message": "method not supported by ai-commander"}});
+                                if let Some(w) = writer.lock().unwrap().as_mut() {
+                                    let _ = writeln!(w, "{reply}");
+                                    let _ = w.flush();
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+                // a response to one of our requests
+                if let Some(id) = v.get("id").and_then(Value::as_u64) {
+                    let is_init = v
+                        .get("result")
+                        .map(|r| r.get("agentCapabilities").is_some())
+                        .unwrap_or(false);
+                    if is_init {
+                        connected.store(true, Ordering::Relaxed);
+                    }
+                    if let Some(tx) = pending.lock().unwrap().remove(&id) {
+                        let _ = tx.send(v.get("result").cloned().unwrap_or(Value::Null));
+                    }
+                }
+            }
+            connected.store(false, Ordering::Relaxed);
+            let _ = events.send(BackendEvent::Error {
+                harness,
+                error: "acp agent process exited".into(),
+            });
+        });
+
+        // bounded wait for the initialize response (reader flips `connected`)
+        for _ in 0..150 {
+            if self.connected.load(Ordering::Relaxed) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if !self.connected.load(Ordering::Relaxed) {
+            bail!("opencode acp did not answer initialize in 15s");
+        }
+        Ok("acp".into())
+    }
+
+    async fn refresh_sessions(&self) -> Result<Vec<SessionInfo>> {
+        Ok(self
+            .store
+            .lock()
+            .unwrap()
+            .sessions
+            .iter()
+            .map(|s| SessionInfo {
+                native_id: s.native_id.clone(),
+                title: s.title.clone(),
+                updated_ms: s.updated_ms,
+            })
+            .collect())
+    }
+
+    async fn create_session(&self, title: &str) -> Result<SessionInfo> {
+        let s = StoredSession {
+            native_id: format!("pending-{}", now_ms()),
+            title: title.to_string(),
+            updated_ms: now_ms(),
+            msgs: Vec::new(),
+        };
+        let info = SessionInfo {
+            native_id: s.native_id.clone(),
+            title: s.title.clone(),
+            updated_ms: s.updated_ms,
+        };
+        let mut g = self.store.lock().unwrap();
+        g.sessions.push(s);
+        persist_atomic(&self.store_path, &g);
+        Ok(info)
+    }
+
+    async fn rename_session(&self, native_id: &str, title: &str) -> Result<()> {
+        let mut g = self.store.lock().unwrap();
+        if let Some(s) = g.sessions.iter_mut().find(|s| s.native_id == native_id) {
+            s.title = title.to_string();
+        }
+        persist_atomic(&self.store_path, &g);
+        Ok(())
+    }
+
+    async fn delete_session(&self, native_id: &str) -> Result<()> {
+        let mut g = self.store.lock().unwrap();
+        g.sessions.retain(|s| s.native_id != native_id);
+        persist_atomic(&self.store_path, &g);
+        Ok(())
+    }
+
+    async fn load_history(&self, native_id: &str) -> Result<Vec<ChatMsg>> {
+        let g = self.store.lock().unwrap();
+        let Some(s) = g.sessions.iter().find(|s| s.native_id == native_id) else {
+            return Ok(Vec::new());
+        };
+        Ok(s.msgs
+            .iter()
+            .enumerate()
+            .map(|(i, m)| ChatMsg {
+                msg_id: format!("acp{i}"),
+                role: if m.role == "user" {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
+                parts: vec![RenderPart {
+                    part_id: "t0".into(),
+                    kind: PartKind::Text,
+                    text: m.text.clone(),
+                }],
+                attachments: Vec::new(),
+            })
+            .collect())
+    }
+
+    async fn send(
+        &self,
+        native_id: &str,
+        text: &str,
+        attachments: &[AttachmentMeta],
+        _opts: SendOpts<'_>,
+    ) -> Result<()> {
+        for a in attachments {
+            if a.size > MAX_ATTACHMENT_BYTES {
+                bail!(
+                    "attachment {} is {} — over the {} MB limit",
+                    a.filename,
+                    a.size_label(),
+                    MAX_ATTACHMENT_BYTES / (1024 * 1024)
+                );
+            }
+        }
+        if !self.connected.load(Ordering::Relaxed) {
+            bail!("acp agent is not running");
+        }
+
+        let resume = !native_id.is_empty() && !native_id.starts_with("pending-");
+        let cwd = self.cwd().to_string_lossy().into_owned();
+
+        let mut blocks: Vec<Value> = vec![json!({"type": "text", "text": text})];
+        for a in attachments {
+            if a.mime.starts_with("image/") {
+                if let Ok(data) = std::fs::read(&a.path) {
+                    use base64::Engine as _;
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                    blocks.push(json!({"type": "image", "data": b64, "mimeType": a.mime}));
+                }
+            }
+        }
+
+        // session/new -> real id, then prompt; a helper thread sequences both
+        let writer = Arc::clone(&self.writer);
+        let next_id = Arc::clone(&self.next_id);
+        let pending = Arc::clone(&self.pending);
+        let route = Arc::clone(&self.route);
+        let acc = Arc::clone(&self.acc);
+        let store = Arc::clone(&self.store);
+        let store_path = self.store_path.clone();
+        let events = self.events.clone();
+        let harness = self.cfg.id.clone();
+        let models = Arc::clone(&self.models);
+        let sent_id = native_id.to_string();
+        let user_text = text.to_string();
+        let blocks_clone = blocks.clone();
+        let cwd_clone = cwd.clone();
+
+        std::thread::spawn(move || {
+            let rpc = |method: &str, params: Value| -> mpsc::Receiver<Value> {
+                let (tx, rx) = mpsc::sync_channel(1);
+                let id = next_id.fetch_add(1, Ordering::Relaxed);
+                pending.lock().unwrap().insert(id, tx);
+                let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+                if let Some(w) = writer.lock().unwrap().as_mut() {
+                    let _ = writeln!(w, "{msg}");
+                    let _ = w.flush();
+                }
+                rx
+            };
+
+            let real_id: String = if resume {
+                let _load = rpc(
+                    "session/load",
+                    json!({"sessionId": sent_id, "cwd": cwd_clone, "mcpServers": []}),
+                );
+                sent_id.clone()
+            } else {
+                let rx = rpc("session/new", json!({"cwd": cwd_clone, "mcpServers": []}));
+                match rx.recv_timeout(Duration::from_secs(20)) {
+                    Ok(v) => {
+                        // capture the model list for Ctrl+K
+                        if let Some(opts) = v.get("configOptions").and_then(Value::as_array) {
+                            let mut ms = Vec::new();
+                            for o in opts {
+                                if o.get("id").and_then(Value::as_str) != Some("model") {
+                                    continue;
+                                }
+                                if let Some(options) = o.get("options").and_then(Value::as_array) {
+                                    for m in options {
+                                        let value =
+                                            m.get("value").and_then(Value::as_str).unwrap_or("");
+                                        if let Some((prov, model)) = value.split_once('/') {
+                                            ms.push(ModelInfo {
+                                                provider_id: prov.to_string(),
+                                                model_id: model.to_string(),
+                                                name: m
+                                                    .get("name")
+                                                    .and_then(Value::as_str)
+                                                    .unwrap_or(value)
+                                                    .to_string(),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            *models.lock().unwrap() = ms;
+                        }
+                        v.get("sessionId")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string()
+                    }
+                    Err(_) => String::new(),
+                }
+            };
+            if real_id.is_empty() {
+                let _ = events.send(BackendEvent::StreamError {
+                    harness: harness.clone(),
+                    native_id: sent_id.clone(),
+                    error: "acp: session id was not received".into(),
+                });
+                let _ = events.send(BackendEvent::StreamDone {
+                    harness,
+                    native_id: sent_id,
+                });
+                return;
+            }
+            route
+                .lock()
+                .unwrap()
+                .insert(real_id.clone(), sent_id.clone());
+            if real_id != sent_id {
+                let _ = events.send(BackendEvent::SessionCreated {
+                    harness: harness.clone(),
+                    native_id: real_id.clone(),
+                    title: user_text.chars().take(48).collect(),
+                });
+            }
+
+            let rx = rpc(
+                "session/prompt",
+                json!({"sessionId": real_id, "prompt": blocks_clone}),
+            );
+            match rx.recv_timeout(Duration::from_secs(900)) {
+                Ok(result) => {
+                    let stop = result
+                        .get("stopReason")
+                        .and_then(Value::as_str)
+                        .unwrap_or("end_turn");
+                    let error = if stop == "cancelled" {
+                        None
+                    } else if stop == "refusal" || stop == "max_tokens" {
+                        Some(format!("turn stopped: {stop}"))
+                    } else {
+                        None
+                    };
+                    let assistant = acc.lock().unwrap().remove(&sent_id).unwrap_or_default();
+                    {
+                        let mut g = store.lock().unwrap();
+                        match g.sessions.iter_mut().find(|s| s.native_id == sent_id) {
+                            Some(s) => {
+                                if real_id != sent_id {
+                                    s.native_id = real_id.clone();
+                                }
+                                s.msgs.push(StoredMsg {
+                                    role: "user".into(),
+                                    text: user_text.clone(),
+                                });
+                                s.msgs.push(StoredMsg {
+                                    role: "assistant".into(),
+                                    text: assistant,
+                                });
+                                s.updated_ms = now_ms();
+                            }
+                            None => g.sessions.push(StoredSession {
+                                native_id: if real_id == sent_id {
+                                    sent_id.clone()
+                                } else {
+                                    real_id.clone()
+                                },
+                                title: user_text.chars().take(48).collect(),
+                                updated_ms: now_ms(),
+                                msgs: vec![
+                                    StoredMsg {
+                                        role: "user".into(),
+                                        text: user_text.clone(),
+                                    },
+                                    StoredMsg {
+                                        role: "assistant".into(),
+                                        text: assistant,
+                                    },
+                                ],
+                            }),
+                        }
+                        persist_atomic(&store_path, &g);
+                    }
+                    if let Some(err) = error {
+                        let _ = events.send(BackendEvent::StreamError {
+                            harness: harness.clone(),
+                            native_id: sent_id.clone(),
+                            error: err,
+                        });
+                    }
+                }
+                Err(_) => {
+                    let _ = events.send(BackendEvent::StreamError {
+                        harness: harness.clone(),
+                        native_id: sent_id.clone(),
+                        error: "acp: prompt response timed out".into(),
+                    });
+                }
+            }
+            let _ = events.send(BackendEvent::StreamDone {
+                harness,
+                native_id: sent_id,
+            });
+        });
+        Ok(())
+    }
+
+    /// ACP session/cancel — a real, working abort.
+    async fn abort(&self, native_id: &str) -> Result<()> {
+        if let Some(real) = self
+            .route
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(_, v)| v.as_str() == native_id)
+            .map(|(k, _)| k.clone())
+        {
+            self.notify(
+                "session/cancel",
+                json!({"sessionId": real, "reason": "user cancelled"}),
+            );
+        }
+        Ok(())
+    }
+
+    /// once/always → pick the agent's matching option; reject → RPC error.
+    async fn permission_reply(
+        &self,
+        _native_id: &str,
+        request_id: &str,
+        reply: &str,
+    ) -> Result<()> {
+        let Some(jsonrpc_id) = request_id
+            .strip_prefix("jsonrpc:")
+            .and_then(|s| s.parse::<u64>().ok())
+        else {
+            bail!("bad permission request id");
+        };
+        let mut perms = self.permissions.lock().unwrap();
+        let Some(idx) = perms.iter().position(|p| p.jsonrpc_id == jsonrpc_id) else {
+            bail!("permission request not found");
+        };
+        let p = perms.remove(idx);
+        if reply == "reject" {
+            let msg = json!({"jsonrpc": "2.0", "id": jsonrpc_id,
+                "error": {"code": -32603, "message": "permission denied by user"}});
+            self.write_raw(&msg);
+        } else {
+            let wanted = |id: &str, label: &str| {
+                let hay = format!("{id} {label}").to_lowercase();
+                if reply == "always" {
+                    hay.contains("always") || hay.contains("session") || hay.contains("permanent")
+                } else {
+                    !hay.contains("always") && !hay.contains("reject")
+                }
+            };
+            let option = p
+                .options
+                .iter()
+                .find(|(id, label)| wanted(id, label))
+                .map(|(id, _)| id.clone())
+                .or_else(|| p.options.first().map(|(id, _)| id.clone()))
+                .unwrap_or_default();
+            let msg = json!({"jsonrpc": "2.0", "id": jsonrpc_id,
+                "result": {"outcome": {"selected": {"optionId": option}}}});
+            self.write_raw(&msg);
+        }
+        Ok(())
+    }
+
+    async fn list_models(&self) -> Result<Vec<ModelInfo>> {
+        // captured from the session/new configOptions (empty until a session exists)
+        Ok(self.models.lock().unwrap().clone())
+    }
+
+    async fn list_agents(&self) -> Result<Vec<AgentInfo>> {
+        Ok(Vec::new())
+    }
+
+    fn shutdown(&self) {
+        self.connected.store(false, Ordering::Relaxed);
+        self.writer.lock().unwrap().take();
+        if let Some(mut ch) = self.child.lock().unwrap().take() {
+            kill_tree(&mut ch);
+        }
+    }
+
+    fn is_connected(&self) -> bool {
+        self.connected.load(Ordering::Relaxed)
+    }
+}

@@ -14,6 +14,7 @@ blue screen + silver dialogs) — written in Rust (ratatui + crossterm + tokio).
 | Harness | Kind | Streaming | Sessions | Attachments | Esc |
 |---|---|---|---|---|---|
 | OpenCode ≥ 2.2 | HTTP+SSE server (auto-started) | live deltas | server-side | images & files (≤8 MB) | detach* |
+| OpenCode via **ACP** | Agent Client Protocol over stdio (`opencode acp`) | live deltas | server-side + local | images (≤8 MB) | **real cancel** |
 | Hermes Agent | CLI subprocess | live deltas | local registry | images via `--image` | real kill |
 | DeepSeek Harness (`dsh`) | CLI subprocess (headless) | replace events | local registry | — | real kill |
 
@@ -127,10 +128,11 @@ cargo test   # 20: SSE/NDJSON mapping, markdown, i18n, config round-trip, wrap, 
   backend folds stored history into the task text; `Esc` for opencode only
   detaches (no server abort); reasoning/tool history is not persisted for
   CLI harnesses (text only).
-- The internal `trait Backend` is a purpose-built subset of what ACP covers;
-  migrating to an ACP-based backend (`agent-client-protocol`, `opencode acp`)
-  is the planned next architectural step, together with typed JSON models,
-  a render cache for long chats, and per-harness permissions presets.
+- The `opencode-acp` harness (Agent Client Protocol) is the newest connection:
+  it uses the `agent-client-protocol` schema crate, real `session/cancel` and
+  real permission requests; the older HTTP backend stays as the battle-tested
+  default until ACP gets more mileage. Remaining plans: typed JSON models for
+  the HTTP backend, a render cache for very long chats.
 - MCP is the agent's concern: sessions can be pointed at MCP servers by the
   harness config; A2A is agent-to-agent and out of scope for a chat client.
 - The screenshot is a mockup; a real capture (vhs) is on the wishlist.

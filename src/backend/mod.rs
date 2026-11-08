@@ -2,6 +2,7 @@
 //! harness, …) is a running agent runtime we chat with. All backends stream
 //! their updates through a single `BackendEvent` channel tagged with harness id.
 
+pub mod acp;
 pub mod dsh;
 pub mod hermes;
 pub mod opencode;
@@ -273,13 +274,20 @@ pub fn create_backend(
             cfg.clone(),
             events,
         ))),
+        "opencode-acp" => Ok(std::sync::Arc::new(acp::AcpBackend::new(
+            cfg.clone(),
+            events,
+        ))),
         other => anyhow::bail!("harness kind '{other}' is not supported yet"),
     }
 }
 
 /// Kinds the app can currently drive.
 pub fn supported_kind(kind: &str) -> bool {
-    matches!(kind, "opencode" | "hermes" | "deepseek-harness")
+    matches!(
+        kind,
+        "opencode" | "opencode-acp" | "hermes" | "deepseek-harness"
+    )
 }
 
 /// Hard cap for a single attachment — protects RAM from multi-GB files
