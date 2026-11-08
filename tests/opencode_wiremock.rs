@@ -243,7 +243,7 @@ async fn send_with_cwd_moves_session_before_prompt() {
     let b = create_backend(&cfg_for(port), tx).unwrap();
     b.connect().await.expect("connect ok");
 
-    let worktree = std::path::Path::new("G:/Dev/repo/.aic-worktrees/t-0042");
+    let worktree = std::path::Path::new("/tmp/repo/.aic-worktrees/t-0042");
     b.send(
         "ses_n3",
         "implement it",
@@ -274,7 +274,7 @@ async fn send_with_cwd_moves_session_before_prompt() {
     assert!(
         reqs[move_at]
             .1
-            .contains("G:/Dev/repo/.aic-worktrees/t-0042"),
+            .contains("/tmp/repo/.aic-worktrees/t-0042"),
         "move body must carry the worktree: {}",
         reqs[move_at].1
     );
