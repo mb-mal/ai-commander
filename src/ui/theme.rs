@@ -132,6 +132,9 @@ pub fn wrap_str(s: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![s.to_string()];
     }
+    // tabs measure 0 in unicode-width but render as columns: normalize first
+    let normalized = s.replace('\t', " ");
+    let s = normalized.as_str();
     let mut out: Vec<String> = Vec::new();
     for raw_line in s.split('\n') {
         if raw_line.is_empty() {
@@ -170,8 +173,25 @@ pub fn wrap_str(s: &str, width: usize) -> Vec<String> {
                 cur_w += 1 + ww;
             } else {
                 out.push(std::mem::take(&mut cur));
-                cur = word.to_string();
-                cur_w = ww;
+                if ww > width {
+                    // hard-break oversized words on a new line too
+                    let mut chunk = String::new();
+                    let mut chunk_w = 0;
+                    for ch in word.chars() {
+                        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                        if chunk_w + cw > width {
+                            out.push(std::mem::take(&mut chunk));
+                            chunk_w = 0;
+                        }
+                        chunk.push(ch);
+                        chunk_w += cw;
+                    }
+                    cur = chunk;
+                    cur_w = chunk_w;
+                } else {
+                    cur = word.to_string();
+                    cur_w = ww;
+                }
             }
         }
         out.push(cur);

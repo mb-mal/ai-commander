@@ -439,6 +439,11 @@ impl Backend for HermesBackend {
                 persist_atomic(&store_path, &g);
             }
 
+            crate::log_info!(
+                "hermes",
+                "turn finished: real_id={real_id:?} bytes={}",
+                assistant_text.len()
+            );
             if let Some(err) = exit_error {
                 let _ = events.send(BackendEvent::StreamError {
                     harness: harness.clone(),

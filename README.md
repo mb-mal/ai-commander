@@ -206,14 +206,30 @@ new owner.
   patterns over action + resource; strictest match wins, no rule → ask.
   Allow auto-replies, deny auto-rejects, ask opens the modal
 
+## Logging, tests, quality
+
+- **File logging**: `--log-level off|error|warn|info|debug` writes to
+  `<config>/ai-commander.log` (backends, daemon lifecycle, model/agent
+  switch failures); the daemon mirrors its `[run]`/`[watchdog]` lines there
+- **Property tests**: deterministic pseudo-random strings verify the editor
+  cursor invariant, grapheme-delete completeness and word-wrap safety
+  (width, word preservation, hard-break character conservation) — they
+  caught and fixed two real bugs: tabs measuring 0 in unicode-width, and
+  `Editor::is_empty()` true on multi-empty-line text
+- **HTTP mock tests**: hand-rolled mock servers exercise the opencode backend
+  against 401 (health), 500 (REST) and a broken SSE stream (mid-stream
+  disconnect) without any real harness
+- **A2A flake fix**: the TCP half-close race on Windows (WSAECONNRESET) is
+  handled with connect/read retries in the gateway test
+
 ## Limitations & roadmap
 
 - dsh headless does not replay session context on `--session-id`, so the
   backend folds stored history into the task text; `Esc` for opencode only
   detaches (no server abort); reasoning/tool history is not persisted for
   CLI harnesses (text only).
-- On the roadmap: git-worktree isolation per task, cron/event triggers,
-  A2A gateway, cost budgets.
+- On the roadmap: workspace crate split, cargo-dist releases, ratatui-image,
+  mermaid rendering, vhs-captured screenshots, fluent i18n files.
 - The `opencode-acp` harness (Agent Client Protocol) is the newest connection:
   it uses the `agent-client-protocol` schema crate, real `session/cancel` and
   real permission requests; the older HTTP backend stays as the battle-tested

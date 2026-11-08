@@ -667,6 +667,7 @@ impl Backend for OpenCodeBackend {
                     harness: self.cfg.id.clone(),
                     error: format!("model switch failed: {e:#}"),
                 });
+                crate::log_warn!("opencode", "model switch failed: {e:#}");
             }
         }
         if let Some(agent) = opts.agent {
@@ -682,6 +683,7 @@ impl Backend for OpenCodeBackend {
                     harness: self.cfg.id.clone(),
                     error: format!("agent switch failed: {e:#}"),
                 });
+                crate::log_warn!("opencode", "agent switch failed: {e:#}");
             }
         }
 
