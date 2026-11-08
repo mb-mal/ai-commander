@@ -240,7 +240,6 @@ impl Kanban {
     }
 }
 
-pub mod a2a;
 pub mod ipc;
 pub mod otel;
 pub mod roles;
@@ -308,7 +307,7 @@ pub fn classify_reply(reply: &str) -> TurnOutcome {
     }
 }
 
-/// Execute a board.* tool call (shared by the board-mcp binary and the A2A
+/// Execute a board.* tool call (shared by the board-mcp binary and the IPC
 /// gateway's /board proxy endpoint). Returns human-readable text or an error.
 pub fn board_tool_call(
     name: &str,

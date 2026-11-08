@@ -45,6 +45,8 @@ fn board_mcp_uses_owner_store_over_ipc() {
     let owner = Arc::new(Mutex::new(BoardStore::open_memory()));
     let port = ai_commander::kanban::ipc::serve_board(owner.clone()).expect("serve");
     assert!(port > 0);
+    // v4: mint the role token the child must present
+    let role_token = ai_commander::kanban::ipc::issue_role_token("coder");
 
     // the redb path board-mcp would open in direct mode — it must NOT be
     // touched while the owner serves IPC
@@ -54,6 +56,7 @@ fn board_mcp_uses_owner_store_over_ipc() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_board-mcp"))
         .env("AI_COMMANDER_KANBAN_DB", &db)
         .env("AI_COMMANDER_ROLE", "coder")
+        .env("AI_COMMANDER_BOARD_TOKEN", &role_token)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
