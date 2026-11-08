@@ -137,11 +137,40 @@ pub fn on_progress_no_reply(board: &mut BoardStore, task_id: &str, delta: &str) 
     }
 }
 
+/// v4 Д1: any liveness signal renews the lease — including `PartUpdated`
+/// (tool-call status changes, ACP tool calls), which carries no delta text.
+pub fn on_activity(board: &mut BoardStore, task_id: &str) {
+    board.renew_lease(task_id);
+}
+
+/// v4: Start itself failed (worktree/branch broken, task still Ready) —
+/// infrastructure is broken, escalate to a human instead of retrying the
+/// same failing Start every 30 seconds forever.
+pub fn launch_failed(board: &mut BoardStore, task_id: &str) {
+    let _ = board.transition(task_id, TaskAction::Ask);
+}
+
 /// Classify the accumulated reply and transition the task (Б8: StreamDone
 /// must finish the task, not just clear a busy flag).
 /// Н1: Failed retries are capped by max_attempts and delayed exponentially.
 pub fn on_stream_done(board: &mut BoardStore, task_id: &str, reply: &str) -> Result<Task, String> {
-    let outcome = classify_reply(reply);
+    on_stream_done_ex(board, task_id, reply, false)
+}
+
+/// v4 Н2: `errored` marks a turn whose stream died mid-reply — the
+/// `DONE:` marker printed before the break must NOT count; the turn is
+/// Failed regardless of the accumulated text.
+pub fn on_stream_done_ex(
+    board: &mut BoardStore,
+    task_id: &str,
+    reply: &str,
+    errored: bool,
+) -> Result<Task, String> {
+    let outcome = if errored {
+        TurnOutcome::Failed
+    } else {
+        classify_reply(reply)
+    };
     let action = match outcome {
         TurnOutcome::Finished => TaskAction::Finish,
         TurnOutcome::Blocked => TaskAction::Block,

@@ -261,6 +261,9 @@ pub struct App {
     pub board_sel: Option<String>,
     /// (harness, session) -> accumulated agent reply for a task turn
     pub task_replies: std::collections::HashMap<(String, String), String>,
+    /// v4 Н2: sessions whose stream errored mid-turn — StreamDone for them
+    /// is Failed even if a DONE: marker was printed before the break
+    pub task_errors: std::collections::HashSet<(String, String)>,
     /// render cache: (harness, session, msg_id, part_id) -> (width, text_len, lines)
     #[allow(clippy::type_complexity)]
     pub render_cache: std::collections::HashMap<
@@ -333,6 +336,7 @@ impl App {
             board_row: 0,
             board_sel: None,
             task_replies: std::collections::HashMap::new(),
+            task_errors: std::collections::HashSet::new(),
             hit: HitAreas::default(),
             render_cache: std::collections::HashMap::new(),
             events_tx,
@@ -852,6 +856,19 @@ impl App {
                 msg_id,
                 part,
             } => {
+                // v4 Д1: tool-call progress (PartUpdated, no delta text) is a
+                // liveness signal — renew the task lease so a long tool call
+                // inside one turn is not watchdog-interrupted
+                {
+                    let task_id = {
+                        let b = self.board.lock().unwrap();
+                        b.find_by_session(&harness, &native_id).map(|t| t.id)
+                    };
+                    if let Some(id) = task_id {
+                        let mut b = self.board.lock().unwrap();
+                        kanban::runner::on_activity(&mut b, &id);
+                    }
+                }
                 if self.follow {
                     let (kind, text) = (part.kind, part.text);
                     self.apply_part(
@@ -957,10 +974,17 @@ impl App {
                         .task_replies
                         .remove(&(harness.clone(), native_id.clone()))
                         .unwrap_or_default();
+                    // v4 Н2: an errored stream poisons the turn — the DONE:
+                    // marker printed before the break must not count
+                    let errored = self
+                        .task_errors
+                        .remove(&(harness.clone(), native_id.clone()));
                     // Д3: use runner::on_stream_done — same path as the daemon
                     // (includes Н1 backoff, Н2 strict DONE: marker, max_attempts)
                     let mut b = self.board.lock().unwrap();
-                    if let Ok(t) = kanban::runner::on_stream_done(&mut b, &task.id, &reply) {
+                    if let Ok(t) = kanban::runner::on_stream_done_ex(
+                        &mut b, &task.id, &reply, errored,
+                    ) {
                         drop(b);
                         self.toast(format!("{} → {:?}", t.id, t.status), false);
                     }
@@ -993,6 +1017,17 @@ impl App {
                 error,
             } => {
                 self.busy.remove(&(harness.clone(), native_id.clone()));
+                // v4 Н2: mark the task session so the following StreamDone
+                // classifies as Failed regardless of any DONE: marker
+                {
+                    let is_task = {
+                        let b = self.board.lock().unwrap();
+                        b.find_by_session(&harness, &native_id).is_some()
+                    };
+                    if is_task {
+                        self.task_errors.insert((harness.clone(), native_id.clone()));
+                    }
+                }
                 if self.cur.harness == harness && self.cur.native_id == native_id {
                     self.follow = true;
                     let msg = ChatMsg {
