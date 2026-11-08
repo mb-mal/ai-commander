@@ -176,7 +176,7 @@ directly.
 - any harness: `ai-commander --print-mcp-config` prints the snippet for
   its own MCP config
 
-### Activity feed, agents panel, A2A, OTel
+### Activity feed, agents panel, OTel
 
 - **Ctrl+L** — collapsible activity feed (bottom): the board's event log tail,
   task ids + actions + statuses
@@ -185,8 +185,6 @@ directly.
   planner/tester → `.ai-commander/agents/<id>.md`)
 - **Approvals counter** in the header (`⚠ approvals:N`) while permission
   requests are pending
-- **A2A gateway** (daemon): `GET /.well-known/agent.json` Agent Card;
-  `message/send` creates a board task — external A2A agents join the board
 - **OTel export** (daemon): board events → OTLP JSON spans in
   `<config>/otel/ai-commander-spans.jsonl` (one resourceSpans line per event)
 
@@ -228,8 +226,6 @@ directly.
 - **HTTP mock tests**: hand-rolled mock servers exercise the opencode backend
   against 401 (health), 500 (REST) and a broken SSE stream (mid-stream
   disconnect) without any real harness
-- **A2A flake fix**: the TCP half-close race on Windows (WSAECONNRESET) is
-  handled with connect/read retries in the gateway test
 
 ## v2 review fixes
 
@@ -252,7 +248,8 @@ Blockers from the v2 review addressed:
   the prompt, role model overrides the harness default, `mcp_role` passed
 
 Security fixes:
-- A2A gateway disabled by default (env opt-in)
+- A2A gateway removed (v4): it was dead code with an unauthenticated
+  HTTP surface; the board speaks only to local, token-authenticated IPC
 - Project policies can only tighten user policies (deny > ask > allow;
   a project `allow` never weakens a user `deny`)
 - config written with 0600 permissions on Unix

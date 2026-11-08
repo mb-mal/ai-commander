@@ -504,15 +504,6 @@ async fn run_daemon(cfg: Config) -> Result<()> {
         Err(e) => println!("[warn] board IPC server: {e}"),
     }
 
-    // A2A gateway: disabled during the IPC owner refactor (the old
-    // gateway_handle created a second BoardStore that duplicated ids)
-    if std::env::var("AI_COMMANDER_A2A")
-        .map(|v| v == "1")
-        .unwrap_or(false)
-    {
-        println!("a2a gateway: disabled during IPC owner refactor");
-    }
-
     let mut otel_last_seq: u64 = 0;
     let mut busy: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut task_replies: std::collections::HashMap<String, String> =

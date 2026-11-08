@@ -272,9 +272,7 @@ async fn send_with_cwd_moves_session_before_prompt() {
         "move must precede the prompt: {reqs:?}"
     );
     assert!(
-        reqs[move_at]
-            .1
-            .contains("/tmp/repo/.aic-worktrees/t-0042"),
+        reqs[move_at].1.contains("/tmp/repo/.aic-worktrees/t-0042"),
         "move body must carry the worktree: {}",
         reqs[move_at].1
     );

@@ -15,11 +15,22 @@ use ai_commander::kanban::{Kanban, TaskAction};
 use serde_json::{Value, json};
 
 fn main() {
+    // v4: the acting role comes from the role TOKEN the owner minted at
+    // launch (AI_COMMANDER_BOARD_TOKEN) — never from an untrusted body
+    // field. AI_COMMANDER_ROLE stays for direct mode (no owner).
+    let role_token = std::env::var("AI_COMMANDER_BOARD_TOKEN").unwrap_or_default();
     let role = std::env::var("AI_COMMANDER_ROLE").unwrap_or_default();
     // Б1: if a board owner (TUI or daemon) is serving IPC, work as its
     // client — never open the redb store (exclusive lock) and never create
     // a second store. Direct mode only when nobody owns the board.
     let mut board = if ai_commander::kanban::ipc::owner_alive() {
+        if role_token.is_empty() {
+            eprintln!(
+                "board-mcp: an owner is serving IPC but AI_COMMANDER_BOARD_TOKEN is not set;"
+            );
+            eprintln!("       the owner must launch this server with a minted role token.");
+            std::process::exit(1);
+        }
         None
     } else {
         match BoardStore::open_redb(&Kanban::path()) {
@@ -68,12 +79,17 @@ fn main() {
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 let call = match board.as_mut() {
                     Some(b) => call_tool(&name, &args, &role, b),
-                    // Б1 IPC client: forward to the owner's store
-                    None => match ai_commander::kanban::ipc::call_owner(&name, &args, &role) {
-                        Some(Ok(text)) => Ok(text),
-                        Some(Err(e)) => Err(e),
-                        None => Err("board owner is not reachable (TUI/daemon stopped?)".into()),
-                    },
+                    // Б1 IPC client: forward to the owner's store, acting
+                    // as the role the token authorizes (v4)
+                    None => {
+                        match ai_commander::kanban::ipc::call_owner(&name, &args, &role_token) {
+                            Some(Ok(text)) => Ok(text),
+                            Some(Err(e)) => Err(e),
+                            None => {
+                                Err("board owner is not reachable (TUI/daemon stopped?)".into())
+                            }
+                        }
+                    }
                 };
                 match call {
                     Ok(text) => Ok(json!({"content": [{"type": "text", "text": text}]})),

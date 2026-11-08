@@ -891,9 +891,16 @@ fn board_mcp_at(dir: &std::path::Path, role: &str) -> Option<McpServer> {
     if !bin.exists() {
         return None;
     }
-    Some(McpServer::Stdio(
-        McpServerStdio::new("board", bin).env(vec![EnvVariable::new("AI_COMMANDER_ROLE", role)]),
-    ))
+    // v4: mint a role token (this process is the board owner) so the
+    // spawned board-mcp authenticates to the owner's IPC and acts as
+    // exactly this role — the body `role` field is never trusted
+    let role_token = crate::kanban::ipc::issue_role_token(role);
+    Some(McpServer::Stdio(McpServerStdio::new("board", bin).env(
+        vec![
+            EnvVariable::new("AI_COMMANDER_BOARD_TOKEN", role_token),
+            EnvVariable::new("AI_COMMANDER_ROLE", role),
+        ],
+    )))
 }
 
 #[cfg(test)]
@@ -923,14 +930,21 @@ mod tests {
         let parsed: NewSessionRequest = serde_json::from_value(v.clone()).unwrap();
         assert_eq!(serde_json::to_value(&parsed).unwrap(), v, "canonical");
 
-        // env must be the schema array form, not the old map
+        // env must be the schema array form, not the old map; v4: the minted
+        // role token rides along so board-mcp never self-declares a role
         let env = &v["mcpServers"][0]["env"];
         assert!(
             env.is_array(),
             "env must be an array of {{name,value}}: {env}"
         );
-        assert_eq!(env[0]["name"], "AI_COMMANDER_ROLE");
-        assert_eq!(env[0]["value"], "coder");
+        assert_eq!(env[0]["name"], "AI_COMMANDER_BOARD_TOKEN");
+        assert_eq!(
+            env[0]["value"].as_str().map(str::len),
+            Some(64),
+            "32-byte hex role token"
+        );
+        assert_eq!(env[1]["name"], "AI_COMMANDER_ROLE");
+        assert_eq!(env[1]["value"], "coder");
         // the server must carry a name (absent in the old payload)
         assert_eq!(v["mcpServers"][0]["name"], "board");
 
