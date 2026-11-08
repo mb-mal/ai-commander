@@ -318,6 +318,17 @@ pub struct BoardStore {
     proj: Kanban,
 }
 
+/// Stuck-task info for the watchdog: the caller aborts the session
+/// BEFORE calling `watchdog_apply` (review v2 Б6: no duplicate agents).
+#[derive(Debug, Clone)]
+pub struct StuckTask {
+    pub task_id: String,
+    pub harness: String,
+    pub session_id: String,
+    /// "retry" | "escalated"
+    pub disposition: &'static str,
+}
+
 impl BoardStore {
     pub fn open_memory() -> BoardStore {
         BoardStore {
@@ -767,9 +778,65 @@ Open questions: {open_questions}"
             .collect()
     }
 
-    /// Watchdog pass: InProgress tasks without a finishing StreamDone past
-    /// STUCK_AFTER_MS are interrupted back to Ready (retry) or, once attempts
-    /// are exhausted, escalated to NeedsHuman. Returns the tasks acted on.
+    /// Detect stuck tasks WITHOUT mutating: returns them for the caller to
+    /// abort their sessions first. Then call `watchdog_apply` to transition.
+    pub fn watchdog_scan(&self, now: i64) -> Vec<StuckTask> {
+        self.proj
+            .tasks
+            .iter()
+            .filter(|t| {
+                let stuck = t
+                    .started_ms
+                    .map(|s| now - s > crate::kanban::STUCK_AFTER_MS)
+                    .unwrap_or(false);
+                let over_budget = t
+                    .started_ms
+                    .map(|s| t.run_budget_secs > 0 && now - s > t.run_budget_secs * 1000)
+                    .unwrap_or(false);
+                t.status == TaskStatus::InProgress && (stuck || over_budget)
+            })
+            .filter_map(|t| {
+                let (harness, session) = match (&t.harness, &t.session_id) {
+                    (Some(h), Some(s)) if !s.is_empty() => (h.clone(), s.clone()),
+                    _ => return None, // no session to abort
+                };
+                let over_budget = t
+                    .started_ms
+                    .map(|s| t.run_budget_secs > 0 && now - s > t.run_budget_secs * 1000)
+                    .unwrap_or(false);
+                let disposition = if over_budget || t.attempts >= t.max_attempts {
+                    "escalated"
+                } else {
+                    "retry"
+                };
+                Some(StuckTask {
+                    task_id: t.id.clone(),
+                    harness,
+                    session_id: session,
+                    disposition,
+                })
+            })
+            .collect()
+    }
+
+    /// After the caller has aborted the sessions, apply the transitions.
+    pub fn watchdog_apply(&mut self, stuck: &[StuckTask]) -> Vec<(String, &'static str)> {
+        let mut acted = Vec::new();
+        for st in stuck {
+            let action = if st.disposition == "escalated" {
+                TaskAction::Ask
+            } else {
+                TaskAction::Interrupt
+            };
+            if self.transition(&st.task_id, action).is_ok() {
+                acted.push((st.task_id.clone(), st.disposition));
+            }
+        }
+        acted
+    }
+
+    /// Legacy single-pass watchdog (kept for backwards compatibility with
+    /// tests that don't need session abort). Prefer scan + apply.
     pub fn watchdog_pass(&mut self, now: i64) -> Vec<(String, &'static str)> {
         let stuck_ids: Vec<String> = self
             .proj
