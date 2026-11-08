@@ -22,13 +22,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::{kill_tree, AgentInfo, AttachmentMeta, Backend, BackendEvent, ChatMsg, ModelInfo, PartKind, RenderPart, Role, SendOpts, SessionInfo, MAX_ATTACHMENT_BYTES};
+use super::{
+    AgentInfo, AttachmentMeta, Backend, BackendEvent, ChatMsg, MAX_ATTACHMENT_BYTES, ModelInfo,
+    PartKind, RenderPart, Role, SendOpts, SessionInfo, kill_tree,
+};
 use crate::config::HarnessCfg;
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -68,7 +71,9 @@ fn now_ms() -> i64 {
 
 /// Atomic persist: write a temp file next to the target, then rename.
 fn persist_atomic(path: &std::path::Path, store: &HermesStore) {
-    let Ok(raw) = serde_json::to_vec_pretty(store) else { return };
+    let Ok(raw) = serde_json::to_vec_pretty(store) else {
+        return;
+    };
     let tmp = path.with_extension("tmp");
     if std::fs::write(&tmp, &raw).is_ok() {
         let _ = std::fs::rename(&tmp, path);
@@ -77,7 +82,8 @@ fn persist_atomic(path: &std::path::Path, store: &HermesStore) {
 
 impl HermesBackend {
     pub fn new(cfg: HarnessCfg, events: UnboundedSender<BackendEvent>) -> Self {
-        let store_path = crate::config::config_dir().join(format!("harness-{}-sessions.json", cfg.id));
+        let store_path =
+            crate::config::config_dir().join(format!("harness-{}-sessions.json", cfg.id));
         let store = std::fs::read(&store_path)
             .ok()
             .and_then(|raw| serde_json::from_slice(&raw).ok())
@@ -113,7 +119,10 @@ impl HermesBackend {
             }
         }
         if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
-            let candidate = PathBuf::from(&home).join(".hermes").join("bin").join("hermes");
+            let candidate = PathBuf::from(&home)
+                .join(".hermes")
+                .join("bin")
+                .join("hermes");
             if candidate.exists() {
                 return Ok(candidate);
             }
@@ -164,7 +173,13 @@ impl Backend for HermesBackend {
         let version = stdout
             .lines()
             .map(str::trim)
-            .find(|l| l.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) || l.starts_with('v'))
+            .find(|l| {
+                l.chars()
+                    .next()
+                    .map(|c| c.is_ascii_digit())
+                    .unwrap_or(false)
+                    || l.starts_with('v')
+            })
             .unwrap_or("hermes")
             .to_string();
         self.connected.store(true, Ordering::Relaxed);
@@ -230,7 +245,11 @@ impl Backend for HermesBackend {
             .enumerate()
             .map(|(i, m)| ChatMsg {
                 msg_id: format!("hm{i}"),
-                role: if m.role == "user" { Role::User } else { Role::Assistant },
+                role: if m.role == "user" {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
                 parts: vec![RenderPart {
                     part_id: "t0".into(),
                     kind: PartKind::Text,
@@ -241,7 +260,13 @@ impl Backend for HermesBackend {
             .collect())
     }
 
-    async fn send(&self, native_id: &str, text: &str, attachments: &[AttachmentMeta], opts: SendOpts<'_>) -> Result<()> {
+    async fn send(
+        &self,
+        native_id: &str,
+        text: &str,
+        attachments: &[AttachmentMeta],
+        opts: SendOpts<'_>,
+    ) -> Result<()> {
         for a in attachments {
             if a.mime.starts_with("image/") && a.size > MAX_ATTACHMENT_BYTES {
                 bail!(
@@ -326,7 +351,9 @@ impl Backend for HermesBackend {
 
             for line in reader.lines() {
                 let Ok(line) = line else { break };
-                let Some(v) = parse_json_line(&line) else { continue };
+                let Some(v) = parse_json_line(&line) else {
+                    continue;
+                };
                 let ty = v.get("type").and_then(Value::as_str).unwrap_or("");
                 match ty {
                     "text" => {
@@ -344,8 +371,16 @@ impl Backend for HermesBackend {
                         }
                     }
                     "result" => {
-                        result_sid = v.get("session_id").and_then(Value::as_str).map(str::to_owned);
-                        result_text = Some(v.get("text").and_then(Value::as_str).unwrap_or("").to_string());
+                        result_sid = v
+                            .get("session_id")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
+                        result_text = Some(
+                            v.get("text")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                        );
                         let code = v.get("exit_code").and_then(Value::as_i64).unwrap_or(0);
                         if code != 0 {
                             exit_error = Some(format!(
@@ -369,18 +404,34 @@ impl Backend for HermesBackend {
                         if !real_id.is_empty() {
                             s.native_id = real_id.clone();
                         }
-                        s.msgs.push(StoredMsg { role: "user".into(), text: user_text.clone() });
-                        s.msgs.push(StoredMsg { role: "assistant".into(), text: assistant_text.clone() });
+                        s.msgs.push(StoredMsg {
+                            role: "user".into(),
+                            text: user_text.clone(),
+                        });
+                        s.msgs.push(StoredMsg {
+                            role: "assistant".into(),
+                            text: assistant_text.clone(),
+                        });
                         s.updated_ms = now_ms();
                     }
                     None => {
                         g.sessions.push(StoredSession {
-                            native_id: if real_id.is_empty() { sent_id.clone() } else { real_id.clone() },
+                            native_id: if real_id.is_empty() {
+                                sent_id.clone()
+                            } else {
+                                real_id.clone()
+                            },
                             title: user_text.chars().take(48).collect(),
                             updated_ms: now_ms(),
                             msgs: vec![
-                                StoredMsg { role: "user".into(), text: user_text.clone() },
-                                StoredMsg { role: "assistant".into(), text: assistant_text.clone() },
+                                StoredMsg {
+                                    role: "user".into(),
+                                    text: user_text.clone(),
+                                },
+                                StoredMsg {
+                                    role: "assistant".into(),
+                                    text: assistant_text.clone(),
+                                },
                             ],
                         });
                     }
@@ -433,10 +484,18 @@ impl Backend for HermesBackend {
         let mut candidates: Vec<PathBuf> = Vec::new();
         #[cfg(windows)]
         if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            candidates.push(PathBuf::from(&local).join("hermes").join("provider_models_cache.json"));
+            candidates.push(
+                PathBuf::from(&local)
+                    .join("hermes")
+                    .join("provider_models_cache.json"),
+            );
         }
         if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
-            candidates.push(PathBuf::from(&home).join(".hermes").join("provider_models_cache.json"));
+            candidates.push(
+                PathBuf::from(&home)
+                    .join(".hermes")
+                    .join("provider_models_cache.json"),
+            );
             candidates.push(
                 PathBuf::from(&home)
                     .join(".local")
@@ -467,7 +526,11 @@ impl Backend for HermesBackend {
                 }
             }
         }
-        out.sort_by(|a, b| a.provider_id.cmp(&b.provider_id).then(a.model_id.cmp(&b.model_id)));
+        out.sort_by(|a, b| {
+            a.provider_id
+                .cmp(&b.provider_id)
+                .then(a.model_id.cmp(&b.model_id))
+        });
         Ok(out)
     }
 
@@ -504,8 +567,14 @@ mod tests {
     fn parses_text_delta_and_result() {
         let v = parse_json_line(r#"{"type":"text","text":"ана"}"#).unwrap();
         assert_eq!(v.get("text").and_then(Value::as_str), Some("ана"));
-        let v = parse_json_line(r#"{"type":"result","session_id":"local-abc","text":"OK","exit_code":0}"#).unwrap();
-        assert_eq!(v.get("session_id").and_then(Value::as_str), Some("local-abc"));
+        let v = parse_json_line(
+            r#"{"type":"result","session_id":"local-abc","text":"OK","exit_code":0}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            v.get("session_id").and_then(Value::as_str),
+            Some("local-abc")
+        );
     }
 
     #[test]
@@ -526,7 +595,10 @@ mod tests {
             native_id: "local-1".into(),
             title: "demo".into(),
             updated_ms: 42,
-            msgs: vec![StoredMsg { role: "user".into(), text: "hi".into() }],
+            msgs: vec![StoredMsg {
+                role: "user".into(),
+                text: "hi".into(),
+            }],
         });
         persist_atomic(&path, &st);
         let back: HermesStore = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();

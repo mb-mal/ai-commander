@@ -198,7 +198,9 @@ pub fn t(lang: Lang, key: Str) -> &'static str {
             Str::NewlineHint => "Alt+Enter = newline",
             Str::NotConnected => "backend not connected",
             Str::Draft => "draft",
-            Str::StopNote => "stopped following — result loads when the turn ends (next message interrupts)",
+            Str::StopNote => {
+                "stopped following — result loads when the turn ends (next message interrupts)"
+            }
             Str::SettingsServerPassword => "Server password (Basic auth)",
             Str::PermOnce => "Allow once",
             Str::PermAlways => "Always allow this session",
@@ -281,7 +283,9 @@ pub fn t(lang: Lang, key: Str) -> &'static str {
             Str::NewlineHint => "Alt+Enter — перенос строки",
             Str::NotConnected => "бэкенд не подключён",
             Str::Draft => "черновик",
-            Str::StopNote => "следование остановлено — результат подгрузится по завершении хода (следующее сообщение прервёт)",
+            Str::StopNote => {
+                "следование остановлено — результат подгрузится по завершении хода (следующее сообщение прервёт)"
+            }
             Str::SettingsServerPassword => "Пароль сервера (Basic auth)",
             Str::PermOnce => "Разрешить один раз",
             Str::PermAlways => "Всегда разрешать в этой сессии",

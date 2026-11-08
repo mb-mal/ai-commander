@@ -13,9 +13,12 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::backend::{self, AttachmentMeta, Backend, BackendEvent, ChatMsg, ModelInfo, PartKind, RenderPart, Role, SendOpts, SessionInfo};
+use crate::backend::{
+    self, AttachmentMeta, Backend, BackendEvent, ChatMsg, ModelInfo, PartKind, RenderPart, Role,
+    SendOpts, SessionInfo,
+};
 use crate::config::{Config, ModelRef};
-use crate::i18n::{t, Lang, Str};
+use crate::i18n::{Lang, Str, t};
 
 use editor::Editor;
 
@@ -30,7 +33,10 @@ pub enum Focus {
 #[derive(Clone)]
 pub enum HitTarget {
     NewChat,
-    Session { harness: String, native_id: String },
+    Session {
+        harness: String,
+        native_id: String,
+    },
     SettingsBtn,
     ComposerFocus,
     /// status-bar key index: 0=F1 1=F2 2=^N 3=^K 4=^P 5=^H 6=^O 7=F10
@@ -110,9 +116,15 @@ pub enum ConfirmAction {
 
 #[derive(Clone)]
 pub enum ListAction {
-    PickAgent { harness: String },
+    PickAgent {
+        harness: String,
+    },
     /// answer a harness permission request: sel 0=once 1=always 2=reject
-    PermissionReply { harness: String, session_id: String, request_id: String },
+    PermissionReply {
+        harness: String,
+        session_id: String,
+        request_id: String,
+    },
 }
 
 #[derive(Clone)]
@@ -125,13 +137,34 @@ pub enum ModelCtx {
 pub enum Modal {
     Help,
     About,
-    Settings { sel: usize },
-    ModelPicker { filter: Editor, sel: usize, ctx: ModelCtx },
-    HarnessPicker { sel: usize },
+    Settings {
+        sel: usize,
+    },
+    ModelPicker {
+        filter: Editor,
+        sel: usize,
+        ctx: ModelCtx,
+    },
+    HarnessPicker {
+        sel: usize,
+    },
     FilePicker(FilePicker),
-    Input { title: String, editor: Editor, action: InputAction },
-    Confirm { title: String, message: String, action: ConfirmAction },
-    List { title: String, items: Vec<(String, String)>, sel: usize, action: ListAction },
+    Input {
+        title: String,
+        editor: Editor,
+        action: InputAction,
+    },
+    Confirm {
+        title: String,
+        message: String,
+        action: ConfirmAction,
+    },
+    List {
+        title: String,
+        items: Vec<(String, String)>,
+        sel: usize,
+        action: ListAction,
+    },
 }
 
 #[derive(Default, Clone)]
@@ -200,7 +233,10 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(cfg: Config, input_rx: tokio::sync::mpsc::UnboundedReceiver<crossterm::event::Event>) -> Self {
+    pub fn new(
+        cfg: Config,
+        input_rx: tokio::sync::mpsc::UnboundedReceiver<crossterm::event::Event>,
+    ) -> Self {
         let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
         let active = cfg.default_harness_id();
         let mut app = App {
@@ -242,7 +278,8 @@ impl App {
 
     /// Is a turn in flight for the *currently open* chat?
     pub fn busy_now(&self) -> bool {
-        self.busy.contains(&(self.cur.harness.clone(), self.cur.native_id.clone()))
+        self.busy
+            .contains(&(self.cur.harness.clone(), self.cur.native_id.clone()))
     }
 
     pub fn tr(&self, s: Str) -> &'static str {
@@ -270,7 +307,8 @@ impl App {
                 return None;
             }
         };
-        self.backends.insert(harness.to_string(), Arc::clone(&backend));
+        self.backends
+            .insert(harness.to_string(), Arc::clone(&backend));
         self.connecting.insert(harness.to_string());
         let b = Arc::clone(&backend);
         let harness = harness.to_string();
@@ -278,11 +316,17 @@ impl App {
         tokio::spawn(async move {
             match b.connect().await {
                 Ok(version) => {
-                    let _ = tx.send(BackendEvent::Connected { harness: harness.clone(), version });
+                    let _ = tx.send(BackendEvent::Connected {
+                        harness: harness.clone(),
+                        version,
+                    });
                     let _ = tx.send(BackendEvent::SessionsChanged { harness });
                 }
                 Err(e) => {
-                    let _ = tx.send(BackendEvent::Error { harness, error: format!("{e:#}") });
+                    let _ = tx.send(BackendEvent::Error {
+                        harness,
+                        error: format!("{e:#}"),
+                    });
                 }
             }
         });
@@ -299,7 +343,10 @@ impl App {
                         let _ = tx.send(BackendEvent::Sessions { harness, list });
                     }
                     Err(e) => {
-                        let _ = tx.send(BackendEvent::Error { harness, error: format!("sessions: {e:#}") });
+                        let _ = tx.send(BackendEvent::Error {
+                            harness,
+                            error: format!("sessions: {e:#}"),
+                        });
                     }
                 }
             });
@@ -316,7 +363,10 @@ impl App {
                         let _ = tx.send(BackendEvent::Models { harness, models });
                     }
                     Err(e) => {
-                        let _ = tx.send(BackendEvent::Error { harness, error: format!("models: {e:#}") });
+                        let _ = tx.send(BackendEvent::Error {
+                            harness,
+                            error: format!("models: {e:#}"),
+                        });
                     }
                 }
             });
@@ -333,7 +383,10 @@ impl App {
                         let _ = tx.send(BackendEvent::Agents { harness, agents });
                     }
                     Err(e) => {
-                        let _ = tx.send(BackendEvent::Error { harness, error: format!("agents: {e:#}") });
+                        let _ = tx.send(BackendEvent::Error {
+                            harness,
+                            error: format!("agents: {e:#}"),
+                        });
                     }
                 }
             });
@@ -349,7 +402,12 @@ impl App {
             }
             if let Some(list) = self.sessions.get(&h.id) {
                 for s in list {
-                    out.push((h.id.clone(), s.native_id.clone(), s.title.clone(), s.updated_ms));
+                    out.push((
+                        h.id.clone(),
+                        s.native_id.clone(),
+                        s.title.clone(),
+                        s.updated_ms,
+                    ));
                 }
             }
         }
@@ -393,10 +451,17 @@ impl App {
             tokio::spawn(async move {
                 match b.load_history(&native_id).await {
                     Ok(msgs) => {
-                        let _ = tx.send(BackendEvent::History { harness, native_id, msgs });
+                        let _ = tx.send(BackendEvent::History {
+                            harness,
+                            native_id,
+                            msgs,
+                        });
                     }
                     Err(e) => {
-                        let _ = tx.send(BackendEvent::Error { harness, error: format!("history: {e:#}") });
+                        let _ = tx.send(BackendEvent::Error {
+                            harness,
+                            error: format!("history: {e:#}"),
+                        });
                     }
                 }
             });
@@ -430,7 +495,11 @@ impl App {
         // optimistic user message
         let mut parts = Vec::new();
         if !text.trim().is_empty() {
-            parts.push(RenderPart { part_id: "local".into(), kind: PartKind::Text, text: text.clone() });
+            parts.push(RenderPart {
+                part_id: "local".into(),
+                kind: PartKind::Text,
+                text: text.clone(),
+            });
         }
         self.cur.msgs.push(ChatMsg {
             msg_id: format!("local_{}", self.cur.msgs.len()),
@@ -438,18 +507,19 @@ impl App {
             parts,
             attachments: atts.clone(),
         });
-        self.busy.insert((harness.clone(), self.cur.native_id.clone()));
+        self.busy
+            .insert((harness.clone(), self.cur.native_id.clone()));
         self.last_sent = Some(text.clone());
         self.follow = true;
         self.bottom_offset = 0;
 
         let native_id = self.cur.native_id.clone();
         let title = self.cur.title.clone();
-        let model = self
-            .cur
-            .model_override
-            .clone()
-            .or_else(|| self.cfg.harness(&harness).and_then(|h| h.default_model.clone()));
+        let model = self.cur.model_override.clone().or_else(|| {
+            self.cfg
+                .harness(&harness)
+                .and_then(|h| h.default_model.clone())
+        });
         let agent = self
             .cfg
             .harness(&harness)
@@ -469,7 +539,10 @@ impl App {
                         s.native_id
                     }
                     Err(e) => {
-                        let _ = tx.send(BackendEvent::Error { harness: harness_clone, error: format!("create session: {e:#}") });
+                        let _ = tx.send(BackendEvent::Error {
+                            harness: harness_clone,
+                            error: format!("create session: {e:#}"),
+                        });
                         return;
                     }
                 }
@@ -481,11 +554,17 @@ impl App {
                     &native_id,
                     &text,
                     &atts,
-                    SendOpts { model: model.as_ref(), agent: agent.as_deref() },
+                    SendOpts {
+                        model: model.as_ref(),
+                        agent: agent.as_deref(),
+                    },
                 )
                 .await
             {
-                let _ = tx.send(BackendEvent::Error { harness: harness_clone, error: format!("send: {e:#}") });
+                let _ = tx.send(BackendEvent::Error {
+                    harness: harness_clone,
+                    error: format!("send: {e:#}"),
+                });
             }
         });
     }
@@ -505,16 +584,18 @@ impl App {
                 });
             }
         }
-        self.busy.remove(&(self.cur.harness.clone(), self.cur.native_id.clone()));
+        self.busy
+            .remove(&(self.cur.harness.clone(), self.cur.native_id.clone()));
         self.follow = false;
         self.toast(self.tr(Str::StopNote), false);
     }
 
     pub fn current_model(&self) -> Option<ModelRef> {
-        self.cur
-            .model_override
-            .clone()
-            .or_else(|| self.cfg.harness(&self.cur.harness).and_then(|h| h.default_model.clone()))
+        self.cur.model_override.clone().or_else(|| {
+            self.cfg
+                .harness(&self.cur.harness)
+                .and_then(|h| h.default_model.clone())
+        })
     }
 
     // ---------------- main loop ----------------
@@ -569,15 +650,25 @@ impl App {
             }
             BackendEvent::Sessions { harness, list } => {
                 // remember titles for open chat
-                if let Some(s) = list.iter().find(|s| self.cur.harness == harness && s.native_id == self.cur.native_id) {
+                if let Some(s) = list
+                    .iter()
+                    .find(|s| self.cur.harness == harness && s.native_id == self.cur.native_id)
+                {
                     self.cur.title = s.title.clone();
                 }
                 self.sessions.insert(harness, list);
             }
-            BackendEvent::SessionCreated { harness, native_id, title } => {
+            BackendEvent::SessionCreated {
+                harness,
+                native_id,
+                title,
+            } => {
                 let old = if self.cur.harness == harness {
                     if self.cur.native_id.is_empty() || self.cur.native_id.starts_with("pending-") {
-                        Some(std::mem::replace(&mut self.cur.native_id, native_id.clone()))
+                        Some(std::mem::replace(
+                            &mut self.cur.native_id,
+                            native_id.clone(),
+                        ))
                     } else {
                         None
                     }
@@ -593,24 +684,52 @@ impl App {
                 }
                 self.spawn_refresh_sessions(&harness);
             }
-            BackendEvent::History { harness, native_id, msgs } => {
+            BackendEvent::History {
+                harness,
+                native_id,
+                msgs,
+            } => {
                 if self.cur.harness == harness && self.cur.native_id == native_id {
                     self.cur.msgs = msgs;
                     self.cur.loading = false;
                 }
             }
-            BackendEvent::PartDelta { harness, native_id, msg_id, part_id, kind, delta } => {
+            BackendEvent::PartDelta {
+                harness,
+                native_id,
+                msg_id,
+                part_id,
+                kind,
+                delta,
+            } => {
                 if self.follow {
                     self.apply_part((harness, native_id), msg_id, part_id, kind, delta, true);
                 }
             }
-            BackendEvent::PartUpdated { harness, native_id, msg_id, part } => {
+            BackendEvent::PartUpdated {
+                harness,
+                native_id,
+                msg_id,
+                part,
+            } => {
                 if self.follow {
                     let (kind, text) = (part.kind, part.text);
-                    self.apply_part((harness, native_id), msg_id, part.part_id, kind, text, false);
+                    self.apply_part(
+                        (harness, native_id),
+                        msg_id,
+                        part.part_id,
+                        kind,
+                        text,
+                        false,
+                    );
                 }
             }
-            BackendEvent::PermissionRequest { harness, session_id, request_id, title } => {
+            BackendEvent::PermissionRequest {
+                harness,
+                session_id,
+                request_id,
+                title,
+            } => {
                 // the agent asks before acting — surface a modal (NC silver)
                 let lang = self.cfg.lang;
                 let items = vec![
@@ -622,7 +741,11 @@ impl App {
                     title: format!("⚠ {title}"),
                     items,
                     sel: 0,
-                    action: ListAction::PermissionReply { harness, session_id, request_id },
+                    action: ListAction::PermissionReply {
+                        harness,
+                        session_id,
+                        request_id,
+                    },
                 });
             }
             BackendEvent::Reconnected { harness } => {
@@ -637,10 +760,17 @@ impl App {
                         tokio::spawn(async move {
                             match b.load_history(&native_id).await {
                                 Ok(msgs) => {
-                                    let _ = tx.send(BackendEvent::History { harness: h, native_id, msgs });
+                                    let _ = tx.send(BackendEvent::History {
+                                        harness: h,
+                                        native_id,
+                                        msgs,
+                                    });
                                 }
                                 Err(e) => {
-                                    let _ = tx.send(BackendEvent::Error { harness: h, error: format!("history: {e:#}") });
+                                    let _ = tx.send(BackendEvent::Error {
+                                        harness: h,
+                                        error: format!("history: {e:#}"),
+                                    });
                                 }
                             }
                         });
@@ -661,14 +791,22 @@ impl App {
                 }
                 self.spawn_refresh_sessions(&harness);
             }
-            BackendEvent::StreamError { harness, native_id, error } => {
+            BackendEvent::StreamError {
+                harness,
+                native_id,
+                error,
+            } => {
                 self.busy.remove(&(harness.clone(), native_id.clone()));
                 if self.cur.harness == harness && self.cur.native_id == native_id {
                     self.follow = true;
                     let msg = ChatMsg {
                         msg_id: format!("err_{}", self.cur.msgs.len()),
                         role: Role::Assistant,
-                        parts: vec![RenderPart { part_id: "err".into(), kind: PartKind::Tool, text: format!("⚠ {error}") }],
+                        parts: vec![RenderPart {
+                            part_id: "err".into(),
+                            kind: PartKind::Tool,
+                            text: format!("⚠ {error}"),
+                        }],
                         attachments: Vec::new(),
                     };
                     self.cur.msgs.push(msg);
@@ -702,7 +840,11 @@ impl App {
                         }
                     }
                 }
-                let name = self.cfg.harness(&harness).map(|h| h.name.clone()).unwrap_or(harness);
+                let name = self
+                    .cfg
+                    .harness(&harness)
+                    .map(|h| h.name.clone())
+                    .unwrap_or(harness);
                 self.toast(format!("{name}: {error}"), true);
             }
         }
@@ -715,10 +857,17 @@ impl App {
             tokio::spawn(async move {
                 match b.load_history(&id).await {
                     Ok(msgs) => {
-                        let _ = tx.send(BackendEvent::History { harness: h, native_id: id, msgs });
+                        let _ = tx.send(BackendEvent::History {
+                            harness: h,
+                            native_id: id,
+                            msgs,
+                        });
                     }
                     Err(e) => {
-                        let _ = tx.send(BackendEvent::Error { harness: h, error: format!("history: {e:#}") });
+                        let _ = tx.send(BackendEvent::Error {
+                            harness: h,
+                            error: format!("history: {e:#}"),
+                        });
                     }
                 }
             });
@@ -737,7 +886,7 @@ impl App {
         if self.cur.harness != harness || self.cur.native_id != native_id {
             return;
         }
-        
+
         self.bottom_offset = 0;
         let msg = match self.cur.msgs.iter_mut().find(|m| m.msg_id == msg_id) {
             Some(m) => m,
@@ -760,7 +909,11 @@ impl App {
                 }
             }
             None => {
-                msg.parts.push(RenderPart { part_id: part_id.clone(), kind, text });
+                msg.parts.push(RenderPart {
+                    part_id: part_id.clone(),
+                    kind,
+                    text,
+                });
             }
         }
     }
@@ -790,13 +943,21 @@ impl App {
 
     fn on_mouse(&mut self, m: crossterm::event::MouseEvent) {
         use crossterm::event::{MouseButton, MouseEventKind};
-        let pos = ratatui::layout::Position { x: m.column, y: m.row };
-        let in_modal =
-            |app: &Self, p: ratatui::layout::Position| app.hit.modal_rect.map(|r| r.contains(p)).unwrap_or(false);
+        let pos = ratatui::layout::Position {
+            x: m.column,
+            y: m.row,
+        };
+        let in_modal = |app: &Self, p: ratatui::layout::Position| {
+            app.hit.modal_rect.map(|r| r.contains(p)).unwrap_or(false)
+        };
 
         match m.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                let dir = if matches!(m.kind, MouseEventKind::ScrollUp) { -1 } else { 1 };
+                let dir = if matches!(m.kind, MouseEventKind::ScrollUp) {
+                    -1
+                } else {
+                    1
+                };
                 if self.modal.is_some() && in_modal(self, pos) {
                     self.modal_move(dir);
                 } else if self.hit.chat_rect.contains(pos) {
@@ -832,31 +993,41 @@ impl App {
                     HitTarget::ComposerFocus if !modal_open => self.focus = Focus::Composer,
                     HitTarget::ModalSettingsRow(i) if modal_open => {
                         self.modal = Some(Modal::Settings { sel: i });
-                        self.modal_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Enter));
+                        self.modal_key(crossterm::event::KeyEvent::from(
+                            crossterm::event::KeyCode::Enter,
+                        ));
                     }
                     HitTarget::ModalModelRow(i) if modal_open => {
                         if let Some(Modal::ModelPicker { sel, .. }) = self.modal.as_mut() {
                             *sel = i;
                         }
-                        self.modal_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Enter));
+                        self.modal_key(crossterm::event::KeyEvent::from(
+                            crossterm::event::KeyCode::Enter,
+                        ));
                     }
                     HitTarget::ModalHarnessRow(i) if modal_open => {
                         if let Some(Modal::HarnessPicker { sel, .. }) = self.modal.as_mut() {
                             *sel = i;
                         }
-                        self.modal_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Enter));
+                        self.modal_key(crossterm::event::KeyEvent::from(
+                            crossterm::event::KeyCode::Enter,
+                        ));
                     }
                     HitTarget::ModalFileRow(i) if modal_open => {
                         if let Some(Modal::FilePicker(picker)) = self.modal.as_mut() {
                             picker.sel = i;
                         }
-                        self.modal_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Enter));
+                        self.modal_key(crossterm::event::KeyEvent::from(
+                            crossterm::event::KeyCode::Enter,
+                        ));
                     }
                     HitTarget::ModalListRow(i) if modal_open => {
                         if let Some(Modal::List { sel, .. }) = self.modal.as_mut() {
                             *sel = i;
                         }
-                        self.modal_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Enter));
+                        self.modal_key(crossterm::event::KeyEvent::from(
+                            crossterm::event::KeyCode::Enter,
+                        ));
                     }
                     _ => {}
                 }
@@ -891,7 +1062,13 @@ impl App {
             0 => self.modal = Some(Modal::Help),
             1 => self.modal = Some(Modal::Settings { sel: 0 }),
             2 => self.new_chat(),
-            3 => self.modal = Some(Modal::ModelPicker { filter: Editor::new(), sel: 0, ctx: ModelCtx::CurrentChat }),
+            3 => {
+                self.modal = Some(Modal::ModelPicker {
+                    filter: Editor::new(),
+                    sel: 0,
+                    ctx: ModelCtx::CurrentChat,
+                })
+            }
             4 => self.open_file_picker(false, None),
             5 => self.modal = Some(Modal::HarnessPicker { sel: 0 }),
             6 => self.show_sidebar = !self.show_sidebar,
@@ -918,13 +1095,19 @@ impl App {
         match (k.code, ctrl, alt) {
             (KeyCode::F(1), _, _) => return self.open_modal(Modal::Help),
             (KeyCode::F(2), _, _) => return self.open_modal(Modal::Settings { sel: 0 }),
-            (KeyCode::F(10), _, _) | (KeyCode::Char('q'), true, _) | (KeyCode::Char('c'), true, _) => {
+            (KeyCode::F(10), _, _)
+            | (KeyCode::Char('q'), true, _)
+            | (KeyCode::Char('c'), true, _) => {
                 self.quit = true;
                 return;
             }
             (KeyCode::Char('n'), true, _) => return self.new_chat(),
             (KeyCode::Char('k'), true, _) => {
-                return self.open_modal(Modal::ModelPicker { filter: Editor::new(), sel: 0, ctx: ModelCtx::CurrentChat });
+                return self.open_modal(Modal::ModelPicker {
+                    filter: Editor::new(),
+                    sel: 0,
+                    ctx: ModelCtx::CurrentChat,
+                });
             }
             (KeyCode::Char('h'), true, _) => {
                 return self.open_modal(Modal::HarnessPicker { sel: 0 });
@@ -944,7 +1127,9 @@ impl App {
 
         match self.focus {
             Focus::Composer => match (k.code, ctrl, alt) {
-                (KeyCode::Enter, false, true) | (KeyCode::Char('j' | 'J'), true, false) => self.editor.newline(),
+                (KeyCode::Enter, false, true) | (KeyCode::Char('j' | 'J'), true, false) => {
+                    self.editor.newline()
+                }
                 (KeyCode::Enter, false, false) => self.send_current(),
                 (KeyCode::Esc, _, _) => self.abort_current(),
                 (KeyCode::Tab, _, _) => self.focus = Focus::Sidebar,
@@ -952,8 +1137,12 @@ impl App {
                 (KeyCode::Char('d'), true, _) => {
                     self.attachments.pop();
                 }
-                (KeyCode::PageUp, _, _) => self.bottom_offset = self.bottom_offset.saturating_add(10),
-                (KeyCode::PageDown, _, _) => self.bottom_offset = self.bottom_offset.saturating_sub(10),
+                (KeyCode::PageUp, _, _) => {
+                    self.bottom_offset = self.bottom_offset.saturating_add(10)
+                }
+                (KeyCode::PageDown, _, _) => {
+                    self.bottom_offset = self.bottom_offset.saturating_sub(10)
+                }
                 (KeyCode::End, _, _) => self.bottom_offset = 0,
                 (KeyCode::Char('c'), _, _) if k.modifiers.contains(KeyModifiers::CONTROL) => {}
                 (code, false, _) => self.editor_key(code),
@@ -967,9 +1156,13 @@ impl App {
                         self.open_session(&h, &id);
                     }
                 }
-                (KeyCode::Tab | KeyCode::BackTab | KeyCode::Esc, _, _) => self.focus = Focus::Composer,
+                (KeyCode::Tab | KeyCode::BackTab | KeyCode::Esc, _, _) => {
+                    self.focus = Focus::Composer
+                }
                 (KeyCode::Char('e' | 'E'), false, _) => self.rename_selected(),
-                (KeyCode::Char('d' | 'D') | KeyCode::F(8) | KeyCode::Delete, _, false) => self.delete_selected(),
+                (KeyCode::Char('d' | 'D') | KeyCode::F(8) | KeyCode::Delete, _, false) => {
+                    self.delete_selected()
+                }
                 _ => {}
             },
         }
@@ -997,10 +1190,11 @@ impl App {
             self.sidebar_sel = None;
             return;
         }
-        let pos = self
-            .sidebar_sel
-            .as_ref()
-            .and_then(|(h, id)| items.iter().position(|(ih, iid, _, _)| ih == h && iid == id));
+        let pos = self.sidebar_sel.as_ref().and_then(|(h, id)| {
+            items
+                .iter()
+                .position(|(ih, iid, _, _)| ih == h && iid == id)
+        });
         let next = match pos {
             Some(p) => (p as i32 + dir).clamp(0, items.len() as i32 - 1) as usize,
             None => {
@@ -1016,7 +1210,9 @@ impl App {
     }
 
     fn rename_selected(&mut self) {
-        let Some((h, id)) = self.sidebar_sel.clone() else { return };
+        let Some((h, id)) = self.sidebar_sel.clone() else {
+            return;
+        };
         let title = self
             .sessions
             .get(&h)
@@ -1026,16 +1222,24 @@ impl App {
         self.open_modal(Modal::Input {
             title: self.tr(Str::RenameSession).to_string(),
             editor: Editor::with_text(&title),
-            action: InputAction::RenameSession { harness: h, native_id: id },
+            action: InputAction::RenameSession {
+                harness: h,
+                native_id: id,
+            },
         });
     }
 
     fn delete_selected(&mut self) {
-        let Some((h, id)) = self.sidebar_sel.clone() else { return };
+        let Some((h, id)) = self.sidebar_sel.clone() else {
+            return;
+        };
         self.open_modal(Modal::Confirm {
             title: self.tr(Str::DeleteSession).to_string(),
             message: self.tr(Str::DeleteSessionQ).to_string(),
-            action: ConfirmAction::DeleteSession { harness: h, native_id: id },
+            action: ConfirmAction::DeleteSession {
+                harness: h,
+                native_id: id,
+            },
         });
     }
 
@@ -1077,7 +1281,12 @@ impl App {
                         continue;
                     }
                     let Ok(meta) = e.metadata() else { continue };
-                    let entry = PickerEntry { name: name.clone(), path: e.path(), is_dir: meta.is_dir(), size: meta.len() };
+                    let entry = PickerEntry {
+                        name: name.clone(),
+                        path: e.path(),
+                        is_dir: meta.is_dir(),
+                        size: meta.len(),
+                    };
                     if entry.is_dir {
                         dirs.push(entry);
                     } else {
@@ -1101,7 +1310,12 @@ impl App {
         for l in b'C'..=b'Z' {
             let p = PathBuf::from(format!("{}:\\", l as char));
             if p.exists() {
-                out.push(PickerEntry { name: format!("[{}:]", l as char), path: p, is_dir: true, size: 0 });
+                out.push(PickerEntry {
+                    name: format!("[{}:]", l as char),
+                    path: p,
+                    is_dir: true,
+                    size: 0,
+                });
             }
         }
         out
@@ -1109,10 +1323,17 @@ impl App {
 
     /// Enter pressed in the file picker
     pub fn picker_activate(&mut self) {
-        let Some(Modal::FilePicker(picker)) = &mut self.modal else { return };
-        let Some(entry) = picker.entries.get(picker.sel).cloned() else { return };
+        let Some(Modal::FilePicker(picker)) = &mut self.modal else {
+            return;
+        };
+        let Some(entry) = picker.entries.get(picker.sel).cloned() else {
+            return;
+        };
         if entry.name == ".." {
-            let parent = picker.dir.clone().and_then(|d| d.parent().map(|p| p.to_path_buf()));
+            let parent = picker
+                .dir
+                .clone()
+                .and_then(|d| d.parent().map(|p| p.to_path_buf()));
             if let Some(p) = parent {
                 picker.dir = Some(p);
             } else {
@@ -1130,7 +1351,12 @@ impl App {
             let meta = AttachmentMeta::from_path(&entry.path);
             if meta.size > crate::backend::MAX_ATTACHMENT_BYTES {
                 self.toast(
-                    format!("{}: {} > {} MB", meta.filename, meta.size_label(), crate::backend::MAX_ATTACHMENT_BYTES / (1024 * 1024)),
+                    format!(
+                        "{}: {} > {} MB",
+                        meta.filename,
+                        meta.size_label(),
+                        crate::backend::MAX_ATTACHMENT_BYTES / (1024 * 1024)
+                    ),
                     true,
                 );
                 return;
@@ -1141,7 +1367,9 @@ impl App {
     }
 
     pub fn picker_attach_marked(&mut self) {
-        let Some(Modal::FilePicker(picker)) = &mut self.modal else { return };
+        let Some(Modal::FilePicker(picker)) = &mut self.modal else {
+            return;
+        };
         if picker.dir_mode {
             // choose current directory as workdir
             if let Some(dir) = picker.dir.clone() {
@@ -1159,9 +1387,12 @@ impl App {
         }
         let marked: Vec<PathBuf> = picker.marked.iter().cloned().collect();
         if marked.is_empty() {
-            let Some(entry) = picker.entries.get(picker.sel) else { return };
+            let Some(entry) = picker.entries.get(picker.sel) else {
+                return;
+            };
             if !entry.is_dir {
-                self.attachments.push(AttachmentMeta::from_path(&entry.path));
+                self.attachments
+                    .push(AttachmentMeta::from_path(&entry.path));
                 self.modal = None;
             }
             return;
@@ -1210,8 +1441,16 @@ impl App {
                 let rows = self.settings_rows();
                 let len = rows.len().max(1);
                 match k.code {
-                    KeyCode::Up => self.modal = Some(Modal::Settings { sel: (sel + len - 1) % len }),
-                    KeyCode::Down => self.modal = Some(Modal::Settings { sel: (sel + 1) % len }),
+                    KeyCode::Up => {
+                        self.modal = Some(Modal::Settings {
+                            sel: (sel + len - 1) % len,
+                        })
+                    }
+                    KeyCode::Down => {
+                        self.modal = Some(Modal::Settings {
+                            sel: (sel + 1) % len,
+                        })
+                    }
                     KeyCode::Enter => {
                         let row = rows.get(sel).cloned();
                         self.modal = None;
@@ -1225,8 +1464,16 @@ impl App {
             Modal::HarnessPicker { sel } => {
                 let len = self.cfg.harnesses.len().max(1);
                 match k.code {
-                    KeyCode::Up => self.modal = Some(Modal::HarnessPicker { sel: (sel + len - 1) % len }),
-                    KeyCode::Down => self.modal = Some(Modal::HarnessPicker { sel: (sel + 1) % len }),
+                    KeyCode::Up => {
+                        self.modal = Some(Modal::HarnessPicker {
+                            sel: (sel + len - 1) % len,
+                        })
+                    }
+                    KeyCode::Down => {
+                        self.modal = Some(Modal::HarnessPicker {
+                            sel: (sel + 1) % len,
+                        })
+                    }
                     KeyCode::Enter => {
                         self.modal = None;
                         self.switch_harness(sel);
@@ -1234,28 +1481,48 @@ impl App {
                     _ => {}
                 }
             }
-            Modal::ModelPicker { filter: mut f, sel, ctx } => {
+            Modal::ModelPicker {
+                filter: mut f,
+                sel,
+                ctx,
+            } => {
                 let items = self.filtered_models();
                 match k.code {
                     KeyCode::Up => {
                         if !items.is_empty() {
                             let s = (sel + items.len() - 1) % items.len();
-                            self.modal = Some(Modal::ModelPicker { filter: f, sel: s, ctx });
+                            self.modal = Some(Modal::ModelPicker {
+                                filter: f,
+                                sel: s,
+                                ctx,
+                            });
                         }
                     }
                     KeyCode::Down => {
                         if !items.is_empty() {
                             let s = (sel + 1) % items.len();
-                            self.modal = Some(Modal::ModelPicker { filter: f, sel: s, ctx });
+                            self.modal = Some(Modal::ModelPicker {
+                                filter: f,
+                                sel: s,
+                                ctx,
+                            });
                         }
                     }
                     KeyCode::Backspace => {
                         f.backspace();
-                        self.modal = Some(Modal::ModelPicker { filter: f, sel: 0, ctx });
+                        self.modal = Some(Modal::ModelPicker {
+                            filter: f,
+                            sel: 0,
+                            ctx,
+                        });
                     }
                     KeyCode::Char(c) if !ctrl => {
                         f.insert_char(c);
-                        self.modal = Some(Modal::ModelPicker { filter: f, sel: 0, ctx });
+                        self.modal = Some(Modal::ModelPicker {
+                            filter: f,
+                            sel: 0,
+                            ctx,
+                        });
                     }
                     KeyCode::Enter => {
                         self.modal = None;
@@ -1288,7 +1555,9 @@ impl App {
                                 KeyCode::Home => picker.sel = 0,
                                 KeyCode::End => picker.sel = len.saturating_sub(1),
                                 KeyCode::PageUp => picker.sel = picker.sel.saturating_sub(8),
-                                KeyCode::PageDown => picker.sel = (picker.sel + 8).min(len.saturating_sub(1)),
+                                KeyCode::PageDown => {
+                                    picker.sel = (picker.sel + 8).min(len.saturating_sub(1))
+                                }
                                 KeyCode::Insert => {
                                     if let Some(e) = picker.entries.get(picker.sel) {
                                         if !e.is_dir {
@@ -1315,7 +1584,10 @@ impl App {
                                     Self::load_picker_dir(picker);
                                 }
                                 KeyCode::Backspace => {
-                                    let parent = picker.dir.clone().and_then(|d| d.parent().map(|p| p.to_path_buf()));
+                                    let parent = picker
+                                        .dir
+                                        .clone()
+                                        .and_then(|d| d.parent().map(|p| p.to_path_buf()));
                                     if let Some(p) = parent {
                                         picker.dir = Some(p);
                                     } else {
@@ -1329,35 +1601,60 @@ impl App {
                     }
                 }
             }
-            Modal::Input { title, mut editor, action } => {
-                match k.code {
-                    KeyCode::Enter => {
-                        self.modal = None;
-                        let value = editor.text();
-                        self.apply_input(value, action);
-                    }
-                    _ => {
-                        match k.code {
-                            KeyCode::Backspace => editor.backspace(),
-                            KeyCode::Delete => editor.delete(),
-                            KeyCode::Left => editor.left(),
-                            KeyCode::Right => editor.right(),
-                            KeyCode::Up => editor.up(),
-                            KeyCode::Down => editor.down(),
-                            KeyCode::Home => editor.home(),
-                            KeyCode::End => editor.end(),
-                            KeyCode::Char(c) if !ctrl => editor.insert_char(c),
-                            _ => {}
-                        }
-                        self.modal = Some(Modal::Input { title, editor, action });
-                    }
+            Modal::Input {
+                title,
+                mut editor,
+                action,
+            } => match k.code {
+                KeyCode::Enter => {
+                    self.modal = None;
+                    let value = editor.text();
+                    self.apply_input(value, action);
                 }
-            }
-            Modal::List { title, items, sel, action } => {
+                _ => {
+                    match k.code {
+                        KeyCode::Backspace => editor.backspace(),
+                        KeyCode::Delete => editor.delete(),
+                        KeyCode::Left => editor.left(),
+                        KeyCode::Right => editor.right(),
+                        KeyCode::Up => editor.up(),
+                        KeyCode::Down => editor.down(),
+                        KeyCode::Home => editor.home(),
+                        KeyCode::End => editor.end(),
+                        KeyCode::Char(c) if !ctrl => editor.insert_char(c),
+                        _ => {}
+                    }
+                    self.modal = Some(Modal::Input {
+                        title,
+                        editor,
+                        action,
+                    });
+                }
+            },
+            Modal::List {
+                title,
+                items,
+                sel,
+                action,
+            } => {
                 let len = items.len().max(1);
                 match k.code {
-                    KeyCode::Up => self.modal = Some(Modal::List { title, items, sel: (sel + len - 1) % len, action }),
-                    KeyCode::Down => self.modal = Some(Modal::List { title, items, sel: (sel + 1) % len, action }),
+                    KeyCode::Up => {
+                        self.modal = Some(Modal::List {
+                            title,
+                            items,
+                            sel: (sel + len - 1) % len,
+                            action,
+                        })
+                    }
+                    KeyCode::Down => {
+                        self.modal = Some(Modal::List {
+                            title,
+                            items,
+                            sel: (sel + 1) % len,
+                            action,
+                        })
+                    }
                     KeyCode::Enter => {
                         self.modal = None;
                         if let Some((id, _)) = items.into_iter().nth(sel) {
@@ -1394,7 +1691,10 @@ impl App {
     }
 
     fn apply_model(&mut self, info: ModelInfo, ctx: ModelCtx) {
-        let r = ModelRef { provider_id: info.provider_id, model_id: info.model_id };
+        let r = ModelRef {
+            provider_id: info.provider_id,
+            model_id: info.model_id,
+        };
         match ctx {
             ModelCtx::CurrentChat => {
                 self.cur.model_override = Some(r.clone());
@@ -1402,7 +1702,15 @@ impl App {
                     h.default_model = Some(r);
                 }
                 let _ = self.cfg.save();
-                self.toast(format!("✓ {}", self.current_model().map(|m| m.display()).unwrap_or_default()), false);
+                self.toast(
+                    format!(
+                        "✓ {}",
+                        self.current_model()
+                            .map(|m| m.display())
+                            .unwrap_or_default()
+                    ),
+                    false,
+                );
             }
             ModelCtx::HarnessDefault { harness } => {
                 if let Some(h) = self.cfg.harness_mut(&harness) {
@@ -1414,9 +1722,14 @@ impl App {
     }
 
     fn switch_harness(&mut self, idx: usize) {
-        let Some(h) = self.cfg.harnesses.get(idx).cloned() else { return };
+        let Some(h) = self.cfg.harnesses.get(idx).cloned() else {
+            return;
+        };
         if !backend::supported_kind(&h.kind) {
-            self.toast(format!("{}: {}", h.name, self.tr(Str::SettingsDisabledKind)), true);
+            self.toast(
+                format!("{}: {}", h.name, self.tr(Str::SettingsDisabledKind)),
+                true,
+            );
             return;
         }
         if !h.enabled {
@@ -1467,7 +1780,11 @@ impl App {
             }
             SettingsKind::ServerUrl => {
                 let id = self.active_harness.clone();
-                let cur = self.cfg.harness(&id).map(|h| h.server_url.clone()).unwrap_or_default();
+                let cur = self
+                    .cfg
+                    .harness(&id)
+                    .map(|h| h.server_url.clone())
+                    .unwrap_or_default();
                 self.modal = Some(Modal::Input {
                     title: self.tr(Str::SettingsServerUrl).to_string(),
                     editor: Editor::with_text(&cur),
@@ -1476,7 +1793,11 @@ impl App {
             }
             SettingsKind::ServerPassword => {
                 let id = self.active_harness.clone();
-                let cur = self.cfg.harness(&id).map(|h| h.server_password.clone()).unwrap_or_default();
+                let cur = self
+                    .cfg
+                    .harness(&id)
+                    .map(|h| h.server_password.clone())
+                    .unwrap_or_default();
                 self.modal = Some(Modal::Input {
                     title: self.tr(Str::SettingsServerPassword).to_string(),
                     editor: Editor::with_text(&cur),
@@ -1490,7 +1811,10 @@ impl App {
             SettingsKind::Agent => {
                 let id = self.active_harness.clone();
                 let agents = self.agents.get(&id).cloned().unwrap_or_default();
-                let items: Vec<(String, String)> = agents.iter().map(|a| (a.id.clone(), a.name.clone())).collect();
+                let items: Vec<(String, String)> = agents
+                    .iter()
+                    .map(|a| (a.id.clone(), a.name.clone()))
+                    .collect();
                 self.modal = Some(Modal::List {
                     title: self.tr(Str::SettingsAgent).to_string(),
                     items,
@@ -1574,7 +1898,9 @@ impl App {
                 if self.cur.harness == harness && self.cur.native_id == native_id {
                     self.cur = CurrentChat::draft(&self.active_harness.clone());
                 }
-                self.sessions.entry(harness.clone()).and_modify(|l| l.retain(|s| s.native_id != native_id));
+                self.sessions
+                    .entry(harness.clone())
+                    .and_modify(|l| l.retain(|s| s.native_id != native_id));
                 self.sidebar_sel = None;
                 if let Some(b) = self.backends.get(&harness).cloned() {
                     tokio::spawn(async move {
@@ -1595,7 +1921,11 @@ impl App {
                 }
                 let _ = self.cfg.save();
             }
-            ListAction::PermissionReply { harness, session_id, request_id } => {
+            ListAction::PermissionReply {
+                harness,
+                session_id,
+                request_id,
+            } => {
                 let reply = match id.as_str() {
                     "always" => "always",
                     "reject" => "reject",
@@ -1636,11 +1966,25 @@ impl App {
                 h.server_password.clone(),
                 h.workdir.clone(),
                 h.agent.clone(),
-                h.default_model.as_ref().map(|m| m.display()).unwrap_or_default(),
+                h.default_model
+                    .as_ref()
+                    .map(|m| m.display())
+                    .unwrap_or_default(),
                 h.auto_approve,
                 backend::supported_kind(&h.kind),
             ),
-            None => ("—".into(), String::new(), false, String::new(), String::new(), String::new(), String::new(), String::new(), false, false),
+            None => (
+                "—".into(),
+                String::new(),
+                false,
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                false,
+                false,
+            ),
         };
         rows.push(SettingsRow {
             label: t(lang, Str::SettingsActiveHarness).into(),
@@ -1661,17 +2005,29 @@ impl App {
         });
         rows.push(SettingsRow {
             label: t(lang, Str::SettingsServerUrl).into(),
-            value: if hsrv.is_empty() { t(lang, Str::None_).to_string() } else { hsrv.clone() },
+            value: if hsrv.is_empty() {
+                t(lang, Str::None_).to_string()
+            } else {
+                hsrv.clone()
+            },
             kind: SettingsKind::ServerUrl,
         });
         rows.push(SettingsRow {
             label: t(lang, Str::SettingsServerPassword).into(),
-            value: if hpw.is_empty() { t(lang, Str::None_).to_string() } else { "••••".into() },
+            value: if hpw.is_empty() {
+                t(lang, Str::None_).to_string()
+            } else {
+                "••••".into()
+            },
             kind: SettingsKind::ServerPassword,
         });
         rows.push(SettingsRow {
             label: t(lang, Str::SettingsWorkdir).into(),
-            value: if hwd.is_empty() { ".".into() } else { hwd.clone() },
+            value: if hwd.is_empty() {
+                ".".into()
+            } else {
+                hwd.clone()
+            },
             kind: SettingsKind::Workdir,
         });
         rows.push(SettingsRow {
@@ -1686,7 +2042,11 @@ impl App {
         });
         rows.push(SettingsRow {
             label: t(lang, Str::SettingsDefaultModel).into(),
-            value: if hmodel.is_empty() { t(lang, Str::None_).to_string() } else { hmodel.clone() },
+            value: if hmodel.is_empty() {
+                t(lang, Str::None_).to_string()
+            } else {
+                hmodel.clone()
+            },
             kind: SettingsKind::DefaultModel,
         });
         rows

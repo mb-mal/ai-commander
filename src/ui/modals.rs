@@ -2,28 +2,34 @@
 //! picker, text input, confirm. Double borders + shadow — old-school.
 //! List rows register hit zones so mouse clicks/wheel work inside modals.
 
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::symbols::border;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
-use ratatui::Frame;
 
-use super::theme::{wrap_str, THEME as TH};
+use super::theme::{THEME as TH, wrap_str};
 use super::{App, FilePicker, HitTarget, Modal};
-use crate::i18n::{t, Lang, Str};
+use crate::i18n::{Lang, Str, t};
 
 pub fn draw_modal(app: &mut App, f: &mut Frame, size: Rect) {
     match app.modal.clone() {
         Some(Modal::Help) => draw_help(app, f, size),
         Some(Modal::About) => draw_about(app, f, size),
         Some(Modal::Settings { sel }) => draw_settings(app, f, size, sel),
-        Some(Modal::ModelPicker { filter, sel, .. }) => draw_model_picker(app, f, size, &filter.text(), sel),
+        Some(Modal::ModelPicker { filter, sel, .. }) => {
+            draw_model_picker(app, f, size, &filter.text(), sel)
+        }
         Some(Modal::HarnessPicker { sel }) => draw_harness_picker(app, f, size, sel),
         Some(Modal::FilePicker(p)) => draw_file_picker(app, f, size, &p),
-        Some(Modal::Input { title, editor, .. }) => draw_input(app, f, size, &title, &editor.text()),
+        Some(Modal::Input { title, editor, .. }) => {
+            draw_input(app, f, size, &title, &editor.text())
+        }
         Some(Modal::Confirm { title, message, .. }) => draw_confirm(app, f, size, &title, &message),
-        Some(Modal::List { title, items, sel, .. }) => draw_list(app, f, size, &title, &items, sel),
+        Some(Modal::List {
+            title, items, sel, ..
+        }) => draw_list(app, f, size, &title, &items, sel),
         None => {}
     }
 }
@@ -44,15 +50,26 @@ fn centered(size: Rect, w: u16, h: u16) -> Rect {
 fn dialog_frame(app: &mut App, f: &mut Frame, area: Rect, title: &str) -> Rect {
     // shadow
     if area.right() < f.area().right() || area.bottom() < f.area().bottom() {
-        let shadow = Rect { x: area.x + 2, y: area.y + 1, width: area.width, height: area.height };
+        let shadow = Rect {
+            x: area.x + 2,
+            y: area.y + 1,
+            width: area.width,
+            height: area.height,
+        };
         let shadow_clipped = shadow.intersection(f.area());
-        f.render_widget(Block::new().style(Style::new().bg(TH.shadow)), shadow_clipped);
+        f.render_widget(
+            Block::new().style(Style::new().bg(TH.shadow)),
+            shadow_clipped,
+        );
     }
     f.render_widget(Clear, area);
     let block = Block::default()
         .border_set(border::DOUBLE)
         .border_style(TH.dlg_border_style())
-        .title(Span::styled(format!(" {title} "), TH.dlg_bold(TH.dlg_accent)))
+        .title(Span::styled(
+            format!(" {title} "),
+            TH.dlg_bold(TH.dlg_accent),
+        ))
         .style(Style::new().bg(TH.dlg_bg));
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -61,7 +78,12 @@ fn dialog_frame(app: &mut App, f: &mut Frame, area: Rect, title: &str) -> Rect {
 }
 
 fn row_rect(inner: Rect, i: usize) -> Rect {
-    Rect { x: inner.x, y: inner.y + i as u16, width: inner.width, height: 1 }
+    Rect {
+        x: inner.x,
+        y: inner.y + i as u16,
+        width: inner.width,
+        height: 1,
+    }
 }
 
 fn draw_help(app: &mut App, f: &mut Frame, size: Rect) {
@@ -69,27 +91,153 @@ fn draw_help(app: &mut App, f: &mut Frame, size: Rect) {
     let inner = dialog_frame(app, f, centered(size, 72, 22), t(lang, Str::HelpTitle));
     let ru = lang == Lang::Ru;
     let keys: Vec<(&str, &str)> = vec![
-        ("Enter", if ru { "отправить сообщение" } else { "send message" }),
-        ("Alt+Enter / Ctrl+J", if ru { "перенос строки" } else { "newline" }),
-        ("Esc", if ru { "стоп-следование / закрыть окно" } else { "stop following / close dialog" }),
+        (
+            "Enter",
+            if ru {
+                "отправить сообщение"
+            } else {
+                "send message"
+            },
+        ),
+        (
+            "Alt+Enter / Ctrl+J",
+            if ru {
+                "перенос строки"
+            } else {
+                "newline"
+            },
+        ),
+        (
+            "Esc",
+            if ru {
+                "стоп-следование / закрыть окно"
+            } else {
+                "stop following / close dialog"
+            },
+        ),
         ("Ctrl+N", if ru { "новый чат" } else { "new chat" }),
-        ("Ctrl+K", if ru { "выбор модели (из доступных харнесса)" } else { "pick model (live list from harness)" }),
-        ("Ctrl+H", if ru { "переключить харнесс" } else { "switch harness" }),
-        ("Ctrl+P", if ru { "прикрепить файл/картинку" } else { "attach file/image" }),
-        ("Ctrl+O", if ru { "показать/скрыть панель истории" } else { "show/hide history panel" }),
-        ("Ctrl+D", if ru { "убрать последнее вложение" } else { "drop last attachment" }),
-        ("Tab", if ru { "переход: история ↔ ввод" } else { "focus: history ↔ input" }),
-        ("PgUp/PgDn", if ru { "прокрутка чата (PgDn/End — вниз)" } else { "scroll chat (PgDn/End — bottom)" }),
-        ("E (в истории)", if ru { "переименовать сессию" } else { "rename session" }),
-        ("D / Del (в истории)", if ru { "удалить сессию" } else { "delete session" }),
-        ("F1", if ru { "эта справка" } else { "this help" }),
-        ("F2", if ru { "настройки (язык, профиль, харнессы)" } else { "settings (language, profile, harnesses)" }),
+        (
+            "Ctrl+K",
+            if ru {
+                "выбор модели (из доступных харнесса)"
+            } else {
+                "pick model (live list from harness)"
+            },
+        ),
+        (
+            "Ctrl+H",
+            if ru {
+                "переключить харнесс"
+            } else {
+                "switch harness"
+            },
+        ),
+        (
+            "Ctrl+P",
+            if ru {
+                "прикрепить файл/картинку"
+            } else {
+                "attach file/image"
+            },
+        ),
+        (
+            "Ctrl+O",
+            if ru {
+                "показать/скрыть панель истории"
+            } else {
+                "show/hide history panel"
+            },
+        ),
+        (
+            "Ctrl+D",
+            if ru {
+                "убрать последнее вложение"
+            } else {
+                "drop last attachment"
+            },
+        ),
+        (
+            "Tab",
+            if ru {
+                "переход: история ↔ ввод"
+            } else {
+                "focus: history ↔ input"
+            },
+        ),
+        (
+            "PgUp/PgDn",
+            if ru {
+                "прокрутка чата (PgDn/End — вниз)"
+            } else {
+                "scroll chat (PgDn/End — bottom)"
+            },
+        ),
+        (
+            "E (в истории)",
+            if ru {
+                "переименовать сессию"
+            } else {
+                "rename session"
+            },
+        ),
+        (
+            "D / Del (в истории)",
+            if ru {
+                "удалить сессию"
+            } else {
+                "delete session"
+            },
+        ),
+        (
+            "F1",
+            if ru {
+                "эта справка"
+            } else {
+                "this help"
+            },
+        ),
+        (
+            "F2",
+            if ru {
+                "настройки (язык, профиль, харнессы)"
+            } else {
+                "settings (language, profile, harnesses)"
+            },
+        ),
         ("F10 / Ctrl+Q", if ru { "выход" } else { "quit" }),
         ("", ""),
-        ("Мышь / mouse", if ru { "клики по меню, сессиям, кнопкам; колесо — прокрутка" } else { "click menus, sessions, buttons; wheel scrolls" }),
-        ("Ins / Enter (в пикере)", if ru { "отметить / выбрать файлы" } else { "mark / pick files" }),
-        ("Tab (в пикере)", if ru { "список дисков ↔ каталог" } else { "drive list ↔ directory" }),
-        ("A", if ru { "об авторе (About)" } else { "about the author (About)" }),
+        (
+            "Мышь / mouse",
+            if ru {
+                "клики по меню, сессиям, кнопкам; колесо — прокрутка"
+            } else {
+                "click menus, sessions, buttons; wheel scrolls"
+            },
+        ),
+        (
+            "Ins / Enter (в пикере)",
+            if ru {
+                "отметить / выбрать файлы"
+            } else {
+                "mark / pick files"
+            },
+        ),
+        (
+            "Tab (в пикере)",
+            if ru {
+                "список дисков ↔ каталог"
+            } else {
+                "drive list ↔ directory"
+            },
+        ),
+        (
+            "A",
+            if ru {
+                "об авторе (About)"
+            } else {
+                "about the author (About)"
+            },
+        ),
     ];
     let mut lines = Vec::new();
     for (k, d) in keys {
@@ -98,7 +246,13 @@ fn draw_help(app: &mut App, f: &mut Frame, size: Rect) {
             continue;
         }
         lines.push(Line::from(vec![
-            Span::styled(format!("{k:<22}"), Style::new().fg(TH.dlg_accent).bg(TH.dlg_bg).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("{k:<22}"),
+                Style::new()
+                    .fg(TH.dlg_accent)
+                    .bg(TH.dlg_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(d.to_string(), TH.dlg_normal()),
         ]));
     }
@@ -108,7 +262,11 @@ fn draw_help(app: &mut App, f: &mut Frame, size: Rect) {
 /// Classic 90s About screen: name, version, author, copyright, "press any key".
 fn draw_about(app: &mut App, f: &mut Frame, size: Rect) {
     let lang = app.lang();
-    let title = if lang == Lang::Ru { "О программе" } else { "About" };
+    let title = if lang == Lang::Ru {
+        "О программе"
+    } else {
+        "About"
+    };
     let inner = dialog_frame(app, f, centered(size, 56, 16), title);
     let w = inner.width as usize;
 
@@ -120,16 +278,31 @@ fn draw_about(app: &mut App, f: &mut Frame, size: Rect) {
 
     let version = env!("CARGO_PKG_VERSION");
     let mut lines: Vec<Line<'static>> = vec![
-        Line::from(Span::styled(center("════════════════════════"), TH.dlg_accent_style())),
-        Line::from(Span::styled(center("ai-commander"), TH.dlg_bold(TH.dlg_accent))),
-        Line::from(Span::styled(center("════════════════════════"), TH.dlg_accent_style())),
-        Line::from(Span::styled(center(&format!("version {version}")), TH.dlg_dim_style())),
+        Line::from(Span::styled(
+            center("════════════════════════"),
+            TH.dlg_accent_style(),
+        )),
+        Line::from(Span::styled(
+            center("ai-commander"),
+            TH.dlg_bold(TH.dlg_accent),
+        )),
+        Line::from(Span::styled(
+            center("════════════════════════"),
+            TH.dlg_accent_style(),
+        )),
+        Line::from(Span::styled(
+            center(&format!("version {version}")),
+            TH.dlg_dim_style(),
+        )),
         Line::from(""),
         Line::from(Span::styled(
             center("ChatGPT-style TUI for AI agent harnesses"),
             TH.dlg_normal(),
         )),
-        Line::from(Span::styled(center("with Norton-Commander DNA"), TH.dlg_normal())),
+        Line::from(Span::styled(
+            center("with Norton-Commander DNA"),
+            TH.dlg_normal(),
+        )),
         Line::from(""),
         Line::from(Span::styled(sep.clone(), TH.dlg_dim_style())),
         Line::from(vec![
@@ -146,9 +319,16 @@ fn draw_about(app: &mut App, f: &mut Frame, size: Rect) {
         ]),
         Line::from(Span::styled(sep, TH.dlg_dim_style())),
         Line::from(""),
-        Line::from(Span::styled(center("© 2026 Mikhail Malyshev"), TH.dlg_dim_style())),
         Line::from(Span::styled(
-            center(if lang == Lang::Ru { "— нажмите любую клавишу —" } else { "— press any key —" }),
+            center("© 2026 Mikhail Malyshev"),
+            TH.dlg_dim_style(),
+        )),
+        Line::from(Span::styled(
+            center(if lang == Lang::Ru {
+                "— нажмите любую клавишу —"
+            } else {
+                "— press any key —"
+            }),
             TH.dlg_dim_style(),
         )),
     ];
@@ -164,19 +344,35 @@ fn draw_settings(app: &mut App, f: &mut Frame, size: Rect, sel: usize) {
     let mut lines = Vec::new();
     for (i, row) in rows.iter().enumerate() {
         let selected = i == sel;
-        let (fg, bg) = if selected { (TH.sel_fg, TH.sel_bg) } else { (TH.dlg_fg, TH.dlg_bg) };
+        let (fg, bg) = if selected {
+            (TH.sel_fg, TH.sel_bg)
+        } else {
+            (TH.dlg_fg, TH.dlg_bg)
+        };
         let mut spans = vec![Span::styled(
             format!(" {} ", if selected { "▸" } else { " " }),
             Style::new().fg(TH.accent).bg(bg),
         )];
-        spans.push(Span::styled(format!("{:<28}", row.label), Style::new().fg(TH.dlg_dim).bg(bg)));
-        spans.push(Span::styled(format!(" {}", row.value), Style::new().fg(fg).bg(bg).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(
+            format!("{:<28}", row.label),
+            Style::new().fg(TH.dlg_dim).bg(bg),
+        ));
+        spans.push(Span::styled(
+            format!(" {}", row.value),
+            Style::new().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+        ));
         lines.push(Line::from(spans));
-        app.hit.targets.push((row_rect(inner, i), HitTarget::ModalSettingsRow(i)));
+        app.hit
+            .targets
+            .push((row_rect(inner, i), HitTarget::ModalSettingsRow(i)));
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        format!(" Enter: {} · Esc: {}", t(lang, Str::Save), t(lang, Str::Close)),
+        format!(
+            " Enter: {} · Esc: {}",
+            t(lang, Str::Save),
+            t(lang, Str::Close)
+        ),
         TH.dlg_dim_style(),
     )));
     f.render_widget(Paragraph::new(lines), inner);
@@ -186,13 +382,22 @@ fn draw_model_picker(app: &mut App, f: &mut Frame, size: Rect, filter: &str, sel
     let lang = app.lang();
     let inner = dialog_frame(app, f, centered(size, 58, 16), t(lang, Str::ModelPicker));
     let mut lines = vec![Line::from(vec![
-        Span::styled(" /", Style::new().fg(TH.dlg_accent).bg(TH.dlg_bg).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " /",
+            Style::new()
+                .fg(TH.dlg_accent)
+                .bg(TH.dlg_bg)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(format!("{filter}▏"), TH.dlg_normal()),
         Span::styled(format!("  {}", t(lang, Str::Search)), TH.dlg_dim_style()),
     ])];
     let items = app.filtered_models();
     if items.is_empty() {
-        lines.push(Line::from(Span::styled(format!(" {}", t(lang, Str::ModelPickerEmpty)), TH.dlg_dim_style())));
+        lines.push(Line::from(Span::styled(
+            format!(" {}", t(lang, Str::ModelPickerEmpty)),
+            TH.dlg_dim_style(),
+        )));
     }
     for (i, m) in items.iter().enumerate() {
         let selected = i == sel;
@@ -203,7 +408,9 @@ fn draw_model_picker(app: &mut App, f: &mut Frame, size: Rect, filter: &str, sel
             format!("{marker}{}", m.display()),
             Style::new().fg(fg).bg(bg),
         )]));
-        app.hit.targets.push((row_rect(inner, i + 1), HitTarget::ModalModelRow(i)));
+        app.hit
+            .targets
+            .push((row_rect(inner, i + 1), HitTarget::ModalModelRow(i)));
     }
     f.render_widget(Paragraph::new(lines), inner);
     let (x, y) = (inner.x + 2 + filter.chars().count() as u16, inner.y);
@@ -230,14 +437,24 @@ fn draw_harness_picker(app: &mut App, f: &mut Frame, size: Rect, sel: usize) {
             Span::styled(
                 format!("{marker}[{}] {} ", h.id, h.name),
                 if active {
-                    Style::new().fg(TH.dlg_accent).bg(bg).add_modifier(Modifier::BOLD)
+                    Style::new()
+                        .fg(TH.dlg_accent)
+                        .bg(bg)
+                        .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::new().fg(if selected { TH.sel_fg } else { TH.dlg_fg }).bg(bg)
+                    Style::new()
+                        .fg(if selected { TH.sel_fg } else { TH.dlg_fg })
+                        .bg(bg)
                 },
             ),
-            Span::styled(format!("· {} · {}", h.kind, status), Style::new().fg(TH.dlg_dim).bg(bg)),
+            Span::styled(
+                format!("· {} · {}", h.kind, status),
+                Style::new().fg(TH.dlg_dim).bg(bg),
+            ),
         ]));
-        app.hit.targets.push((row_rect(inner, i), HitTarget::ModalHarnessRow(i)));
+        app.hit
+            .targets
+            .push((row_rect(inner, i), HitTarget::ModalHarnessRow(i)));
     }
     f.render_widget(Paragraph::new(lines), inner);
 }
@@ -277,36 +494,79 @@ fn draw_file_picker(app: &mut App, f: &mut Frame, size: Rect, p: &FilePicker) {
     ];
 
     if let Some(err) = &p.err {
-        lines.push(Line::from(Span::styled(format!(" ⚠ {err}"), Style::new().fg(TH.dlg_err).bg(TH.dlg_bg))));
+        lines.push(Line::from(Span::styled(
+            format!(" ⚠ {err}"),
+            Style::new().fg(TH.dlg_err).bg(TH.dlg_bg),
+        )));
     }
 
     let name_w = (inner.width as usize).saturating_sub(14).max(10);
     for (i, e) in p.entries.iter().enumerate() {
         let selected = i == p.sel;
         let marked = p.marked.contains(&e.path);
-        let bg = if marked { TH.mark } else if selected { TH.sel_bg } else { TH.dlg_bg };
-        let fg = if marked || selected { TH.sel_fg } else { TH.dlg_fg };
+        let bg = if marked {
+            TH.mark
+        } else if selected {
+            TH.sel_bg
+        } else {
+            TH.dlg_bg
+        };
+        let fg = if marked || selected {
+            TH.sel_fg
+        } else {
+            TH.dlg_fg
+        };
         let name: String = e.name.chars().take(name_w).collect();
-        let right = if e.is_dir { "<DIR>".to_string() } else { fmt_size(e.size) };
+        let right = if e.is_dir {
+            "<DIR>".to_string()
+        } else {
+            fmt_size(e.size)
+        };
         let pad = name_w.saturating_sub(name.chars().count());
         lines.push(Line::from(vec![
-            Span::styled(if marked { " ■ " } else { "   " }, Style::new().fg(TH.sel_fg).bg(TH.mark)),
+            Span::styled(
+                if marked { " ■ " } else { "   " },
+                Style::new().fg(TH.sel_fg).bg(TH.mark),
+            ),
             Span::styled(
                 format!("{name}{} ", " ".repeat(pad)),
-                Style::new().fg(if marked { TH.sel_fg } else if e.is_dir { TH.dlg_accent } else { fg }).bg(bg),
+                Style::new()
+                    .fg(if marked {
+                        TH.sel_fg
+                    } else if e.is_dir {
+                        TH.dlg_accent
+                    } else {
+                        fg
+                    })
+                    .bg(bg),
             ),
             Span::styled(format!("{right:>9}"), Style::new().fg(TH.dlg_dim).bg(bg)),
         ]));
-        app.hit.targets.push((row_rect(inner, i + 2), HitTarget::ModalFileRow(i)));
+        app.hit
+            .targets
+            .push((row_rect(inner, i + 2), HitTarget::ModalFileRow(i)));
     }
 
     lines.push(Line::from(""));
     let hint = if p.dir_mode {
-        format!(" Enter: {} · F5: {} · Esc: {}", t(lang, Str::Close), t(lang, Str::PickAttach), t(lang, Str::Cancel))
+        format!(
+            " Enter: {} · F5: {} · Esc: {}",
+            t(lang, Str::Close),
+            t(lang, Str::PickAttach),
+            t(lang, Str::Cancel)
+        )
     } else {
-        format!(" Enter: {} · Ins: mark · Tab: {} · Backspace: .. · Esc: {}", t(lang, Str::PickAttach), t(lang, Str::Drives), t(lang, Str::Cancel))
+        format!(
+            " Enter: {} · Ins: mark · Tab: {} · Backspace: .. · Esc: {}",
+            t(lang, Str::PickAttach),
+            t(lang, Str::Drives),
+            t(lang, Str::Cancel)
+        )
     };
-    lines.push(Line::from(Span::styled(format!(" {hint}"), TH.dlg_dim_style())));
+    lines.push(Line::from(Span::styled(
+        format!(" {hint}"),
+        TH.dlg_dim_style(),
+    )));
 
     f.render_widget(Paragraph::new(lines), inner);
 }
@@ -320,7 +580,11 @@ fn draw_input(app: &mut App, f: &mut Frame, size: Rect, title: &str, value: &str
     ])];
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        format!(" Enter: {} · Esc: {}", t(lang, Str::Save), t(lang, Str::Cancel)),
+        format!(
+            " Enter: {} · Esc: {}",
+            t(lang, Str::Save),
+            t(lang, Str::Cancel)
+        ),
         TH.dlg_dim_style(),
     )));
     f.render_widget(Paragraph::new(lines), inner);
@@ -343,21 +607,40 @@ fn draw_confirm(app: &mut App, f: &mut Frame, size: Rect, title: &str, message: 
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-fn draw_list(app: &mut App, f: &mut Frame, size: Rect, title: &str, items: &[(String, String)], sel: usize) {
+fn draw_list(
+    app: &mut App,
+    f: &mut Frame,
+    size: Rect,
+    title: &str,
+    items: &[(String, String)],
+    sel: usize,
+) {
     let lang = app.lang();
     let inner = dialog_frame(app, f, centered(size, 44, 12), title);
     let mut lines = Vec::new();
     if items.is_empty() {
-        lines.push(Line::from(Span::styled(format!(" {}", t(lang, Str::ModelPickerEmpty)), TH.dlg_dim_style())));
+        lines.push(Line::from(Span::styled(
+            format!(" {}", t(lang, Str::ModelPickerEmpty)),
+            TH.dlg_dim_style(),
+        )));
     }
     for (i, (id, name)) in items.iter().enumerate() {
         let selected = i == sel;
         let bg = if selected { TH.sel_bg } else { TH.dlg_bg };
         let fg = if selected { TH.sel_fg } else { TH.dlg_fg };
         let marker = if selected { "▸ " } else { "  " };
-        let label = if id == name { id.clone() } else { format!("{name} ({id})") };
-        lines.push(Line::from(Span::styled(format!("{marker}{label}"), Style::new().fg(fg).bg(bg))));
-        app.hit.targets.push((row_rect(inner, i), HitTarget::ModalListRow(i)));
+        let label = if id == name {
+            id.clone()
+        } else {
+            format!("{name} ({id})")
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{marker}{label}"),
+            Style::new().fg(fg).bg(bg),
+        )));
+        app.hit
+            .targets
+            .push((row_rect(inner, i), HitTarget::ModalListRow(i)));
     }
     f.render_widget(Paragraph::new(lines), inner);
 }

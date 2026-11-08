@@ -2,14 +2,25 @@
 
 [![screenshot](docs/screenshot.png)](docs/screenshot.png)
 
+*(the image above is a rendered mockup of the real UI, generated from the
+theme constants by `scripts/make-screenshot.py` — no real session data)*
+
 ChatGPT-style TUI client for AI agent harnesses with the aesthetics of
 DOS-era file managers (Norton Commander: box-drawing frames, F-key bar,
 blue screen + silver dialogs) — written in Rust (ratatui + crossterm + tokio).
 
-The first working harness is **OpenCode** (tested with CLI 2.2.6): the app
-auto-starts `opencode serve`, streams replies over SSE, pulls the live model
-list (`GET /api/model` — deepseek-flash, GLM, local MLX models) and supports
-attachments (images/files → base64 data-URL).
+## Support matrix
+
+| Harness | Kind | Streaming | Sessions | Attachments | Esc |
+|---|---|---|---|---|---|
+| OpenCode ≥ 2.2 | HTTP+SSE server (auto-started) | live deltas | server-side | images & files (≤8 MB) | detach* |
+| Hermes Agent | CLI subprocess | live deltas | local registry | images via `--image` | real kill |
+| DeepSeek Harness (`dsh`) | CLI subprocess (headless) | replace events | local registry | — | real kill |
+
+\* opencode 2.2 exposes no abort endpoint: Esc stops following the turn; the
+result loads when it finishes, and the next message interrupts it.
+
+## How it works
 
 The second harness is **Hermes Agent** (CLI): ai-commander drives the
 `hermes chat` subprocess per message, streams its `--format stream-json`
@@ -107,8 +118,22 @@ agent (build/plan/…), default model. Everything persists in `config.toml`.
 ## Tests
 
 ```bash
-cargo test   # 14: SSE mapping, markdown, i18n, config round-trip, wrap, editor, mime
+cargo test   # 20: SSE/NDJSON mapping, markdown, i18n, config round-trip, wrap, editor, mime, atomic store
 ```
+
+## Limitations & roadmap
+
+- dsh headless does not replay session context on `--session-id`, so the
+  backend folds stored history into the task text; `Esc` for opencode only
+  detaches (no server abort); reasoning/tool history is not persisted for
+  CLI harnesses (text only).
+- The internal `trait Backend` is a purpose-built subset of what ACP covers;
+  migrating to an ACP-based backend (`agent-client-protocol`, `opencode acp`)
+  is the planned next architectural step, together with typed JSON models,
+  a render cache for long chats, and per-harness permissions presets.
+- MCP is the agent's concern: sessions can be pointed at MCP servers by the
+  harness config; A2A is agent-to-agent and out of scope for a chat client.
+- The screenshot is a mockup; a real capture (vhs) is on the wishlist.
 
 ## Author
 

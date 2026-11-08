@@ -22,13 +22,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::{kill_tree, AgentInfo, AttachmentMeta, Backend, BackendEvent, ChatMsg, ModelInfo, PartKind, RenderPart, Role, SendOpts, SessionInfo};
+use super::{
+    AgentInfo, AttachmentMeta, Backend, BackendEvent, ChatMsg, ModelInfo, PartKind, RenderPart,
+    Role, SendOpts, SessionInfo, kill_tree,
+};
 use crate::config::HarnessCfg;
 
 const MAX_HISTORY_TURNS: usize = 30;
@@ -69,7 +72,9 @@ fn now_ms() -> i64 {
 }
 
 fn persist_atomic(path: &std::path::Path, store: &DshStore) {
-    let Ok(raw) = serde_json::to_vec_pretty(store) else { return };
+    let Ok(raw) = serde_json::to_vec_pretty(store) else {
+        return;
+    };
     let tmp = path.with_extension("tmp");
     if std::fs::write(&tmp, &raw).is_ok() {
         let _ = std::fs::rename(&tmp, path);
@@ -85,7 +90,11 @@ fn compose_task(history: &[StoredMsg], text: &str) -> String {
     let tail = &history[history.len().saturating_sub(MAX_HISTORY_TURNS * 2)..];
     let mut out = String::from("[Conversation so far — for context]\n");
     for m in tail {
-        out.push_str(if m.role == "user" { "User: " } else { "Assistant: " });
+        out.push_str(if m.role == "user" {
+            "User: "
+        } else {
+            "Assistant: "
+        });
         out.push_str(&m.text);
         out.push_str("\n\n");
     }
@@ -96,7 +105,8 @@ fn compose_task(history: &[StoredMsg], text: &str) -> String {
 
 impl DshBackend {
     pub fn new(cfg: HarnessCfg, events: UnboundedSender<BackendEvent>) -> Self {
-        let store_path = crate::config::config_dir().join(format!("harness-{}-sessions.json", cfg.id));
+        let store_path =
+            crate::config::config_dir().join(format!("harness-{}-sessions.json", cfg.id));
         let store = std::fs::read(&store_path)
             .ok()
             .and_then(|raw| serde_json::from_slice(&raw).ok())
@@ -131,7 +141,8 @@ impl DshBackend {
         for npx_dir in candidates {
             if let Ok(entries) = std::fs::read_dir(&npx_dir) {
                 for e in entries.flatten() {
-                    let bin = e.path()
+                    let bin = e
+                        .path()
                         .join("node_modules")
                         .join("@deepseek-ai")
                         .join("dsh")
@@ -205,7 +216,9 @@ impl DshBackend {
         if let Some(key) = self.api_key() {
             cmd.env("DEEPSEEK_API_KEY", key);
         }
-        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -242,7 +255,9 @@ impl Backend for DshBackend {
 
     async fn connect(&self) -> Result<String> {
         if self.api_key().is_none() {
-            bail!("DEEPSEEK_API_KEY not set and no deepseek key found in the opencode auth store; set the key in the environment or configure opencode");
+            bail!(
+                "DEEPSEEK_API_KEY not set and no deepseek key found in the opencode auth store; set the key in the environment or configure opencode"
+            );
         }
         self.connected.store(true, Ordering::Relaxed);
         Ok("0.2.x".into())
@@ -307,7 +322,11 @@ impl Backend for DshBackend {
             .enumerate()
             .map(|(i, m)| ChatMsg {
                 msg_id: format!("dsh{i}"),
-                role: if m.role == "user" { Role::User } else { Role::Assistant },
+                role: if m.role == "user" {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
                 parts: vec![RenderPart {
                     part_id: "t0".into(),
                     kind: PartKind::Text,
@@ -318,7 +337,13 @@ impl Backend for DshBackend {
             .collect())
     }
 
-    async fn send(&self, native_id: &str, text: &str, _attachments: &[AttachmentMeta], _opts: SendOpts<'_>) -> Result<()> {
+    async fn send(
+        &self,
+        native_id: &str,
+        text: &str,
+        _attachments: &[AttachmentMeta],
+        _opts: SendOpts<'_>,
+    ) -> Result<()> {
         // headless dsh has no attachment flag yet
         let history: Vec<StoredMsg> = self
             .store
@@ -362,15 +387,22 @@ impl Backend for DshBackend {
             let mut session_id: Option<String> = None;
             let mut final_text = String::new();
             let mut error: Option<String> = None;
-            let msg_key = |sid: &Option<String>| format!("dsh_{}", sid.clone().unwrap_or_else(|| sent_id.clone()));
+            let msg_key = |sid: &Option<String>| {
+                format!("dsh_{}", sid.clone().unwrap_or_else(|| sent_id.clone()))
+            };
 
             for line in reader.lines() {
                 let Ok(line) = line else { break };
-                let Some(v) = parse_json_line(&line) else { continue };
+                let Some(v) = parse_json_line(&line) else {
+                    continue;
+                };
                 let ty = v.get("type").and_then(Value::as_str).unwrap_or("");
                 match ty {
                     "session" => {
-                        session_id = v.get("sessionId").and_then(Value::as_str).map(str::to_owned);
+                        session_id = v
+                            .get("sessionId")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
                     }
                     "thinking" => {
                         let t = v.get("text").and_then(Value::as_str).unwrap_or("");
@@ -402,11 +434,21 @@ impl Backend for DshBackend {
                         });
                     }
                     "final" => {
-                        final_text = v.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+                        final_text = v
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
                         if session_id.is_none() {
-                            session_id = v.get("sessionId").and_then(Value::as_str).map(str::to_owned);
+                            session_id = v
+                                .get("sessionId")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned);
                         }
-                        let reason = v.pointer("/reason/kind").and_then(Value::as_str).unwrap_or("");
+                        let reason = v
+                            .pointer("/reason/kind")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
                         if reason != "completed" {
                             error = v
                                 .pointer("/reason/error/message")
@@ -428,18 +470,34 @@ impl Backend for DshBackend {
                         if !real_id.is_empty() {
                             s.native_id = real_id.clone();
                         }
-                        s.msgs.push(StoredMsg { role: "user".into(), text: user_text.clone() });
-                        s.msgs.push(StoredMsg { role: "assistant".into(), text: final_text.clone() });
+                        s.msgs.push(StoredMsg {
+                            role: "user".into(),
+                            text: user_text.clone(),
+                        });
+                        s.msgs.push(StoredMsg {
+                            role: "assistant".into(),
+                            text: final_text.clone(),
+                        });
                         s.updated_ms = now_ms();
                     }
                     None => {
                         g.sessions.push(StoredSession {
-                            native_id: if real_id.is_empty() { sent_id.clone() } else { real_id.clone() },
+                            native_id: if real_id.is_empty() {
+                                sent_id.clone()
+                            } else {
+                                real_id.clone()
+                            },
                             title: user_text.chars().take(48).collect(),
                             updated_ms: now_ms(),
                             msgs: vec![
-                                StoredMsg { role: "user".into(), text: user_text.clone() },
-                                StoredMsg { role: "assistant".into(), text: final_text.clone() },
+                                StoredMsg {
+                                    role: "user".into(),
+                                    text: user_text.clone(),
+                                },
+                                StoredMsg {
+                                    role: "assistant".into(),
+                                    text: final_text.clone(),
+                                },
                             ],
                         });
                     }
@@ -515,11 +573,19 @@ mod tests {
 
     #[test]
     fn parses_events() {
-        let v = parse_json_line(r#"{"type":"session","sessionId":"session-x","cwd":"C:\\"}"#).unwrap();
-        assert_eq!(v.get("sessionId").and_then(Value::as_str), Some("session-x"));
+        let v =
+            parse_json_line(r#"{"type":"session","sessionId":"session-x","cwd":"C:\\"}"#).unwrap();
+        assert_eq!(
+            v.get("sessionId").and_then(Value::as_str),
+            Some("session-x")
+        );
 
-        let v = parse_json_line(r#"{"type":"final","reason":{"kind":"completed"},"text":"ok"}"#).unwrap();
-        assert_eq!(v.pointer("/reason/kind").and_then(Value::as_str), Some("completed"));
+        let v = parse_json_line(r#"{"type":"final","reason":{"kind":"completed"},"text":"ok"}"#)
+            .unwrap();
+        assert_eq!(
+            v.pointer("/reason/kind").and_then(Value::as_str),
+            Some("completed")
+        );
     }
 
     #[test]
@@ -531,8 +597,14 @@ mod tests {
     #[test]
     fn compose_task_replays_history() {
         let h = vec![
-            StoredMsg { role: "user".into(), text: "hi".into() },
-            StoredMsg { role: "assistant".into(), text: "hello".into() },
+            StoredMsg {
+                role: "user".into(),
+                text: "hi".into(),
+            },
+            StoredMsg {
+                role: "assistant".into(),
+                text: "hello".into(),
+            },
         ];
         let t = compose_task(&h, "next?");
         assert!(t.contains("User: hi"));

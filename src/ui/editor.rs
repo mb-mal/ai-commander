@@ -12,7 +12,11 @@ pub struct Editor {
 
 impl Editor {
     pub fn new() -> Self {
-        Editor { lines: vec![String::new()], row: 0, col: 0 }
+        Editor {
+            lines: vec![String::new()],
+            row: 0,
+            col: 0,
+        }
     }
 
     pub fn with_text(text: &str) -> Self {

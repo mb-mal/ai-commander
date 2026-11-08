@@ -16,8 +16,10 @@ use std::io::stdout;
 
 use anyhow::Result;
 use crossterm::event::Event as CEvent;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
-use crossterm::{execute, event as cev};
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
+use crossterm::{event as cev, execute};
 use ratatui::Terminal;
 
 use config::Config;
@@ -110,13 +112,17 @@ async fn main() -> Result<()> {
 // ---------------- headless E2E: send a message, watch the live stream ----------------
 
 async fn run_send(cfg: Config, text: &str, wait_secs: u64, harness_id: &str) -> Result<()> {
-    use backend::{create_backend, BackendEvent, PartKind, SendOpts};
+    use backend::{BackendEvent, PartKind, SendOpts, create_backend};
     use std::time::Instant;
 
     let harness_cfg = cfg
         .harnesses
         .iter()
-        .find(|h| h.enabled && backend::supported_kind(&h.kind) && (harness_id.is_empty() || h.id == harness_id))
+        .find(|h| {
+            h.enabled
+                && backend::supported_kind(&h.kind)
+                && (harness_id.is_empty() || h.id == harness_id)
+        })
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("no enabled harness '{}' in config", harness_id))?;
 
@@ -129,9 +135,21 @@ async fn run_send(cfg: Config, text: &str, wait_secs: u64, harness_id: &str) -> 
     println!("session: {}", session.native_id);
 
     let model = harness_cfg.default_model.clone();
-    let agent = if harness_cfg.agent.is_empty() { None } else { Some(harness_cfg.agent.clone()) };
-    b.send(&session.native_id, text, &[], SendOpts { model: model.as_ref(), agent: agent.as_deref() })
-        .await?;
+    let agent = if harness_cfg.agent.is_empty() {
+        None
+    } else {
+        Some(harness_cfg.agent.clone())
+    };
+    b.send(
+        &session.native_id,
+        text,
+        &[],
+        SendOpts {
+            model: model.as_ref(),
+            agent: agent.as_deref(),
+        },
+    )
+    .await?;
     println!("sent, streaming up to {wait_secs}s…");
 
     let mut saw_delta = false;
@@ -148,17 +166,20 @@ async fn run_send(cfg: Config, text: &str, wait_secs: u64, harness_id: &str) -> 
             Err(_) => break, // deadline
         };
         match ev {
-            BackendEvent::PartDelta { native_id, kind, delta, .. }
-                if native_id == session.native_id && kind == PartKind::Text =>
-            {
+            BackendEvent::PartDelta {
+                native_id,
+                kind,
+                delta,
+                ..
+            } if native_id == session.native_id && kind == PartKind::Text => {
                 saw_delta = true;
                 print!("{delta}");
                 use std::io::Write;
                 let _ = std::io::stdout().flush();
             }
-            BackendEvent::PartUpdated { native_id, part, .. }
-                if native_id == session.native_id && part.kind == PartKind::Text && !saw_delta =>
-            {
+            BackendEvent::PartUpdated {
+                native_id, part, ..
+            } if native_id == session.native_id && part.kind == PartKind::Text && !saw_delta => {
                 // replace-style event without deltas seen
                 last_text = part.text.clone();
             }
@@ -166,7 +187,9 @@ async fn run_send(cfg: Config, text: &str, wait_secs: u64, harness_id: &str) -> 
                 println!();
                 break;
             }
-            BackendEvent::StreamError { native_id, error, .. } if native_id == session.native_id => {
+            BackendEvent::StreamError {
+                native_id, error, ..
+            } if native_id == session.native_id => {
                 println!("\n[stream error] {error}");
                 break;
             }
@@ -188,10 +211,23 @@ async fn run_send(cfg: Config, text: &str, wait_secs: u64, harness_id: &str) -> 
         let assistant: Vec<String> = msgs
             .iter()
             .filter(|m| m.role == backend::Role::Assistant)
-            .flat_map(|m| m.parts.iter().filter(|p| p.kind == PartKind::Text).map(|p| p.text.clone()).collect::<Vec<_>>())
+            .flat_map(|m| {
+                m.parts
+                    .iter()
+                    .filter(|p| p.kind == PartKind::Text)
+                    .map(|p| p.text.clone())
+                    .collect::<Vec<_>>()
+            })
             .collect();
         let joined = assistant.join("\n");
-        println!("{}", if joined.is_empty() { "(no reply)" } else { &joined });
+        println!(
+            "{}",
+            if joined.is_empty() {
+                "(no reply)"
+            } else {
+                &joined
+            }
+        );
         if joined.is_empty() {
             let _ = b.delete_session(&session.native_id).await;
             b.shutdown();
@@ -212,7 +248,11 @@ async fn run_check(cfg: Config, harness_id: &str) -> Result<()> {
     let harness_cfg = cfg
         .harnesses
         .iter()
-        .find(|h| h.enabled && backend::supported_kind(&h.kind) && (harness_id.is_empty() || h.id == harness_id))
+        .find(|h| {
+            h.enabled
+                && backend::supported_kind(&h.kind)
+                && (harness_id.is_empty() || h.id == harness_id)
+        })
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("no enabled harness '{}' in config", harness_id))?;
 
@@ -222,7 +262,11 @@ async fn run_check(cfg: Config, harness_id: &str) -> Result<()> {
     );
     println!(
         "server: {}",
-        if harness_cfg.server_url.is_empty() { "autostart".into() } else { harness_cfg.server_url.clone() }
+        if harness_cfg.server_url.is_empty() {
+            "autostart".into()
+        } else {
+            harness_cfg.server_url.clone()
+        }
     );
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -259,14 +303,16 @@ async fn run_check(cfg: Config, harness_id: &str) -> Result<()> {
 // ---------------- TUI ----------------
 
 fn spawn_input_thread(tx: tokio::sync::mpsc::UnboundedSender<CEvent>) {
-    std::thread::spawn(move || loop {
-        match cev::read() {
-            Ok(ev) => {
-                if tx.send(ev).is_err() {
-                    return;
+    std::thread::spawn(move || {
+        loop {
+            match cev::read() {
+                Ok(ev) => {
+                    if tx.send(ev).is_err() {
+                        return;
+                    }
                 }
+                Err(_) => return,
             }
-            Err(_) => return,
         }
     });
 }
@@ -315,9 +361,16 @@ async fn run_tui(cfg: Config) -> Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen, cev::EnableMouseCapture, cev::EnableBracketedPaste)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        cev::EnableMouseCapture,
+        cev::EnableBracketedPaste
+    )?;
     let terminal = Terminal::new(ratatui::backend::CrosstermBackend::new(stdout))?;
-    let mut guard = TerminalGuard { terminal: Some(terminal) };
+    let mut guard = TerminalGuard {
+        terminal: Some(terminal),
+    };
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     spawn_input_thread(tx);

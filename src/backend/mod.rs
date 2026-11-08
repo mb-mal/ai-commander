@@ -9,8 +9,8 @@ pub mod opencode;
 use std::path::Path;
 use std::path::PathBuf;
 
-use async_trait::async_trait;
 use anyhow::Result;
+use async_trait::async_trait;
 
 use crate::config::HarnessCfg;
 use crate::config::ModelRef;
@@ -104,10 +104,10 @@ pub fn mime_for(path: &Path) -> String {
         "bmp" => "image/bmp",
         "svg" => "image/svg+xml",
         "pdf" => "application/pdf",
-        "txt" | "md" | "log" | "csv" | "toml" | "ini" | "cfg" | "yaml" | "yml" | "json"
-        | "xml" | "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "c" | "h" | "cpp" | "hpp"
-        | "go" | "java" | "kt" | "sh" | "bat" | "ps1" | "lua" | "rb" | "php" | "cs"
-        | "html" | "css" | "scss" | "sql" | "r" | "m" => "text/plain",
+        "txt" | "md" | "log" | "csv" | "toml" | "ini" | "cfg" | "yaml" | "yml" | "json" | "xml"
+        | "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "c" | "h" | "cpp" | "hpp" | "go" | "java"
+        | "kt" | "sh" | "bat" | "ps1" | "lua" | "rb" | "php" | "cs" | "html" | "css" | "scss"
+        | "sql" | "r" | "m" => "text/plain",
         "mp3" | "wav" | "ogg" | "flac" => "audio/ogg", // generic; opencode decides
         "mp4" | "mkv" | "webm" | "mov" => "video/mp4",
         "zip" => "application/zip",
@@ -147,13 +147,25 @@ pub enum BackendEvent {
     /// Connected and healthy; carries server version
     Connected { harness: String, version: String },
     /// Session list refresh (all sessions of one harness)
-    Sessions { harness: String, list: Vec<SessionInfo> },
+    Sessions {
+        harness: String,
+        list: Vec<SessionInfo>,
+    },
     /// Sessions of this harness changed server-side — UI should re-fetch
     SessionsChanged { harness: String },
     /// A draft chat got a real session after first message
-    SessionCreated { harness: String, native_id: String, title: String },
+    SessionCreated {
+        harness: String,
+        native_id: String,
+        title: String,
+    },
     /// The agent asks the user to approve an action (opencode permission flow)
-    PermissionRequest { harness: String, session_id: String, request_id: String, title: String },
+    PermissionRequest {
+        harness: String,
+        session_id: String,
+        request_id: String,
+        title: String,
+    },
     /// SSE stream reconnected after a drop — UI should reload current history
     Reconnected { harness: String },
     /// History loaded for a session
@@ -185,8 +197,14 @@ pub enum BackendEvent {
         native_id: String,
         error: String,
     },
-    Models { harness: String, models: Vec<ModelInfo> },
-    Agents { harness: String, agents: Vec<AgentInfo> },
+    Models {
+        harness: String,
+        models: Vec<ModelInfo>,
+    },
+    Agents {
+        harness: String,
+        agents: Vec<AgentInfo>,
+    },
     /// Global backend error (connection etc.)
     Error { harness: String, error: String },
 }
@@ -209,11 +227,22 @@ pub trait Backend: Send + Sync {
     async fn rename_session(&self, native_id: &str, title: &str) -> Result<()>;
     async fn delete_session(&self, native_id: &str) -> Result<()>;
     async fn load_history(&self, native_id: &str) -> Result<Vec<ChatMsg>>;
-    async fn send(&self, native_id: &str, text: &str, attachments: &[AttachmentMeta], opts: SendOpts<'_>) -> Result<()>;
+    async fn send(
+        &self,
+        native_id: &str,
+        text: &str,
+        attachments: &[AttachmentMeta],
+        opts: SendOpts<'_>,
+    ) -> Result<()>;
     async fn abort(&self, native_id: &str) -> Result<()>;
 
     /// Answer a PermissionRequest (opencode: once/always/reject).
-    async fn permission_reply(&self, _native_id: &str, _request_id: &str, _reply: &str) -> Result<()> {
+    async fn permission_reply(
+        &self,
+        _native_id: &str,
+        _request_id: &str,
+        _reply: &str,
+    ) -> Result<()> {
         anyhow::bail!("permissions are not supported by this harness")
     }
 
@@ -227,11 +256,23 @@ pub trait Backend: Send + Sync {
 }
 
 /// Instantiate a backend by harness config kind.
-pub fn create_backend(cfg: &HarnessCfg, events: tokio::sync::mpsc::UnboundedSender<BackendEvent>) -> Result<std::sync::Arc<dyn Backend>> {
+pub fn create_backend(
+    cfg: &HarnessCfg,
+    events: tokio::sync::mpsc::UnboundedSender<BackendEvent>,
+) -> Result<std::sync::Arc<dyn Backend>> {
     match cfg.kind.as_str() {
-        "opencode" => Ok(std::sync::Arc::new(opencode::OpenCodeBackend::new(cfg.clone(), events))),
-        "hermes" => Ok(std::sync::Arc::new(hermes::HermesBackend::new(cfg.clone(), events))),
-        "deepseek-harness" => Ok(std::sync::Arc::new(dsh::DshBackend::new(cfg.clone(), events))),
+        "opencode" => Ok(std::sync::Arc::new(opencode::OpenCodeBackend::new(
+            cfg.clone(),
+            events,
+        ))),
+        "hermes" => Ok(std::sync::Arc::new(hermes::HermesBackend::new(
+            cfg.clone(),
+            events,
+        ))),
+        "deepseek-harness" => Ok(std::sync::Arc::new(dsh::DshBackend::new(
+            cfg.clone(),
+            events,
+        ))),
         other => anyhow::bail!("harness kind '{other}' is not supported yet"),
     }
 }
@@ -272,6 +313,9 @@ mod tests {
         assert_eq!(mime_for(Path::new("/x/photo.PNG")), "image/png");
         assert_eq!(mime_for(Path::new("/x/doc.md")), "text/plain");
         assert_eq!(mime_for(Path::new("/x/report.pdf")), "application/pdf");
-        assert_eq!(mime_for(Path::new("/x/blob.xyz")), "application/octet-stream");
+        assert_eq!(
+            mime_for(Path::new("/x/blob.xyz")),
+            "application/octet-stream"
+        );
     }
 }

@@ -16,34 +16,34 @@ pub struct Theme {
     pub fg: Color,
     pub dim: Color,
     pub placeholder: Color,
-    pub accent: Color,   // NC cyan
-    pub user: Color,     // NC yellow
+    pub accent: Color, // NC cyan
+    pub user: Color,   // NC yellow
     pub assistant: Color,
     pub reasoning: Color,
-    pub tool: Color,     // NC yellow (softer)
+    pub tool: Color, // NC yellow (softer)
     pub err: Color,
-    pub mark: Color,     // selection yellow bg
-    pub sel_bg: Color,   // NC cursor bar: cyan bg
-    pub sel_fg: Color,   // black text on the cyan bar
+    pub mark: Color,   // selection yellow bg
+    pub sel_bg: Color, // NC cursor bar: cyan bg
+    pub sel_fg: Color, // black text on the cyan bar
     pub code_bg: Color,
     // --- dialog (menu) palette: classic NC gray dialogs over the blue screen ---
-    pub dlg_bg: Color,      // silver
-    pub dlg_fg: Color,      // black
-    pub dlg_dim: Color,     // dark gray
-    pub dlg_accent: Color,  // dark blue
-    pub dlg_err: Color,     // dark red
-    pub dlg_tool: Color,    // brown
-    pub shadow: Color,      // near-black dialog shadow
+    pub dlg_bg: Color,     // silver
+    pub dlg_fg: Color,     // black
+    pub dlg_dim: Color,    // dark gray
+    pub dlg_accent: Color, // dark blue
+    pub dlg_err: Color,    // dark red
+    pub dlg_tool: Color,   // brown
+    pub shadow: Color,     // near-black dialog shadow
 }
 
 pub const THEME: Theme = Theme {
-    bg: Color::Rgb(0x00, 0x00, 0x8A),          // NC blue
+    bg: Color::Rgb(0x00, 0x00, 0x8A), // NC blue
     panel: Color::Rgb(0x00, 0x00, 0x8A),
     header_bg: Color::Rgb(0x00, 0x00, 0x6E),   // deeper blue
     composer_bg: Color::Rgb(0x00, 0x00, 0x5A), // deepest blue — input zone
     border: Color::Rgb(0x4F, 0xBF, 0xBF),      // NC cyan (slightly softened)
     border_dim: Color::Rgb(0x2E, 0x74, 0x8F),
-    fg: Color::Rgb(0xE8, 0xEC, 0xEC),          // near-white
+    fg: Color::Rgb(0xE8, 0xEC, 0xEC), // near-white
     dim: Color::Rgb(0x8E, 0x9C, 0xB8),
     placeholder: Color::Rgb(0xC4, 0xCB, 0xD8), // clearly lighter than the hints
     accent: Color::Rgb(0x55, 0xFF, 0xFF),      // NC bright cyan
@@ -52,14 +52,14 @@ pub const THEME: Theme = Theme {
     reasoning: Color::Rgb(0x93, 0x9B, 0xC8),
     tool: Color::Rgb(0xF5, 0xD4, 0x4A),
     err: Color::Rgb(0xFF, 0x6B, 0x6B),
-    mark: Color::Rgb(0xAA, 0xAA, 0x00),        // NC marked-file yellow
-    sel_bg: Color::Rgb(0x00, 0xB3, 0xB3),      // NC cursor: cyan bar
-    sel_fg: Color::Rgb(0x00, 0x00, 0x00),      // …with black text
+    mark: Color::Rgb(0xAA, 0xAA, 0x00),   // NC marked-file yellow
+    sel_bg: Color::Rgb(0x00, 0xB3, 0xB3), // NC cursor: cyan bar
+    sel_fg: Color::Rgb(0x00, 0x00, 0x00), // …with black text
     code_bg: Color::Rgb(0x00, 0x00, 0x64),
-    dlg_bg: Color::Rgb(0xAA, 0xAA, 0xAA),      // NC dialog silver
-    dlg_fg: Color::Rgb(0x14, 0x14, 0x14),      // black-ish text on silver
+    dlg_bg: Color::Rgb(0xAA, 0xAA, 0xAA), // NC dialog silver
+    dlg_fg: Color::Rgb(0x14, 0x14, 0x14), // black-ish text on silver
     dlg_dim: Color::Rgb(0x5A, 0x5A, 0x5A),
-    dlg_accent: Color::Rgb(0x00, 0x00, 0xAA),  // NC blue on silver
+    dlg_accent: Color::Rgb(0x00, 0x00, 0xAA), // NC blue on silver
     dlg_err: Color::Rgb(0xAA, 0x00, 0x00),
     dlg_tool: Color::Rgb(0x7A, 0x5C, 0x00),
     shadow: Color::Rgb(0x10, 0x10, 0x10),
@@ -92,7 +92,10 @@ impl Theme {
         Style::new().fg(self.user).bg(self.bg)
     }
     pub fn reasoning_style(&self) -> Style {
-        Style::new().fg(self.reasoning).bg(self.bg).add_modifier(Modifier::ITALIC)
+        Style::new()
+            .fg(self.reasoning)
+            .bg(self.bg)
+            .add_modifier(Modifier::ITALIC)
     }
     pub fn bold(&self, fg: Color) -> Style {
         Style::new().fg(fg).bg(self.bg).add_modifier(Modifier::BOLD)
@@ -114,7 +117,10 @@ impl Theme {
         Style::new().fg(self.dlg_accent).bg(self.dlg_bg)
     }
     pub fn dlg_bold(&self, fg: Color) -> Style {
-        Style::new().fg(fg).bg(self.dlg_bg).add_modifier(Modifier::BOLD)
+        Style::new()
+            .fg(fg)
+            .bg(self.dlg_bg)
+            .add_modifier(Modifier::BOLD)
     }
     pub fn dlg_border_style(&self) -> Style {
         Style::new().fg(self.dlg_accent).bg(self.dlg_bg)
@@ -218,7 +224,11 @@ pub fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Line<'static>>
             i += 1;
         }
         let word = &chars[start..i];
-        let space_w = if cur_w > 0 { pending_space.min(width) } else { 0 };
+        let space_w = if cur_w > 0 {
+            pending_space.min(width)
+        } else {
+            0
+        };
 
         if cur_w + space_w + word_w <= width {
             if cur_w > 0 {
@@ -282,7 +292,10 @@ mod tests {
     #[test]
     fn wraps_long_lines() {
         let w = wrap_str("hello world this is a long line of text", 10);
-        assert!(w.iter().all(|l| unicode_width::UnicodeWidthStr::width(l.as_str()) <= 10));
+        assert!(
+            w.iter()
+                .all(|l| unicode_width::UnicodeWidthStr::width(l.as_str()) <= 10)
+        );
         assert!(w.len() >= 4);
     }
 

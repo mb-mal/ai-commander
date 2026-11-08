@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use base64::Engine as _;
 use eventsource_stream::Eventsource;
@@ -88,7 +88,10 @@ impl OpenCodeBackend {
             cfg,
             password,
             http: b.build().expect("reqwest client"),
-            bare: reqwest::Client::builder().no_proxy().build().expect("reqwest client"),
+            bare: reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("reqwest client"),
             events,
             base_url: Mutex::new(None),
             child: Mutex::new(None),
@@ -120,22 +123,36 @@ impl OpenCodeBackend {
         if !status.is_success() {
             bail!("GET {path} -> {status}: {}", truncate(&text, 300));
         }
-        serde_json::from_str(&text).with_context(|| format!("parse GET {path}: {}", truncate(&text, 300)))
+        serde_json::from_str(&text)
+            .with_context(|| format!("parse GET {path}: {}", truncate(&text, 300)))
     }
 
-    async fn send_json(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value> {
+    async fn send_json(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value> {
         let base = self.base().await?;
         let mut req = self.http.request(method, format!("{base}{path}"));
         if let Some(b) = body {
             req = req.json(&b);
         }
-        let resp = req.timeout(Duration::from_secs(60)).send().await.with_context(|| format!("req {path}"))?;
+        let resp = req
+            .timeout(Duration::from_secs(60))
+            .send()
+            .await
+            .with_context(|| format!("req {path}"))?;
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
             bail!("{path} -> {status}: {}", truncate(&text, 300));
         }
-        Ok(if text.is_empty() { Value::Null } else { serde_json::from_str(&text).unwrap_or(Value::Null) })
+        Ok(if text.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_str(&text).unwrap_or(Value::Null)
+        })
     }
 
     // --- server lifecycle ---
@@ -158,9 +175,13 @@ impl OpenCodeBackend {
                 let text = String::from_utf8_lossy(&out.stdout);
                 for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
                     let shim = PathBuf::from(line);
-                    let derived = shim
-                        .parent()
-                        .map(|p| p.join("node_modules").join("@opencode").join("cli").join("bin").join("opencode.exe"));
+                    let derived = shim.parent().map(|p| {
+                        p.join("node_modules")
+                            .join("@opencode")
+                            .join("cli")
+                            .join("bin")
+                            .join("opencode.exe")
+                    });
                     if let Some(exe) = derived.filter(|p| p.exists()) {
                         return Ok(exe);
                     }
@@ -198,7 +219,10 @@ impl OpenCodeBackend {
                     return None; // an HTML page answered, not the API
                 }
                 if let Ok(v) = serde_json::from_str::<Value>(&body) {
-                    if v.get("data").is_some() || v.get("healthy").is_some() || v.get("version").is_some() {
+                    if v.get("data").is_some()
+                        || v.get("healthy").is_some()
+                        || v.get("version").is_some()
+                    {
                         return Some(v);
                     }
                 }
@@ -206,7 +230,13 @@ impl OpenCodeBackend {
             }
         }
         // legacy fallback
-        if let Ok(r) = self.bare.get(format!("{base}/global/health")).timeout(Duration::from_millis(1500)).send().await {
+        if let Ok(r) = self
+            .bare
+            .get(format!("{base}/global/health"))
+            .timeout(Duration::from_millis(1500))
+            .send()
+            .await
+        {
             if r.status().is_success() {
                 let body = r.text().await.unwrap_or_default();
                 if looks_alive(&body) {
@@ -221,7 +251,13 @@ impl OpenCodeBackend {
         let exe = Self::resolve_opencode_exe()?;
         let port = Self::free_port()?;
         let mut cmd = Command::new(&exe);
-        cmd.args(["serve", "--port", &port.to_string(), "--hostname", "127.0.0.1"]);
+        cmd.args([
+            "serve",
+            "--port",
+            &port.to_string(),
+            "--hostname",
+            "127.0.0.1",
+        ]);
         cmd.env("OPENCODE_SERVER_PASSWORD", &self.password);
         if !self.cfg.workdir.is_empty() {
             if let Ok(wd) = std::env::current_dir() {
@@ -237,8 +273,14 @@ impl OpenCodeBackend {
         cmd.stdin(Stdio::null());
         match std::fs::File::create(&log_path) {
             Ok(f) => {
-                let out = f.try_clone().map(Stdio::from).unwrap_or_else(|_| Stdio::null());
-                let err = f.try_clone().map(Stdio::from).unwrap_or_else(|_| Stdio::null());
+                let out = f
+                    .try_clone()
+                    .map(Stdio::from)
+                    .unwrap_or_else(|_| Stdio::null());
+                let err = f
+                    .try_clone()
+                    .map(Stdio::from)
+                    .unwrap_or_else(|_| Stdio::null());
                 cmd.stdout(out).stderr(err);
             }
             Err(_) => {
@@ -253,7 +295,9 @@ impl OpenCodeBackend {
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
 
-        let child = cmd.spawn().with_context(|| format!("spawn {}", exe.display()))?;
+        let child = cmd
+            .spawn()
+            .with_context(|| format!("spawn {}", exe.display()))?;
         *self.child.lock().unwrap() = Some(child);
 
         let base = format!("http://127.0.0.1:{port}");
@@ -267,14 +311,25 @@ impl OpenCodeBackend {
                 if let Some(c) = guard.as_mut() {
                     if c.try_wait().map(|s| s.is_some()).unwrap_or(false) {
                         let log_note = std::fs::read_to_string(&log_path).unwrap_or_default();
-                        let tail: String = log_note.lines().rev().take(8).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+                        let tail: String = log_note
+                            .lines()
+                            .rev()
+                            .take(8)
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .rev()
+                            .collect::<Vec<_>>()
+                            .join("\n");
                         bail!("opencode serve exited early.\n{tail}");
                     }
                 }
             }
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
-        bail!("opencode server did not become healthy in 200s (log: {})", log_path.display());
+        bail!(
+            "opencode server did not become healthy in 200s (log: {})",
+            log_path.display()
+        );
     }
 
     // --- SSE ---
@@ -319,7 +374,9 @@ impl OpenCodeBackend {
                         got_any = true;
                         if backoff_secs > 1 {
                             // stream dropped and recovered — ask the UI to resync
-                            let _ = events.send(BackendEvent::Reconnected { harness: harness.clone() });
+                            let _ = events.send(BackendEvent::Reconnected {
+                                harness: harness.clone(),
+                            });
                         }
                         backoff_secs = 1;
                     }
@@ -333,14 +390,21 @@ impl OpenCodeBackend {
 
     fn map_session(&self, v: &Value) -> SessionInfo {
         SessionInfo {
-            native_id: v.get("id").and_then(Value::as_str).unwrap_or("").to_string(),
+            native_id: v
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
             title: v
                 .get("title")
                 .and_then(Value::as_str)
                 .filter(|t| !t.is_empty())
                 .unwrap_or("untitled")
                 .to_string(),
-            updated_ms: v.pointer("/time/updated").and_then(Value::as_i64).unwrap_or(0),
+            updated_ms: v
+                .pointer("/time/updated")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
         }
     }
 }
@@ -441,11 +505,18 @@ impl Backend for OpenCodeBackend {
 
     async fn create_session(&self, title: &str) -> Result<SessionInfo> {
         let v = self
-            .send_json(reqwest::Method::POST, "/api/session", Some(serde_json::json!({ "title": title })))
+            .send_json(
+                reqwest::Method::POST,
+                "/api/session",
+                Some(serde_json::json!({ "title": title })),
+            )
             .await?;
         let s = v.get("data").cloned().unwrap_or(v);
         let s = self.map_session(&s);
-        self.known_sessions.lock().unwrap().insert(s.native_id.clone());
+        self.known_sessions
+            .lock()
+            .unwrap()
+            .insert(s.native_id.clone());
         Ok(s)
     }
 
@@ -460,29 +531,51 @@ impl Backend for OpenCodeBackend {
     }
 
     async fn delete_session(&self, native_id: &str) -> Result<()> {
-        self.send_json(reqwest::Method::DELETE, &format!("/api/session/{native_id}"), None)
-            .await?;
+        self.send_json(
+            reqwest::Method::DELETE,
+            &format!("/api/session/{native_id}"),
+            None,
+        )
+        .await?;
         self.known_sessions.lock().unwrap().remove(native_id);
         Ok(())
     }
 
     async fn load_history(&self, native_id: &str) -> Result<Vec<ChatMsg>> {
-        let v = self.get_json(&format!("/api/session/{native_id}/message")).await?;
-        let arr = v.get("data").and_then(Value::as_array).cloned().unwrap_or_default();
+        let v = self
+            .get_json(&format!("/api/session/{native_id}/message"))
+            .await?;
+        let arr = v
+            .get("data")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         let mut msgs = Vec::new();
         for item in &arr {
             let ty = item.get("type").and_then(Value::as_str).unwrap_or("");
-            let msg_id = item.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+            let msg_id = item
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             match ty {
                 "user" => {
-                    let text = item.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+                    let text = item
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
                     if text.trim().is_empty() {
                         continue;
                     }
                     msgs.push(ChatMsg {
                         msg_id,
                         role: Role::User,
-                        parts: vec![RenderPart { part_id: "t0".into(), kind: PartKind::Text, text }],
+                        parts: vec![RenderPart {
+                            part_id: "t0".into(),
+                            kind: PartKind::Text,
+                            text,
+                        }],
                         attachments: Vec::new(),
                     });
                 }
@@ -495,27 +588,52 @@ impl Backend for OpenCodeBackend {
                                 "text" => {
                                     let text = c.get("text").and_then(Value::as_str).unwrap_or("");
                                     if !text.trim().is_empty() {
-                                        parts.push(RenderPart { part_id: format!("t{i}"), kind: PartKind::Text, text: text.into() });
+                                        parts.push(RenderPart {
+                                            part_id: format!("t{i}"),
+                                            kind: PartKind::Text,
+                                            text: text.into(),
+                                        });
                                     }
                                 }
                                 "reasoning" => {
                                     let text = c.get("text").and_then(Value::as_str).unwrap_or("");
                                     if !text.trim().is_empty() {
-                                        parts.push(RenderPart { part_id: format!("r{i}"), kind: PartKind::Reasoning, text: text.into() });
+                                        parts.push(RenderPart {
+                                            part_id: format!("r{i}"),
+                                            kind: PartKind::Reasoning,
+                                            text: text.into(),
+                                        });
                                     }
                                 }
                                 "tool" => {
-                                    let name = c.get("name").and_then(Value::as_str).unwrap_or("tool");
-                                    let status = c.pointer("/state/status").and_then(Value::as_str).unwrap_or("");
-                                    let label = tool_label(name, status, c.pointer("/state/error").and_then(Value::as_str));
-                                    parts.push(RenderPart { part_id: format!("c{i}"), kind: PartKind::Tool, text: label });
+                                    let name =
+                                        c.get("name").and_then(Value::as_str).unwrap_or("tool");
+                                    let status = c
+                                        .pointer("/state/status")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("");
+                                    let label = tool_label(
+                                        name,
+                                        status,
+                                        c.pointer("/state/error").and_then(Value::as_str),
+                                    );
+                                    parts.push(RenderPart {
+                                        part_id: format!("c{i}"),
+                                        kind: PartKind::Tool,
+                                        text: label,
+                                    });
                                 }
                                 _ => {}
                             }
                         }
                     }
                     if !parts.is_empty() {
-                        msgs.push(ChatMsg { msg_id, role: Role::Assistant, parts, attachments: Vec::new() });
+                        msgs.push(ChatMsg {
+                            msg_id,
+                            role: Role::Assistant,
+                            parts,
+                            attachments: Vec::new(),
+                        });
                     }
                 }
                 _ => {} // system / idle — not rendered
@@ -524,7 +642,13 @@ impl Backend for OpenCodeBackend {
         Ok(msgs)
     }
 
-    async fn send(&self, native_id: &str, text: &str, attachments: &[AttachmentMeta], opts: SendOpts<'_>) -> Result<()> {
+    async fn send(
+        &self,
+        native_id: &str,
+        text: &str,
+        attachments: &[AttachmentMeta],
+        opts: SendOpts<'_>,
+    ) -> Result<()> {
         for a in attachments {
             if a.size > super::MAX_ATTACHMENT_BYTES {
                 bail!(
@@ -579,9 +703,16 @@ impl Backend for OpenCodeBackend {
                 .collect();
             body["files"] = Value::Array(files);
         }
-        self.known_sessions.lock().unwrap().insert(native_id.to_string());
-        self.send_json(reqwest::Method::POST, &format!("/api/session/{native_id}/prompt"), Some(body))
-            .await?;
+        self.known_sessions
+            .lock()
+            .unwrap()
+            .insert(native_id.to_string());
+        self.send_json(
+            reqwest::Method::POST,
+            &format!("/api/session/{native_id}/prompt"),
+            Some(body),
+        )
+        .await?;
         Ok(())
     }
 
@@ -612,15 +743,31 @@ impl Backend for OpenCodeBackend {
                 a.iter()
                     .filter(|m| m.get("type").and_then(Value::as_str).unwrap_or("chat") == "chat")
                     .map(|m| ModelInfo {
-                        provider_id: m.get("providerID").and_then(Value::as_str).unwrap_or("").to_string(),
-                        model_id: m.get("modelID").and_then(Value::as_str).unwrap_or("").to_string(),
-                        name: m.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
+                        provider_id: m
+                            .get("providerID")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        model_id: m
+                            .get("modelID")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        name: m
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
                     })
                     .collect()
             })
             .unwrap_or_default();
         out.retain(|m| !m.provider_id.is_empty() && !m.model_id.is_empty());
-        out.sort_by(|a, b| a.provider_id.cmp(&b.provider_id).then(a.model_id.cmp(&b.model_id)));
+        out.sort_by(|a, b| {
+            a.provider_id
+                .cmp(&b.provider_id)
+                .then(a.model_id.cmp(&b.model_id))
+        });
         Ok(out)
     }
 
@@ -632,8 +779,16 @@ impl Backend for OpenCodeBackend {
             .map(|a| {
                 a.iter()
                     .map(|x| AgentInfo {
-                        id: x.get("id").and_then(Value::as_str).unwrap_or("").to_string(),
-                        name: x.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
+                        id: x
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        name: x
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
                     })
                     .collect()
             })
@@ -677,8 +832,16 @@ fn handle_sse_event(
     };
     let ty = v.get("type").and_then(Value::as_str).unwrap_or("");
     // payload is in `data` for live events; some events use `properties`
-    let props = v.get("data").cloned().or_else(|| v.get("properties").cloned()).unwrap_or(Value::Null);
-    let sid = props.get("sessionID").and_then(Value::as_str).unwrap_or("").to_string();
+    let props = v
+        .get("data")
+        .cloned()
+        .or_else(|| v.get("properties").cloned())
+        .unwrap_or(Value::Null);
+    let sid = props
+        .get("sessionID")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let send = |ev: BackendEvent| {
         let _ = events.send(ev);
     };
@@ -698,12 +861,25 @@ fn handle_sse_event(
         return;
     }
 
-    let msg_id = || props.get("assistantMessageID").and_then(Value::as_str).unwrap_or("").to_string();
+    let msg_id = || {
+        props
+            .get("assistantMessageID")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
 
     match ty {
         "permission.v2.asked" | "permission.updated" | "permission.asked" => {
-            let request_id = props.get("id").and_then(Value::as_str).unwrap_or("").to_string();
-            let action = props.get("action").and_then(Value::as_str).unwrap_or("action");
+            let request_id = props
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let action = props
+                .get("action")
+                .and_then(Value::as_str)
+                .unwrap_or("action");
             let resource = props
                 .get("resources")
                 .and_then(Value::as_array)
@@ -711,7 +887,11 @@ fn handle_sse_event(
                 .and_then(Value::as_str)
                 .or_else(|| props.get("pattern").and_then(|p| p.as_str()))
                 .unwrap_or("");
-            let title = if resource.is_empty() { action.to_string() } else { format!("{action}: {resource}") };
+            let title = if resource.is_empty() {
+                action.to_string()
+            } else {
+                format!("{action}: {resource}")
+            };
             if !sid.is_empty() && !request_id.is_empty() {
                 send(BackendEvent::PermissionRequest {
                     harness: harness.into(),
@@ -727,7 +907,11 @@ fn handle_sse_event(
                 harness: h,
                 native_id: sid,
                 msg_id: msg_id(),
-                part: RenderPart { part_id: format!("t{ordinal}"), kind: PartKind::Text, text: String::new() },
+                part: RenderPart {
+                    part_id: format!("t{ordinal}"),
+                    kind: PartKind::Text,
+                    text: String::new(),
+                },
             });
         }
         "session.text.delta" => {
@@ -751,7 +935,11 @@ fn handle_sse_event(
                 harness: h,
                 native_id: sid,
                 msg_id: msg_id(),
-                part: RenderPart { part_id: format!("t{ordinal}"), kind: PartKind::Text, text: text.to_string() },
+                part: RenderPart {
+                    part_id: format!("t{ordinal}"),
+                    kind: PartKind::Text,
+                    text: text.to_string(),
+                },
             });
         }
         "session.reasoning.started" => {
@@ -760,7 +948,11 @@ fn handle_sse_event(
                 harness: h,
                 native_id: sid,
                 msg_id: msg_id(),
-                part: RenderPart { part_id: format!("r{ordinal}"), kind: PartKind::Reasoning, text: String::new() },
+                part: RenderPart {
+                    part_id: format!("r{ordinal}"),
+                    kind: PartKind::Reasoning,
+                    text: String::new(),
+                },
             });
         }
         "session.reasoning.delta" => {
@@ -784,11 +976,19 @@ fn handle_sse_event(
                 harness: h,
                 native_id: sid,
                 msg_id: msg_id(),
-                part: RenderPart { part_id: format!("r{ordinal}"), kind: PartKind::Reasoning, text: text.to_string() },
+                part: RenderPart {
+                    part_id: format!("r{ordinal}"),
+                    kind: PartKind::Reasoning,
+                    text: text.to_string(),
+                },
             });
         }
         "session.tool.input.started" | "session.tool.called" => {
-            let call = props.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+            let call = props
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             let name = props.get("name").and_then(Value::as_str).unwrap_or("tool");
             let running = ty == "session.tool.input.started";
             send(BackendEvent::PartUpdated {
@@ -796,24 +996,47 @@ fn handle_sse_event(
                 native_id: sid,
                 msg_id: msg_id(),
                 part: RenderPart {
-                    part_id: if call.is_empty() { format!("c{}", props.get("timestamp").and_then(Value::as_i64).unwrap_or(0)) } else { call },
+                    part_id: if call.is_empty() {
+                        format!(
+                            "c{}",
+                            props.get("timestamp").and_then(Value::as_i64).unwrap_or(0)
+                        )
+                    } else {
+                        call
+                    },
                     kind: PartKind::Tool,
-                    text: if running { format!("⚙ {name}…") } else { format!("⚙ {name}") },
+                    text: if running {
+                        format!("⚙ {name}…")
+                    } else {
+                        format!("⚙ {name}")
+                    },
                 },
             });
         }
         "session.tool.success" => {
-            let call = props.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+            let call = props
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             // name isn't in this event; reuse call id, look up is done in UI by part id
             send(BackendEvent::PartUpdated {
                 harness: h,
                 native_id: sid,
                 msg_id: msg_id(),
-                part: RenderPart { part_id: call, kind: PartKind::Tool, text: "✓ tool".to_string() },
+                part: RenderPart {
+                    part_id: call,
+                    kind: PartKind::Tool,
+                    text: "✓ tool".to_string(),
+                },
             });
         }
         "session.tool.error" => {
-            let call = props.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+            let call = props
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             let err = props
                 .pointer("/error/message")
                 .and_then(Value::as_str)
@@ -823,11 +1046,18 @@ fn handle_sse_event(
                 harness: h,
                 native_id: sid,
                 msg_id: msg_id(),
-                part: RenderPart { part_id: call, kind: PartKind::Tool, text: format!("⚠ {err}") },
+                part: RenderPart {
+                    part_id: call,
+                    kind: PartKind::Tool,
+                    text: format!("⚠ {err}"),
+                },
             });
         }
         "session.execution.succeeded" => {
-            send(BackendEvent::StreamDone { harness: h, native_id: sid });
+            send(BackendEvent::StreamDone {
+                harness: h,
+                native_id: sid,
+            });
         }
         "session.execution.failed" => {
             let msg = props
@@ -836,8 +1066,15 @@ fn handle_sse_event(
                 .or_else(|| props.get("message").and_then(Value::as_str))
                 .unwrap_or("execution failed")
                 .to_string();
-            send(BackendEvent::StreamError { harness: h.clone(), native_id: sid.clone(), error: msg });
-            send(BackendEvent::StreamDone { harness: h, native_id: sid });
+            send(BackendEvent::StreamError {
+                harness: h.clone(),
+                native_id: sid.clone(),
+                error: msg,
+            });
+            send(BackendEvent::StreamDone {
+                harness: h,
+                native_id: sid,
+            });
         }
         "session.error" => {
             let msg = props
@@ -847,10 +1084,20 @@ fn handle_sse_event(
                 .unwrap_or("unknown harness error")
                 .to_string();
             if !sid.is_empty() {
-                send(BackendEvent::StreamError { harness: h.clone(), native_id: sid.clone(), error: msg });
-                send(BackendEvent::StreamDone { harness: h, native_id: sid });
+                send(BackendEvent::StreamError {
+                    harness: h.clone(),
+                    native_id: sid.clone(),
+                    error: msg,
+                });
+                send(BackendEvent::StreamDone {
+                    harness: h,
+                    native_id: sid,
+                });
             } else {
-                send(BackendEvent::Error { harness: h, error: msg });
+                send(BackendEvent::Error {
+                    harness: h,
+                    error: msg,
+                });
             }
         }
         _ => {}
@@ -874,7 +1121,12 @@ mod tests {
         let data = r#"{"id":"e1","type":"session.text.delta","data":{"sessionID":"ses_1","assistantMessageID":"m1","ordinal":0,"delta":"hello"}}"#;
         handle_sse_event(&tx, &known, "oc", data);
         match rx.try_recv().unwrap() {
-            BackendEvent::PartDelta { delta, part_id, kind, .. } => {
+            BackendEvent::PartDelta {
+                delta,
+                part_id,
+                kind,
+                ..
+            } => {
                 assert_eq!(delta, "hello");
                 assert_eq!(part_id, "t0");
                 assert_eq!(kind, PartKind::Text);
@@ -887,7 +1139,8 @@ mod tests {
     fn sse_filters_foreign_sessions() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let known = known();
-        let data = r#"{"id":"e2","type":"session.execution.succeeded","data":{"sessionID":"ses_other"}}"#;
+        let data =
+            r#"{"id":"e2","type":"session.execution.succeeded","data":{"sessionID":"ses_other"}}"#;
         handle_sse_event(&tx, &known, "oc", data);
         assert!(rx.try_recv().is_err());
     }
@@ -896,7 +1149,8 @@ mod tests {
     fn sse_done_signal() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let known = known();
-        let data = r#"{"id":"e3","type":"session.execution.succeeded","data":{"sessionID":"ses_1"}}"#;
+        let data =
+            r#"{"id":"e3","type":"session.execution.succeeded","data":{"sessionID":"ses_1"}}"#;
         handle_sse_event(&tx, &known, "oc", data);
         match rx.try_recv().unwrap() {
             BackendEvent::StreamDone { native_id, .. } => assert_eq!(native_id, "ses_1"),

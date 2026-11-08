@@ -1,16 +1,18 @@
 //! Main screen rendering: header, sidebar (history + profile), chat, composer,
 //! NC-style F-key status bar.
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
-use ratatui::Frame;
+use ratatui::widgets::{
+    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 
-use super::theme::{wrap_spans, wrap_str, THEME};
+use super::theme::{THEME, wrap_spans, wrap_str};
 use super::{App, Focus};
 use crate::backend::{AttachmentMeta, PartKind, Role};
-use crate::i18n::{t, Str};
+use crate::i18n::{Str, t};
 
 pub const SIDEBAR_WIDTH: u16 = 32;
 
@@ -21,7 +23,12 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     app.hit.targets.clear();
     app.hit.modal_rect = None;
 
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(5), Constraint::Length(1)]).split(size);
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(5),
+        Constraint::Length(1),
+    ])
+    .split(size);
     let (header, body, status) = (rows[0], rows[1], rows[2]);
 
     draw_header(app, f, header);
@@ -35,7 +42,11 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         draw_sidebar(app, f, cols[0]);
     }
 
-    let chat_rows = Layout::vertical([Constraint::Min(4), Constraint::Length(composer_height(app, cols[1]))]).split(cols[1]);
+    let chat_rows = Layout::vertical([
+        Constraint::Min(4),
+        Constraint::Length(composer_height(app, cols[1])),
+    ])
+    .split(cols[1]);
     draw_chat(app, f, chat_rows[0]);
     draw_composer(app, f, chat_rows[1]);
 
@@ -55,7 +66,9 @@ fn composer_height(app: &App, area: Rect) -> u16 {
     // two visible input lines minimum (NC-style composer)
     lines = lines.clamp(2, 8);
     let chips = if app.attachments.is_empty() { 0 } else { 1 };
-    ((lines + chips + 2) as u16).min(area.height.saturating_sub(4)).max(4)
+    ((lines + chips + 2) as u16)
+        .min(area.height.saturating_sub(4))
+        .max(4)
 }
 
 fn draw_header(app: &App, f: &mut Frame, area: Rect) {
@@ -86,10 +99,28 @@ fn draw_header(app: &App, f: &mut Frame, area: Rect) {
         .unwrap_or_default();
 
     let left = Line::from(vec![
-        Span::styled(" ▦ ", Style::new().fg(th.accent).bg(th.header_bg).add_modifier(Modifier::BOLD)),
-        Span::styled("ai-commander", Style::new().fg(th.fg).bg(th.header_bg).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("  ▎ {harness}"), Style::new().fg(th.dim).bg(th.header_bg)),
-        Span::styled(format!("  ▎ {model}"), Style::new().fg(th.accent).bg(th.header_bg)),
+        Span::styled(
+            " ▦ ",
+            Style::new()
+                .fg(th.accent)
+                .bg(th.header_bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "ai-commander",
+            Style::new()
+                .fg(th.fg)
+                .bg(th.header_bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  ▎ {harness}"),
+            Style::new().fg(th.dim).bg(th.header_bg),
+        ),
+        Span::styled(
+            format!("  ▎ {model}"),
+            Style::new().fg(th.accent).bg(th.header_bg),
+        ),
         Span::styled("  ", Style::new().bg(th.header_bg)),
         Span::styled(state_sym, Style::new().fg(state_col).bg(th.header_bg)),
         Span::styled(version, Style::new().fg(th.dim).bg(th.header_bg)),
@@ -102,10 +133,16 @@ fn draw_header(app: &App, f: &mut Frame, area: Rect) {
     let w_r = right.width() as u16;
     let mut spans = left.spans.clone();
     if w_l + w_r <= area.width {
-        spans.push(Span::styled(" ".repeat((area.width - w_l - w_r) as usize), Style::new().bg(th.header_bg)));
+        spans.push(Span::styled(
+            " ".repeat((area.width - w_l - w_r) as usize),
+            Style::new().bg(th.header_bg),
+        ));
         spans.extend(right.spans.iter().cloned());
     }
-    f.render_widget(Paragraph::new(Line::from(spans)).style(Style::new().bg(th.header_bg)), area);
+    f.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::new().bg(th.header_bg)),
+        area,
+    );
 }
 
 fn fmt_time(ms: i64) -> String {
@@ -150,7 +187,10 @@ fn draw_sidebar(app: &mut App, f: &mut Frame, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(th.border_style())
-        .title(Span::styled(format!(" {} ", t(app.lang(), Str::History)), th.bold(th.accent)))
+        .title(Span::styled(
+            format!(" {} ", t(app.lang(), Str::History)),
+            th.bold(th.accent),
+        ))
         .style(Style::new().bg(th.bg));
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -165,18 +205,35 @@ fn draw_sidebar(app: &mut App, f: &mut Frame, area: Rect) {
     let profile = vec![
         Line::from(vec![
             Span::styled(" 👤 ", th.dim_style()),
-            Span::styled(app.cfg.profile_name.clone(), Style::new().fg(th.fg).bg(th.bg).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                app.cfg.profile_name.clone(),
+                Style::new()
+                    .fg(th.fg)
+                    .bg(th.bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(vec![
             Span::styled(" ⚙ ", th.tool_style()),
-            Span::styled(t(app.lang(), Str::Settings).to_string(), Style::new().fg(th.fg).bg(th.bg).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                t(app.lang(), Str::Settings).to_string(),
+                Style::new()
+                    .fg(th.fg)
+                    .bg(th.bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("  F2", th.dim_style()),
             Span::styled(format!("  {}", model_short), th.dim_style()),
         ]),
     ];
     f.render_widget(Paragraph::new(profile), bottom);
     app.hit.targets.push((
-        Rect { x: bottom.x, y: bottom.y + 1, width: bottom.width, height: 1 },
+        Rect {
+            x: bottom.x,
+            y: bottom.y + 1,
+            width: bottom.width,
+            height: 1,
+        },
         super::HitTarget::SettingsBtn,
     ));
 
@@ -189,7 +246,10 @@ fn draw_sidebar(app: &mut App, f: &mut Frame, area: Rect) {
         Span::styled(
             new_chat_label,
             if is_draft {
-                Style::new().fg(th.bg).bg(th.accent).add_modifier(Modifier::BOLD)
+                Style::new()
+                    .fg(th.bg)
+                    .bg(th.accent)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::new().fg(th.user).bg(th.bg)
             },
@@ -211,13 +271,23 @@ fn draw_sidebar(app: &mut App, f: &mut Frame, area: Rect) {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("[{}] {}", h.id, h.name),
-                if active_h { Style::new().fg(th.accent).bg(th.bg).add_modifier(Modifier::BOLD) } else { th.dim_style() },
+                if active_h {
+                    Style::new()
+                        .fg(th.accent)
+                        .bg(th.bg)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    th.dim_style()
+                },
             ),
             Span::styled(if active_h { " ▸" } else { "" }, th.accent_style()),
         ]));
         hits.push(None);
         if list.is_empty() {
-            lines.push(Line::from(Span::styled(format!("   {}", t(app.lang(), Str::NoSessions)), th.dim_style())));
+            lines.push(Line::from(Span::styled(
+                format!("   {}", t(app.lang(), Str::NoSessions)),
+                th.dim_style(),
+            )));
             hits.push(None);
         }
         for s in list {
@@ -226,25 +296,47 @@ fn draw_sidebar(app: &mut App, f: &mut Frame, area: Rect) {
                 .as_ref()
                 .map(|(sh, sid)| sh == &h.id && sid == &s.native_id)
                 .unwrap_or(false);
-            let title: String = s.title.chars().take(list_area.width.saturating_sub(12) as usize).collect();
+            let title: String = s
+                .title
+                .chars()
+                .take(list_area.width.saturating_sub(12) as usize)
+                .collect();
             let time = fmt_time(s.updated_ms);
-            let marker = if app.cur.harness == h.id && app.cur.native_id == s.native_id { "▸ " } else { "  " };
-            let style = if selected { th.sel_style() } else { Style::new().fg(th.fg).bg(th.bg) };
-            let time_style = if selected { Style::new().fg(th.dim).bg(th.sel_bg) } else { th.dim_style() };
-            let pad = (list_area.width as usize).saturating_sub(title.chars().count() + time.chars().count() + 5);
+            let marker = if app.cur.harness == h.id && app.cur.native_id == s.native_id {
+                "▸ "
+            } else {
+                "  "
+            };
+            let style = if selected {
+                th.sel_style()
+            } else {
+                Style::new().fg(th.fg).bg(th.bg)
+            };
+            let time_style = if selected {
+                Style::new().fg(th.dim).bg(th.sel_bg)
+            } else {
+                th.dim_style()
+            };
+            let pad = (list_area.width as usize)
+                .saturating_sub(title.chars().count() + time.chars().count() + 5);
             lines.push(Line::from(vec![
                 Span::styled(marker.to_string(), style),
                 Span::styled(title, style),
                 Span::styled(" ".repeat(pad), style),
                 Span::styled(time, time_style),
             ]));
-            hits.push(Some(super::HitTarget::Session { harness: h.id.clone(), native_id: s.native_id.clone() }));
+            hits.push(Some(super::HitTarget::Session {
+                harness: h.id.clone(),
+                native_id: s.native_id.clone(),
+            }));
         }
     }
 
     let visible = list_area.height as usize;
     // keep the highlighted row inside the window
-    let sel_idx = hits.iter().position(|h| matches!(h, Some(super::HitTarget::Session { .. })));
+    let sel_idx = hits
+        .iter()
+        .position(|h| matches!(h, Some(super::HitTarget::Session { .. })));
     let scroll = match sel_idx {
         Some(i) if i >= visible.saturating_sub(1) => (i + 1 - visible.max(1)) as u16,
         _ => 0,
@@ -257,7 +349,12 @@ fn draw_sidebar(app: &mut App, f: &mut Frame, area: Rect) {
             let row_y = list_area.y as i64 + i as i64 - scroll as i64;
             if row_y >= list_area.y as i64 && row_y < (list_area.y + list_area.height) as i64 {
                 app.hit.targets.push((
-                    Rect { x: list_area.x, y: row_y as u16, width: list_area.width, height: 1 },
+                    Rect {
+                        x: list_area.x,
+                        y: row_y as u16,
+                        width: list_area.width,
+                        height: 1,
+                    },
                     target,
                 ));
             }
@@ -283,7 +380,11 @@ fn draw_chat(app: &mut App, f: &mut Frame, area: Rect) {
     } else {
         String::new()
     };
-    let title = if state.is_empty() { format!(" {title} ") } else { format!(" {title} — {state} ") };
+    let title = if state.is_empty() {
+        format!(" {title} ")
+    } else {
+        format!(" {title} — {state} ")
+    };
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -306,11 +407,14 @@ fn draw_chat(app: &mut App, f: &mut Frame, area: Rect) {
     };
     app.bottom_offset = app.bottom_offset.min(total.saturating_sub(visible));
 
-    let para = Paragraph::new(lines).scroll((scroll, 0)).style(Style::new().bg(th.bg));
+    let para = Paragraph::new(lines)
+        .scroll((scroll, 0))
+        .style(Style::new().bg(th.bg));
     f.render_widget(para, inner);
 
     if total > visible {
-        let mut sb_state = ScrollbarState::new(total.saturating_sub(visible) as usize).position(scroll as usize);
+        let mut sb_state =
+            ScrollbarState::new(total.saturating_sub(visible) as usize).position(scroll as usize);
         f.render_stateful_widget(
             Scrollbar::default().orientation(ScrollbarOrientation::VerticalRight),
             area.inner(Margin::new(0, 1)),
@@ -339,7 +443,10 @@ pub fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         };
         out.push(Line::from(Span::styled(hint, th.dim_style())));
         if app.busy_now() {
-            out.push(Line::from(Span::styled(t(lang, Str::Generating), th.accent_style())));
+            out.push(Line::from(Span::styled(
+                t(lang, Str::Generating),
+                th.accent_style(),
+            )));
         }
         return out;
     }
@@ -356,12 +463,18 @@ pub fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 ];
                 if !msg.attachments.is_empty() {
                     header.push(Span::styled("  📎 ", th.dim_style()));
-                    header.push(Span::styled(attach_label(&msg.attachments), Style::new().fg(th.tool).bg(th.bg)));
+                    header.push(Span::styled(
+                        attach_label(&msg.attachments),
+                        Style::new().fg(th.tool).bg(th.bg),
+                    ));
                 }
                 out.push(Line::from(header));
                 for part in &msg.parts {
                     for l in wrap_str(&part.text, width.saturating_sub(2).max(1)) {
-                        out.push(Line::from(Span::styled(format!(" {l}"), Style::new().fg(th.fg).bg(th.bg))));
+                        out.push(Line::from(Span::styled(
+                            format!(" {l}"),
+                            Style::new().fg(th.fg).bg(th.bg),
+                        )));
                     }
                 }
             }
@@ -377,12 +490,18 @@ pub fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                             any = true;
                             let md = super::markdown::render_markdown(&part.text, th);
                             for line in md {
-                                for wrapped in wrap_spans(line.spans.clone(), width.saturating_sub(2).max(1)) {
+                                for wrapped in
+                                    wrap_spans(line.spans.clone(), width.saturating_sub(2).max(1))
+                                {
                                     out.push(Line::from(
-                                        wrapped.spans.into_iter().map(|mut s| {
-                                            s.style = s.style.bg(th.bg);
-                                            Span::styled(format!(" {}", s.content), s.style)
-                                        }).collect::<Vec<_>>(),
+                                        wrapped
+                                            .spans
+                                            .into_iter()
+                                            .map(|mut s| {
+                                                s.style = s.style.bg(th.bg);
+                                                Span::styled(format!(" {}", s.content), s.style)
+                                            })
+                                            .collect::<Vec<_>>(),
                                     ));
                                 }
                             }
@@ -390,17 +509,26 @@ pub fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                         PartKind::Reasoning => {
                             any = true;
                             for l in wrap_str(&part.text, width.saturating_sub(4).max(1)) {
-                                out.push(Line::from(Span::styled(format!(" · {l}"), th.reasoning_style())));
+                                out.push(Line::from(Span::styled(
+                                    format!(" · {l}"),
+                                    th.reasoning_style(),
+                                )));
                             }
                         }
                         PartKind::Tool => {
                             any = true;
-                            out.push(Line::from(Span::styled(format!(" {}", part.text), th.tool_style())));
+                            out.push(Line::from(Span::styled(
+                                format!(" {}", part.text),
+                                th.tool_style(),
+                            )));
                         }
                     }
                 }
                 if !any && app.busy_now() && i == app.cur.msgs.len() - 1 {
-                    out.push(Line::from(Span::styled(t(lang, Str::Generating), th.accent_style())));
+                    out.push(Line::from(Span::styled(
+                        t(lang, Str::Generating),
+                        th.accent_style(),
+                    )));
                 }
             }
         }
@@ -416,25 +544,42 @@ fn draw_composer(app: &mut App, f: &mut Frame, area: Rect) {
     let chips = if app.attachments.is_empty() {
         None
     } else {
-        let mut spans = vec![Span::styled("📎 ", Style::new().fg(th.tool).bg(th.composer_bg))];
+        let mut spans = vec![Span::styled(
+            "📎 ",
+            Style::new().fg(th.tool).bg(th.composer_bg),
+        )];
         for (i, a) in app.attachments.iter().enumerate() {
             if i > 0 {
-                spans.push(Span::styled(" · ", Style::new().fg(th.dim).bg(th.composer_bg)));
+                spans.push(Span::styled(
+                    " · ",
+                    Style::new().fg(th.dim).bg(th.composer_bg),
+                ));
             }
             spans.push(Span::styled(
                 format!("{} ({})", a.filename, a.size_label()),
                 Style::new().fg(th.tool).bg(th.composer_bg),
             ));
         }
-        spans.push(Span::styled("  Ctrl+D ✕", Style::new().fg(th.dim).bg(th.composer_bg)));
+        spans.push(Span::styled(
+            "  Ctrl+D ✕",
+            Style::new().fg(th.dim).bg(th.composer_bg),
+        ));
         Some(Line::from(spans))
     };
 
     let title = chips.clone();
     let hint = if app.busy_now() {
-        format!(" {} · {} ", t(lang, Str::StopEsc), t(lang, Str::NewlineHint))
+        format!(
+            " {} · {} ",
+            t(lang, Str::StopEsc),
+            t(lang, Str::NewlineHint)
+        )
     } else {
-        format!(" {} · {} ", t(lang, Str::SendEnter), t(lang, Str::NewlineHint))
+        format!(
+            " {} · {} ",
+            t(lang, Str::SendEnter),
+            t(lang, Str::NewlineHint)
+        )
     };
 
     // composer sits on the deepest blue — visually apart from the chat screen
@@ -443,13 +588,18 @@ fn draw_composer(app: &mut App, f: &mut Frame, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::new().fg(border_col).bg(th.composer_bg))
         .style(Style::new().bg(th.composer_bg))
-        .title_bottom(Span::styled(hint, Style::new().fg(th.dim).bg(th.composer_bg)));
+        .title_bottom(Span::styled(
+            hint,
+            Style::new().fg(th.dim).bg(th.composer_bg),
+        ));
     if let Some(chips) = title {
         block = block.title_top(chips);
     }
     let inner = block.inner(area);
     f.render_widget(block, area);
-    app.hit.targets.push((area, super::HitTarget::ComposerFocus));
+    app.hit
+        .targets
+        .push((area, super::HitTarget::ComposerFocus));
 
     let width = inner.width.max(1) as usize;
     // render editor with soft wrap (min two visible lines)
@@ -460,7 +610,10 @@ fn draw_composer(app: &mut App, f: &mut Frame, area: Rect) {
             format!(" {}", t(lang, Str::TypeMessage)),
             Style::new().fg(th.placeholder).bg(th.composer_bg),
         )));
-        lines.push(Line::from(Span::styled(" ", Style::new().fg(th.placeholder).bg(th.composer_bg))));
+        lines.push(Line::from(Span::styled(
+            " ",
+            Style::new().fg(th.placeholder).bg(th.composer_bg),
+        )));
     } else {
         for l in app.editor.lines() {
             for w in wrap_str(l, width) {
@@ -471,7 +624,10 @@ fn draw_composer(app: &mut App, f: &mut Frame, area: Rect) {
             }
         }
     }
-    f.render_widget(Paragraph::new(lines).style(Style::new().bg(th.composer_bg)), inner);
+    f.render_widget(
+        Paragraph::new(lines).style(Style::new().bg(th.composer_bg)),
+        inner,
+    );
 
     if focus {
         let (r, c) = app.editor.screen_cursor(width);
@@ -496,25 +652,46 @@ fn draw_statusbar(app: &mut App, f: &mut Frame, area: Rect) {
         ("^P", t(lang, Str::FilePicker)),
         ("^H", t(lang, Str::HarnessPicker)),
         ("^O", t(lang, Str::History)),
-        ("F10", if lang == crate::i18n::Lang::Ru { "Выход" } else { "Quit" }),
+        (
+            "F10",
+            if lang == crate::i18n::Lang::Ru {
+                "Выход"
+            } else {
+                "Quit"
+            },
+        ),
     ];
     let mut x = area.x;
     for (i, (k, label)) in keys.iter().enumerate() {
         let seg_start = x;
         if i > 0 {
-            spans.push(Span::styled("│ ", Style::new().fg(th.border_dim).bg(th.header_bg)));
+            spans.push(Span::styled(
+                "│ ",
+                Style::new().fg(th.border_dim).bg(th.header_bg),
+            ));
             x += 2;
         }
         // NC bottom bar: yellow key labels on blue
         spans.push(Span::styled(
             format!(" {k} "),
-            Style::new().fg(th.user).bg(th.header_bg).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(th.user)
+                .bg(th.header_bg)
+                .add_modifier(Modifier::BOLD),
         ));
         x += 1 + k.len() as u16 + 1;
-        spans.push(Span::styled(*label, Style::new().fg(th.fg).bg(th.header_bg)));
+        spans.push(Span::styled(
+            *label,
+            Style::new().fg(th.fg).bg(th.header_bg),
+        ));
         x += label.chars().count() as u16;
         app.hit.targets.push((
-            Rect { x: seg_start, y: area.y, width: x - seg_start, height: 1 },
+            Rect {
+                x: seg_start,
+                y: area.y,
+                width: x - seg_start,
+                height: 1,
+            },
             super::HitTarget::StatusKey(i as u8),
         ));
     }
@@ -527,5 +704,8 @@ fn draw_statusbar(app: &mut App, f: &mut Frame, area: Rect) {
         spans.push(Span::styled(" ".repeat(3), Style::new().bg(th.header_bg)));
         spans.push(Span::styled(format!("» {msg} "), style));
     }
-    f.render_widget(Paragraph::new(Line::from(spans)).style(Style::new().bg(th.header_bg)), area);
+    f.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::new().bg(th.header_bg)),
+        area,
+    );
 }

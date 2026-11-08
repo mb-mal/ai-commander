@@ -264,7 +264,12 @@ mod tests {
         assert_eq!(back.lang, Lang::Ru);
         assert_eq!(back.profile_name, "@tsingular");
         assert_eq!(
-            back.harness("oc").unwrap().default_model.as_ref().unwrap().display(),
+            back.harness("oc")
+                .unwrap()
+                .default_model
+                .as_ref()
+                .unwrap()
+                .display(),
             "deepseek/deepseek-chat"
         );
         assert!(!back.harness("hermes").unwrap().enabled);

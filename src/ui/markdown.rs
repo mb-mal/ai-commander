@@ -57,7 +57,11 @@ impl Ctx {
                 continue;
             }
             let prefix = self.current_prefix();
-            let text = if self.quote { format!("│ {part}") } else { format!("{prefix}{part}") };
+            let text = if self.quote {
+                format!("│ {part}")
+            } else {
+                format!("{prefix}{part}")
+            };
             self.buf.push(Span::styled(text, self.style(base)));
             self.list_ordered = None;
         }
@@ -100,7 +104,9 @@ pub fn render_markdown(md: &str, th: &Theme) -> Vec<Line<'static>> {
                 Tag::Heading { level, .. } => {
                     ctx.flush_para();
                     let h = match level {
-                        pulldown_cmark::HeadingLevel::H1 => Style::new().fg(th.accent).add_modifier(Modifier::BOLD),
+                        pulldown_cmark::HeadingLevel::H1 => {
+                            Style::new().fg(th.accent).add_modifier(Modifier::BOLD)
+                        }
                         _ => Style::new().fg(th.accent),
                     };
                     ctx.heading_style = Some(h);
@@ -163,9 +169,12 @@ pub fn render_markdown(md: &str, th: &Theme) -> Vec<Line<'static>> {
                             Style::new().fg(th.dim).bg(th.bg),
                         )));
                     }
-                    let code_style = Style::new().fg(ratatui::style::Color::Rgb(200, 212, 224)).bg(th.code_bg);
+                    let code_style = Style::new()
+                        .fg(ratatui::style::Color::Rgb(200, 212, 224))
+                        .bg(th.code_bg);
                     for l in &ctx.code_lines {
-                        ctx.lines.push(Line::from(Span::styled(format!("│ {l}"), code_style)));
+                        ctx.lines
+                            .push(Line::from(Span::styled(format!("│ {l}"), code_style)));
                     }
                     ctx.lines.push(Line::from(Span::styled(
                         "╰─".to_string(),
@@ -215,7 +224,11 @@ pub fn render_markdown(md: &str, th: &Theme) -> Vec<Line<'static>> {
                     Style::new().fg(th.border_dim).bg(th.bg),
                 )));
             }
-            Event::FootnoteReference(_) | Event::Html(_) | Event::InlineHtml(_) | Event::InlineMath(_) | Event::DisplayMath(_) => {}
+            Event::FootnoteReference(_)
+            | Event::Html(_)
+            | Event::InlineHtml(_)
+            | Event::InlineMath(_)
+            | Event::DisplayMath(_) => {}
             Event::TaskListMarker(_) => {}
         }
     }
@@ -223,9 +236,12 @@ pub fn render_markdown(md: &str, th: &Theme) -> Vec<Line<'static>> {
     if ctx.in_code {
         // unterminated code block while streaming
         ctx.code_lines.push(std::mem::take(&mut ctx.code_cur));
-        let code_style = Style::new().fg(ratatui::style::Color::Rgb(200, 212, 224)).bg(th.code_bg);
+        let code_style = Style::new()
+            .fg(ratatui::style::Color::Rgb(200, 212, 224))
+            .bg(th.code_bg);
         for l in &ctx.code_lines {
-            ctx.lines.push(Line::from(Span::styled(format!("│ {l}"), code_style)));
+            ctx.lines
+                .push(Line::from(Span::styled(format!("│ {l}"), code_style)));
         }
     }
     if ctx.lines.is_empty() {
@@ -243,7 +259,10 @@ mod tests {
     fn renders_code_block() {
         let md = "before\n```rust\nfn main() {}\n```\nafter";
         let lines = render_markdown(md, &THEME);
-        let text: Vec<String> = lines.iter().map(|l| l.spans.iter().map(|s| s.content.to_string()).collect()).collect();
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
+            .collect();
         assert!(text.iter().any(|l| l.contains("╭─ rust")));
         assert!(text.iter().any(|l| l.contains("fn main() {}")));
     }
