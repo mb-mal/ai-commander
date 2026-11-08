@@ -96,6 +96,7 @@ mod tests {
                 attempts: 1,
                 started_ms: None,
                 lease_until_ms: None,
+                not_before_ms: None,
                 max_attempts: 3,
                 schedule: String::new(),
                 budget_usd: 0.0,

@@ -817,8 +817,9 @@ impl App {
                 kind,
                 delta,
             } => {
-                // heartbeat (B6): renew lease for task-linked sessions
-                if kind == PartKind::Text {
+                // heartbeat (Д1): renew lease on ANY progress event — Text,
+                // Reasoning, tool calls all indicate the agent is alive
+                {
                     let task_id = {
                         let b = self.board.lock().unwrap();
                         b.find_by_session(&harness, &native_id).map(|t| t.id)
@@ -943,14 +944,10 @@ impl App {
                         .task_replies
                         .remove(&(harness.clone(), native_id.clone()))
                         .unwrap_or_default();
-                    let action = match kanban::classify_reply(&reply) {
-                        kanban::TurnOutcome::Finished => kanban::TaskAction::Finish,
-                        kanban::TurnOutcome::Blocked => kanban::TaskAction::Block,
-                        kanban::TurnOutcome::NeedsHuman => kanban::TaskAction::Ask,
-                        kanban::TurnOutcome::Failed => kanban::TaskAction::Interrupt,
-                    };
+                    // Д3: use runner::on_stream_done — same path as the daemon
+                    // (includes Н1 backoff, Н2 strict DONE: marker, max_attempts)
                     let mut b = self.board.lock().unwrap();
-                    if let Ok(t) = b.transition(&task.id, action) {
+                    if let Ok(t) = kanban::runner::on_stream_done(&mut b, &task.id, &reply) {
                         drop(b);
                         self.toast(format!("{} → {:?}", t.id, t.status), false);
                     }
