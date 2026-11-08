@@ -131,6 +131,14 @@ impl RoleSet {
         rs
     }
 
+    /// Д7: cached load — the role/team files are re-read only when their
+    /// (path, mtime, len) fingerprint changes, not on every task launch.
+    /// Returns the process-wide cached view for `cwd`.
+    pub fn cached(cwd: &Path) -> RoleSet {
+        static CACHE: std::sync::OnceLock<RoleCache> = std::sync::OnceLock::new();
+        CACHE.get_or_init(RoleCache::new).get(cwd)
+    }
+
     /// Prefix prepended to the task prompt when a role executes the task.
     pub fn role_prompt(&self, role_id: &str) -> Option<String> {
         let role = self.roles.get(role_id)?;
@@ -147,9 +155,69 @@ impl RoleSet {
     }
 }
 
+/// Д7: cache of the loaded RoleSet, keyed by a cheap filesystem fingerprint
+/// (sorted list of (path, mtime, len) for every role/team file). A hit
+/// avoids re-reading and re-parsing the .md/.yaml files per task launch.
+#[derive(Debug, Default)]
+pub struct RoleCache {
+    inner: std::sync::Mutex<Option<(Fingerprint, RoleSet)>>,
+    /// full reloads performed (for tests/diagnostics)
+    pub loads: std::sync::atomic::AtomicUsize,
+}
+
+type Fingerprint = Vec<(PathBuf, std::time::SystemTime, u64)>;
+
+/// Snapshot every role/team source file under the user + project roots.
+fn fingerprint(cwd: &Path) -> Fingerprint {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+        roots.push(PathBuf::from(home).join(".ai-commander"));
+    }
+    roots.push(cwd.join(".ai-commander"));
+    let mut out = Vec::new();
+    for base in roots {
+        for sub in ["agents", "teams"] {
+            let dir = base.join(sub);
+            let Ok(rd) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for e in rd.flatten() {
+                if let Ok(md) = e.metadata() {
+                    if let Ok(mtime) = md.modified() {
+                        out.push((e.path(), mtime, md.len()));
+                    }
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+impl RoleCache {
+    pub fn new() -> RoleCache {
+        RoleCache::default()
+    }
+
+    /// Return the cached RoleSet, reloading only when the fingerprint changed.
+    pub fn get(&self, cwd: &Path) -> RoleSet {
+        let fp = fingerprint(cwd);
+        let mut g = self.inner.lock().unwrap();
+        if let Some((prev, rs)) = g.as_ref() {
+            if *prev == fp {
+                return rs.clone();
+            }
+        }
+        let rs = RoleSet::load(cwd);
+        self.loads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        *g = Some((fp, rs.clone()));
+        rs
+    }
+}
+
 /// Role templates for the "new role" wizard (F-key board UI).
-pub fn template_body(kind: &str) -> &'static str {
-    match kind {
+pub fn template_body(kind: &str) -> &'static str {    match kind {
         "coder" => {
             "You write clean, idiomatic code. Prefer small diffs, run the tests before DONE."
         }
@@ -269,6 +337,53 @@ mod tests {
         load_roles_dir(&agents, &mut rs);
         assert_eq!(rs.roles.len(), 1);
         assert_eq!(rs.roles["coder"].instructions, "Write code fast.");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Д7: repeated `get` calls hit the cache (no extra loads); a file edit
+    /// bumps the mtime fingerprint and the change IS picked up.
+    #[test]
+    fn role_cache_hits_and_refreshes_on_change() {
+        let dir = std::env::temp_dir().join(format!("aic-role-cache-{}", std::process::id()));
+        let agents = dir.join(".ai-commander").join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let role = agents.join("coder.md");
+        std::fs::write(&role, "---\nname: Coder\nharness: oc\n---\nOriginal text.")
+            .unwrap();
+
+        let cache = RoleCache::new();
+        let rs = cache.get(&dir);
+        assert_eq!(rs.roles["coder"].instructions, "Original text.");
+        assert_eq!(cache.loads.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // second call with no changes: served from cache, no reload
+        let rs = cache.get(&dir);
+        assert_eq!(rs.roles["coder"].instructions, "Original text.");
+        assert_eq!(
+            cache.loads.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "unchanged files must not trigger a reload (Д7)"
+        );
+
+        // edit the role file and force a distinguishable mtime
+        std::fs::write(&role, "---\nname: Coder\nharness: oc\n---\nUpdated text.").unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(1);
+        let f = std::fs::File::options().write(true).open(&role).unwrap();
+        f.set_times(
+            std::fs::FileTimes::new()
+                .set_accessed(later)
+                .set_modified(later),
+        )
+        .unwrap();
+        drop(f);
+
+        let rs = cache.get(&dir);
+        assert_eq!(
+            rs.roles["coder"].instructions, "Updated text.",
+            "edited role must be picked up without restart"
+        );
+        assert_eq!(cache.loads.load(std::sync::atomic::Ordering::SeqCst), 2);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

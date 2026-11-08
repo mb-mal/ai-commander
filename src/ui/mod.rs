@@ -1673,7 +1673,7 @@ impl App {
             }
             (KeyCode::Char('o' | 'O'), false) => {
                 // assign a role from .ai-commander/agents/*.md
-                let rs = kanban::roles::RoleSet::load(&std::env::current_dir().unwrap_or_default());
+                let rs = kanban::roles::RoleSet::cached(&std::env::current_dir().unwrap_or_default());
                 let items: Vec<(String, String)> = rs
                     .roles
                     .iter()
@@ -1766,7 +1766,7 @@ impl App {
         // B9+Н3: shared TaskRunner — Start (worktree) + ctx with cwd, under
         // the board lock; the async part below never holds the lock across
         // an `.await` (std::sync::MutexGuard is not Send).
-        let roles = kanban::roles::RoleSet::load(&std::env::current_dir().unwrap_or_default());
+        let roles = kanban::roles::RoleSet::cached(&std::env::current_dir().unwrap_or_default());
         let repo = std::env::current_dir().unwrap_or_default();
         let ctx = {
             let mut board = self.board.lock().unwrap();

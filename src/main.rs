@@ -594,7 +594,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
 
             // B9+Н3: shared TaskRunner — Start creates the worktree, the
             // session is created with cwd=worktree so the agent works there
-            let roles = ai_commander::kanban::roles::RoleSet::load(
+            let roles = ai_commander::kanban::roles::RoleSet::cached(
                 &std::env::current_dir().unwrap_or_default(),
             );
             match ai_commander::kanban::runner::launch_task(b, &mut board, &task, &cfg, &roles)
