@@ -33,8 +33,10 @@ use crate::config::HarnessCfg;
 
 use agent_client_protocol::schema::v1::{
     CancelNotification, ContentBlock, EnvVariable, ImageContent, InitializeRequest,
-    LoadSessionRequest, McpServer, McpServerStdio, NewSessionRequest, PromptRequest,
-    SessionNotification, SessionUpdate, TextContent, ToolCallStatus,
+    LoadSessionRequest, McpServer, McpServerStdio, NewSessionRequest, PermissionOption,
+    PermissionOptionKind, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
+    TextContent, ToolCallStatus,
 };
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -57,10 +59,12 @@ struct AcpStore {
 }
 
 /// A server→client permission request awaiting the user's answer.
+/// v4 Б2: options keep the schema kind so the reply can match exactly, and
+/// the jsonrpc id stays raw (numbers AND strings are legal request ids).
 #[derive(Clone)]
 struct PendingPermission {
-    jsonrpc_id: u64,
-    options: Vec<(String, String)>, // (optionId, label)
+    jsonrpc_id: Value,
+    options: Vec<PermissionOption>,
 }
 
 pub struct AcpBackend {
@@ -361,50 +365,41 @@ impl Backend for AcpBackend {
                             }
                         }
                         "session/request_permission" => {
-                            let sid = params
-                                .get("sessionId")
-                                .and_then(Value::as_str)
-                                .unwrap_or("")
-                                .to_string();
-                            let options: Vec<(String, String)> = params
-                                .get("options")
-                                .and_then(Value::as_array)
-                                .map(|a| {
-                                    a.iter()
-                                        .filter_map(|o| {
-                                            let id = o
-                                                .get("optionId")
-                                                .and_then(Value::as_str)?
-                                                .to_string();
-                                            let label = o
-                                                .get("label")
-                                                .and_then(Value::as_str)
-                                                .unwrap_or(&id)
-                                                .to_string();
-                                            Some((id, label))
-                                        })
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            let Some(jsonrpc_id) = v.get("id").and_then(Value::as_u64) else {
+                            // v4 Б2: typed params; the raw jsonrpc id is kept
+                            // (string ids are legal and must not be dropped)
+                            let Ok(req) =
+                                serde_json::from_value::<RequestPermissionRequest>(params.clone())
+                            else {
                                 continue;
                             };
-                            let title = options
+                            let raw_id = v.get("id").cloned().unwrap_or(Value::Null);
+                            if raw_id.is_null() {
+                                continue;
+                            }
+                            let sid = req.session_id.to_string();
+                            // v4 Б2: the human label is `name` (schema), not `label`
+                            let title = req
+                                .options
                                 .iter()
-                                .map(|(_, l)| l.clone())
+                                .map(|o| o.name.clone())
                                 .collect::<Vec<_>>()
                                 .join(" / ");
+                            // register BEFORE notifying — the UI's reply must
+                            // always find the pending entry (no lost race)
+                            permissions.lock().unwrap().push(PendingPermission {
+                                jsonrpc_id: raw_id.clone(),
+                                options: req.options,
+                            });
                             let _ = events.send(BackendEvent::PermissionRequest {
                                 harness: harness.clone(),
                                 session_id: sid,
-                                request_id: format!("jsonrpc:{jsonrpc_id}"),
+                                request_id: format!(
+                                    "jsonrpc:{}",
+                                    serde_json::to_string(&raw_id).unwrap_or_default()
+                                ),
                                 title,
                                 action: "session".into(),
                                 resource: String::new(),
-                            });
-                            permissions.lock().unwrap().push(PendingPermission {
-                                jsonrpc_id,
-                                options,
                             });
                         }
                         _ => {
@@ -786,66 +781,74 @@ impl Backend for AcpBackend {
                 serde_json::to_value(&cancel).unwrap_or(Value::Null),
             );
         }
+        // v4 Б2: the spec REQUIRES answering every pending permission
+        // request with `cancelled` when the turn is cancelled — an
+        // unanswered request would hang the agent forever
+        let pending: Vec<PendingPermission> =
+            std::mem::take(&mut *self.permissions.lock().unwrap());
+        for p in pending {
+            let resp = RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled);
+            let msg = json!({"jsonrpc": "2.0", "id": p.jsonrpc_id,
+                "result": serde_json::to_value(&resp).unwrap_or(Value::Null)});
+            self.write_raw(&msg);
+        }
         Ok(())
     }
 
-    /// once/always → pick the agent's matching option; reject → RPC error.
+    /// Map the user's answer to the schema option kinds (v4 Б2):
+    /// "once"→allow_once, "always"→allow_always, "reject"→reject_once.
+    /// No matching option → `cancelled` (never a blind first-option pick).
     async fn permission_reply(
         &self,
         _native_id: &str,
         request_id: &str,
         reply: &str,
     ) -> Result<()> {
-        let Some(jsonrpc_id) = request_id
+        let jsonrpc_id = request_id
             .strip_prefix("jsonrpc:")
-            .and_then(|s| s.parse::<u64>().ok())
-        else {
-            bail!("bad permission request id");
-        };
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+            .filter(|v| !v.is_null())
+            .ok_or_else(|| anyhow!("bad permission request id"))?;
         let mut perms = self.permissions.lock().unwrap();
         let Some(idx) = perms.iter().position(|p| p.jsonrpc_id == jsonrpc_id) else {
             bail!("permission request not found");
         };
         let p = perms.remove(idx);
-        if reply == "reject" {
-            // schema: deny = select a reject option or send cancelled
-            let msg = json!({"jsonrpc": "2.0", "id": jsonrpc_id,
-                "result": {"outcome": {"outcome": "cancelled"}}});
-            self.write_raw(&msg);
-        } else {
-            // match by kind (schema) with id/label fallback for older agents
-            let wanted = |id: &str, label: &str| {
-                let hay = format!("{id} {label}").to_lowercase();
-                match reply {
-                    "always" => {
-                        hay.contains("allow_always")
-                            || hay.contains("always")
-                            || hay.contains("session")
-                            || hay.contains("permanent")
-                    }
-                    "reject" => {
-                        hay.contains("reject_once")
-                            || hay.contains("reject_always")
-                            || hay.contains("reject")
-                    }
-                    _ => {
-                        hay.contains("allow_once")
-                            || (!hay.contains("always") && !hay.contains("reject"))
-                    }
-                }
-            };
-            let option = p
-                .options
-                .iter()
-                .find(|(id, label)| wanted(id, label))
-                .map(|(id, _)| id.clone())
-                .or_else(|| p.options.first().map(|(id, _)| id.clone()))
-                .unwrap_or_default();
-            // schema: {"outcome":{"outcome":"selected","optionId":"..."}}
-            let msg = json!({"jsonrpc": "2.0", "id": jsonrpc_id,
-                "result": {"outcome": {"outcome": "selected", "optionId": option}}});
-            self.write_raw(&msg);
-        }
+        drop(perms);
+
+        // v4 Б2: choose strictly by the schema kind, in preference order;
+        // no fallback to "whatever option is first"
+        let want: &[PermissionOptionKind] = match reply {
+            "reject" => &[
+                PermissionOptionKind::RejectOnce,
+                PermissionOptionKind::RejectAlways,
+            ],
+            "always" => &[PermissionOptionKind::AllowAlways],
+            // "once" and anything else the UI sends for a plain allow
+            _ => &[PermissionOptionKind::AllowOnce],
+        };
+        let outcome = match want
+            .iter()
+            .find_map(|k| p.options.iter().find(|o| o.kind == *k))
+        {
+            Some(o) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                o.option_id.clone(),
+            )),
+            None => {
+                // v4 Б2: nothing matched — cancel (never a blind allow)
+                crate::log_warn!(
+                    "acp",
+                    "no permission option of kind {:?} offered — cancelling",
+                    reply
+                );
+                RequestPermissionOutcome::Cancelled
+            }
+        };
+        // v4 Б2: typed response; the raw id (number or string) round-trips
+        let resp = RequestPermissionResponse::new(outcome);
+        let msg = json!({"jsonrpc": "2.0", "id": jsonrpc_id,
+            "result": serde_json::to_value(&resp).unwrap_or(Value::Null)});
+        self.write_raw(&msg);
         Ok(())
     }
 

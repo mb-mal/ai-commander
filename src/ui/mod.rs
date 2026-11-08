@@ -982,9 +982,9 @@ impl App {
                     // Д3: use runner::on_stream_done — same path as the daemon
                     // (includes Н1 backoff, Н2 strict DONE: marker, max_attempts)
                     let mut b = self.board.lock().unwrap();
-                    if let Ok(t) = kanban::runner::on_stream_done_ex(
-                        &mut b, &task.id, &reply, errored,
-                    ) {
+                    if let Ok(t) =
+                        kanban::runner::on_stream_done_ex(&mut b, &task.id, &reply, errored)
+                    {
                         drop(b);
                         self.toast(format!("{} → {:?}", t.id, t.status), false);
                     }
@@ -1025,7 +1025,8 @@ impl App {
                         b.find_by_session(&harness, &native_id).is_some()
                     };
                     if is_task {
-                        self.task_errors.insert((harness.clone(), native_id.clone()));
+                        self.task_errors
+                            .insert((harness.clone(), native_id.clone()));
                     }
                 }
                 if self.cur.harness == harness && self.cur.native_id == native_id {
