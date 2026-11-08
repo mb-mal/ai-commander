@@ -225,6 +225,9 @@ pub struct SendOpts<'a> {
     pub agent: Option<&'a str>,
     /// role token: the ACP backend injects the board MCP server bound to it
     pub mcp_role: Option<&'a str>,
+    /// Н3: working directory for this session (the task's worktree);
+    /// backends pass it as `session/new` cwd / process current_dir
+    pub cwd: Option<&'a std::path::Path>,
 }
 
 #[async_trait]

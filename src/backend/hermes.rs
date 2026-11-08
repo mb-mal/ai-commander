@@ -309,6 +309,10 @@ impl Backend for HermesBackend {
         }
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let mut cmd = self.build_command(&arg_refs);
+        // Н3: prefer the task's worktree cwd over the harness default
+        if let Some(cwd) = opts.cwd {
+            cmd.current_dir(cwd);
+        }
         cmd.stdin(Stdio::piped()).stderr(Stdio::piped());
         let mut child = cmd.spawn().map_err(|e| anyhow!("spawn hermes chat: {e}"))?;
         let mut stdin = child.stdin.take();
