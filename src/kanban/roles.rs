@@ -209,15 +209,15 @@ impl RoleCache {
             }
         }
         let rs = RoleSet::load(cwd);
-        self.loads
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.loads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         *g = Some((fp, rs.clone()));
         rs
     }
 }
 
 /// Role templates for the "new role" wizard (F-key board UI).
-pub fn template_body(kind: &str) -> &'static str {    match kind {
+pub fn template_body(kind: &str) -> &'static str {
+    match kind {
         "coder" => {
             "You write clean, idiomatic code. Prefer small diffs, run the tests before DONE."
         }
@@ -348,8 +348,7 @@ mod tests {
         let agents = dir.join(".ai-commander").join("agents");
         std::fs::create_dir_all(&agents).unwrap();
         let role = agents.join("coder.md");
-        std::fs::write(&role, "---\nname: Coder\nharness: oc\n---\nOriginal text.")
-            .unwrap();
+        std::fs::write(&role, "---\nname: Coder\nharness: oc\n---\nOriginal text.").unwrap();
 
         let cache = RoleCache::new();
         let rs = cache.get(&dir);

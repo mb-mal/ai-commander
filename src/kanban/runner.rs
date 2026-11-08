@@ -93,24 +93,30 @@ pub fn prepare_launch(
 
 /// Н3: launch a task in its worktree — Start (creates worktree) →
 /// create_session(cwd=worktree) → send. Returns the linked session id.
-/// The daemon owns the board directly; the TUI composes the same steps via
-/// `prepare_launch` + `send_task` (it keeps the board behind a Mutex).
+/// Takes the shared board (Б1: the owner serves it over IPC); the lock is
+/// taken per sync segment only, never held across an `.await`.
 pub async fn launch_task(
     backend: &Arc<dyn Backend>,
-    board: &mut BoardStore,
+    board: &std::sync::Arc<std::sync::Mutex<BoardStore>>,
     task: &Task,
     cfg: &Config,
     roles: &RoleSet,
 ) -> anyhow::Result<String> {
     let repo = std::env::current_dir().unwrap_or_default();
-    let ctx = prepare_launch(board, task, cfg, roles, &repo)?;
+    let ctx = {
+        let mut b = board.lock().unwrap();
+        prepare_launch(&mut b, task, cfg, roles, &repo)?
+    };
 
     // Create the session (backends use ctx.cwd as the working dir)
     let session = backend
         .create_session(&task.title)
         .await
         .map_err(|e| anyhow::anyhow!("create_session: {e:#}"))?;
-    board.link_session(&task.id, &session.native_id);
+    board
+        .lock()
+        .unwrap()
+        .link_session(&task.id, &session.native_id);
 
     // Send with the worktree cwd
     send_task(backend, task, &ctx, &session.native_id).await?;

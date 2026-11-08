@@ -280,6 +280,26 @@ impl App {
     ) -> Self {
         let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
         let active = cfg.default_harness_id();
+        // Б1: the TUI owns the board when it wins the exclusive redb lock,
+        // and then serves board IPC for secondary processes (board-mcp).
+        // If another process owns the store, degrade to a local view and
+        // do NOT serve IPC.
+        let board = {
+            let opened = kanban::store::BoardStore::open_redb(&kanban::Kanban::path());
+            let owns = opened.is_ok();
+            let arc = Arc::new(std::sync::Mutex::new(
+                opened.unwrap_or_else(|_| kanban::store::BoardStore::open_memory()),
+            ));
+            if owns {
+                match kanban::ipc::serve_board(arc.clone()) {
+                    Ok(port) => crate::log_info!("board", "IPC owner on port {port}"),
+                    Err(e) => crate::log_warn!("board", "IPC server failed: {e}"),
+                }
+            } else {
+                crate::log_warn!("board", "store is owned by another process — view only");
+            }
+            arc
+        };
         let mut app = App {
             cur: CurrentChat::draft(&active),
             active_harness: active.clone(),
@@ -308,10 +328,7 @@ impl App {
             policy: crate::policy::Policy::load(&std::env::current_dir().unwrap_or_default()),
             show_activity: false,
             approvals_pending: 0,
-            board: Arc::new(std::sync::Mutex::new(
-                kanban::store::BoardStore::open_redb(&kanban::Kanban::path())
-                    .unwrap_or_else(|_| kanban::store::BoardStore::open_memory()),
-            )),
+            board,
             board_col: 0,
             board_row: 0,
             board_sel: None,
@@ -1673,7 +1690,8 @@ impl App {
             }
             (KeyCode::Char('o' | 'O'), false) => {
                 // assign a role from .ai-commander/agents/*.md
-                let rs = kanban::roles::RoleSet::cached(&std::env::current_dir().unwrap_or_default());
+                let rs =
+                    kanban::roles::RoleSet::cached(&std::env::current_dir().unwrap_or_default());
                 let items: Vec<(String, String)> = rs
                     .roles
                     .iter()

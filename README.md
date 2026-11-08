@@ -155,15 +155,24 @@ the log, snapshot == fold(log).
 
 The board is exposed to agents as MCP tools by the `board-mcp` binary
 (newline JSON-RPC over stdio, MCP 2024-11-05): `board.create_task`,
-`board.update_task`, `board.comment`, `board.handoff`, `board.read_inbox`,
-`board.ask_human`. The role identity is the per-session token
-(`AI_COMMANDER_ROLE` env): every mutation is authored by that role, and
-start/finish are ownership-checked. Handoffs carry a validated contract
+`board.update_task`, `board.comment`, `board.handoff`, `board.artifact`,
+`board.read_inbox`, `board.ask_human`. The role identity is the per-session
+token (`AI_COMMANDER_ROLE` env): every mutation is authored by that role,
+and start/finish are ownership-checked. Handoffs carry a validated contract
 (summary ≥ 10 chars + open questions) and return the task to Ready for the
-new owner.
+new owner. Artifacts (`file`/`branch`/`link`/`text`) are first-class task
+outputs — they survive handoffs, so the next owner finds the work.
+
+**Single owner + IPC**: the redb store takes an exclusive lock, so exactly
+one process (TUI or daemon) owns the board and serves board tool calls on a
+loopback socket (port published in `<config>/board.port`, overridable with
+`AI_COMMANDER_BOARD_PORT`). `board-mcp` connects to that owner as a client
+— it never opens the redb file while an owner is alive and never creates a
+second store. Only when nobody owns the board does it open the store
+directly.
 
 - ACP harness: the board server is injected automatically into every task
-  session with a role (`session/new mcpServers`)
+  session with a role (`session/new mcpServers`, typed schema entries)
 - any harness: `ai-commander --print-mcp-config` prints the snippet for
   its own MCP config
 
@@ -225,25 +234,51 @@ new owner.
 ## v2 review fixes
 
 Blockers from the v2 review addressed:
-- **Б1** board-mcp exits with a clear message (not a panic) when the DB is
-  locked by the TUI/daemon; IPC proxy is on the roadmap
-- **Б2** ACP permissions now match the schema: ,
-  deny sends , option matching by kind (allow_once/always, reject_once/always)
+- **Б1** single board owner + IPC: the owner (TUI/daemon) serves board tool
+  calls on a loopback socket; `board-mcp` is a client while an owner is
+  alive (no second store, no duplicate ids) and only opens the redb store
+  directly when nobody owns it
+- **Б2** ACP backend builds every message from the `agent-client-protocol`
+  schema types (initialize, session/new, session/load, session/prompt,
+  session/cancel, mcpServers entries); the `fake-acp-agent` conformance
+  binary validates every client message against the schema
 - **Б3** cron schedules disabled (were spawning a task every 60 s) until a
   real parser is in place
-- **Б4** worktree: commits agent work before merge ( from the role),
-  refuses  on dirty worktree (task → NeedsHuman, files preserved)
+- **Б4** worktree: commits agent work before merge, refuses `--force` on a
+  dirty worktree (task → NeedsHuman, files preserved)
 - **Б8** daemon: transitions tasks on StreamDone (classify_reply), busy keyed
   by task.id (was native_id → never cleared)
-- **Б9** daemon: uses  (DAG), role instructions prefix the
-  prompt, role model overrides harness default,  passed
+- **Б9** daemon: uses the shared TaskRunner (DAG), role instructions prefix
+  the prompt, role model overrides the harness default, `mcp_role` passed
 
 Security fixes:
-- A2A gateway disabled by default ( to opt in)
+- A2A gateway disabled by default (env opt-in)
 - Project policies can only tighten user policies (deny > ask > allow;
-  a project  never weakens a user )
--  written with 0600 permissions on Unix
-- MCP: an agent cannot  or  its own task
+  a project `allow` never weakens a user `deny`)
+- config written with 0600 permissions on Unix
+- MCP: an agent cannot `approve` or `rework` its own task
+
+## v3 review fixes
+
+- **Н1** retry cap: a Failed turn retries with exponential backoff
+  (30 s → 2 m → 8 m → 15 m cap) and escalates to NeedsHuman after
+  `max_attempts` (default 3) — no infinite retry loops
+- **Н2** strict DONE: only an explicit `DONE:` prefix finishes a task;
+  error text (e.g. `401 Unauthorized`) counts as Failed, not Finished
+- **Н3** worktree isolation end-to-end: Start creates the worktree, the
+  session is created with `cwd` = worktree (subprocess harnesses), and the
+  opencode HTTP backend moves the session to the worktree directory before
+  the prompt (`POST /api/session/{id}/move`)
+- **Д1** lease heartbeat on every progress event (text, reasoning, tools)
+- **Д2** watchdog aborts are awaited (`abort_stuck` joins every handle,
+  bounded 10 s) before transitions apply — no re-launch while the old
+  agent process is still alive
+- **Д4** the DAG gates every Start, manual board actions included
+- **Д5** a failed send still ends the turn (empty reply → retry cap)
+- **Д7** role files are cached by fingerprint (path, mtime, len) and
+  re-read only on change
+- **Д8** artifacts: first-class task outputs, `board.artifact` MCP tool,
+  survive handoffs
 
 ## Limitations & roadmap
 

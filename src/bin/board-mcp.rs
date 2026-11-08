@@ -16,17 +16,25 @@ use serde_json::{Value, json};
 
 fn main() {
     let role = std::env::var("AI_COMMANDER_ROLE").unwrap_or_default();
-    let mut board = match BoardStore::open_redb(&Kanban::path()) {
-        Ok(b) => b,
-        Err(e) => {
-            // redb takes an exclusive lock (review v2 Б1): the TUI or daemon
-            // owns the DB. Graceful exit with a clear message.
-            eprintln!("board-mcp: cannot open the kanban store: {e:#}");
-            eprintln!("hint: the board is likely open in ai-commander (TUI or daemon).");
-            eprintln!(
-                "       stop the owner process or set AI_COMMANDER_KANBAN_DB to a separate copy."
-            );
-            std::process::exit(1);
+    // Б1: if a board owner (TUI or daemon) is serving IPC, work as its
+    // client — never open the redb store (exclusive lock) and never create
+    // a second store. Direct mode only when nobody owns the board.
+    let mut board = if ai_commander::kanban::ipc::owner_alive() {
+        None
+    } else {
+        match BoardStore::open_redb(&Kanban::path()) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                // redb takes an exclusive lock (review v2 Б1): the TUI or
+                // daemon owns the DB but serves no IPC (older owner build).
+                // Graceful exit with a clear message.
+                eprintln!("board-mcp: cannot open the kanban store: {e:#}");
+                eprintln!("hint: the board is likely open in ai-commander (TUI or daemon).");
+                eprintln!(
+                    "       stop the owner process or set AI_COMMANDER_KANBAN_DB to a separate copy."
+                );
+                std::process::exit(1);
+            }
         }
     };
     let stdin = std::io::stdin();
@@ -58,7 +66,16 @@ fn main() {
                     .unwrap_or("")
                     .to_string();
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                match call_tool(&name, &args, &role, &mut board) {
+                let call = match board.as_mut() {
+                    Some(b) => call_tool(&name, &args, &role, b),
+                    // Б1 IPC client: forward to the owner's store
+                    None => match ai_commander::kanban::ipc::call_owner(&name, &args, &role) {
+                        Some(Ok(text)) => Ok(text),
+                        Some(Err(e)) => Err(e),
+                        None => Err("board owner is not reachable (TUI/daemon stopped?)".into()),
+                    },
+                };
+                match call {
                     Ok(text) => Ok(json!({"content": [{"type": "text", "text": text}]})),
                     Err(e) => Ok(json!({
                         "content": [{"type": "text", "text": format!("error: {e}")}],

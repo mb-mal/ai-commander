@@ -166,7 +166,12 @@ fn manual_start_blocked_by_unfinished_dependency() {
         "error must name the blocking dependency: {err}"
     );
     assert_eq!(
-        b.projection().tasks.iter().find(|t| t.id == c.id).unwrap().status,
+        b.projection()
+            .tasks
+            .iter()
+            .find(|t| t.id == c.id)
+            .unwrap()
+            .status,
         TaskStatus::Ready,
         "blocked task must stay Ready"
     );
@@ -178,7 +183,12 @@ fn manual_start_blocked_by_unfinished_dependency() {
     b.transition(&a.id, TaskAction::Approve).unwrap(); // → Done
     b.transition(&c.id, TaskAction::Start).unwrap();
     assert_eq!(
-        b.projection().tasks.iter().find(|t| t.id == c.id).unwrap().status,
+        b.projection()
+            .tasks
+            .iter()
+            .find(|t| t.id == c.id)
+            .unwrap()
+            .status,
         TaskStatus::InProgress
     );
 }
