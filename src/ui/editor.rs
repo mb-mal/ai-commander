@@ -45,7 +45,7 @@ impl Editor {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.lines.iter().all(|l| l.is_empty())
+        self.lines.len() == 1 && self.lines[0].is_empty()
     }
 
     fn line_chars(&self) -> Vec<char> {

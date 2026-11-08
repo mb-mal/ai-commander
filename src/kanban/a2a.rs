@@ -71,6 +71,11 @@ fn handle(mut stream: TcpStream, board: std::sync::Arc<std::sync::Mutex<BoardSto
     );
     let _ = stream.write_all(&body);
     let _ = stream.flush();
+    // half-close: signal EOF to the client, then wait for it to finish reading
+    // (a full Both-shutdown races the client's read on Windows → WSAECONNRESET)
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let mut sink = Vec::new();
+    let _ = stream.read_to_end(&mut sink);
 }
 
 fn route(
@@ -128,34 +133,63 @@ fn agent_card() -> Value {
 mod tests {
     use super::*;
 
+    fn connect_retry(port: u16) -> std::net::TcpStream {
+        // the listener thread may not have started yet on a loaded test runner
+        for _ in 0..50 {
+            if let Ok(s) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+                return s;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("cannot connect to a2a gateway on port {port}");
+    }
+
+    /// HTTP round-trip with retry: Windows can reset the connection during
+    /// the server's half-close race; retrying the request is safe (idempotent
+    /// routes only in tests).
+    fn roundtrip(port: u16, request: String) -> (u16, Value) {
+        for attempt in 0..5 {
+            let mut s = connect_retry(port);
+            if write!(s, "{request}").is_err() {
+                continue;
+            }
+            let _ = s.flush();
+            let mut buf = String::new();
+            match std::io::Read::read_to_string(&mut s, &mut buf) {
+                Ok(_) => {
+                    let status: u16 = buf
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or("0")
+                        .parse()
+                        .unwrap_or(0);
+                    let body = buf.split("\r\n\r\n").nth(1).unwrap_or("");
+                    if let Ok(v) = serde_json::from_str(body) {
+                        return (status, v);
+                    }
+                }
+                Err(_) if attempt < 4 => continue, // WSAECONNRESET race
+                Err(e) => panic!("read failed after retries: {e}"),
+            }
+        }
+        panic!("a2a roundtrip exhausted retries");
+    }
+
     fn post(port: u16, body: &str) -> (u16, Value) {
-        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        write!(
-            s,
-            "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
+        roundtrip(
+            port,
+            format!(
+                "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            ),
         )
-        .unwrap();
-        let mut buf = String::new();
-        std::io::Read::read_to_string(&mut s, &mut buf).unwrap();
-        let status: u16 = buf.split_whitespace().nth(1).unwrap().parse().unwrap();
-        let body = buf.split("\r\n\r\n").nth(1).unwrap_or("");
-        (status, serde_json::from_str(body).unwrap())
     }
 
     fn get(port: u16, path: &str) -> (u16, Value) {
-        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        write!(
-            s,
-            "GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+        roundtrip(
+            port,
+            format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"),
         )
-        .unwrap();
-        let mut buf = String::new();
-        std::io::Read::read_to_string(&mut s, &mut buf).unwrap();
-        let status: u16 = buf.split_whitespace().nth(1).unwrap().parse().unwrap();
-        let body = buf.split("\r\n\r\n").nth(1).unwrap_or("");
-        (status, serde_json::from_str(body).unwrap())
     }
 
     #[test]

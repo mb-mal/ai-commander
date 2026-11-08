@@ -30,6 +30,8 @@ fn print_help() {
   --server URL      use this opencode server instead of autostart
   --lang ru|en      UI language (default en; switchable in settings)
   --workdir PATH    harness working directory
+  --log-level LVL   file log: off|error|warn|info|debug (default info;
+                    writes <config>/ai-commander.log)
   --version         print version
 
 Developer: Mikhail Malyshev — Telegram & YouTube: @tsingular",
@@ -44,6 +46,7 @@ struct Args {
     task: String,
     daemon: bool,
     print_mcp: bool,
+    log_level: String,
     wait_secs: u64,
     server: String,
     lang: String,
@@ -61,6 +64,7 @@ fn parse_args() -> Args {
             "--task" => args.task = it.next().unwrap_or_default(),
             "--daemon" => args.daemon = true,
             "--print-mcp-config" => args.print_mcp = true,
+            "--log-level" => args.log_level = it.next().unwrap_or_default(),
             "--wait" => args.wait_secs = it.next().and_then(|s| s.parse().ok()).unwrap_or(60),
             "--server" => args.server = it.next().unwrap_or_default(),
             "--lang" => args.lang = it.next().unwrap_or_default(),
@@ -99,6 +103,7 @@ fn apply_overrides(cfg: &mut Config, args: &Args) {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = parse_args();
+    ai_commander::logging::init(ai_commander::logging::parse_level(&args.log_level));
     let mut cfg = Config::load()?;
     apply_overrides(&mut cfg, &args);
 
@@ -509,6 +514,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
             .unwrap_or(0);
         for id in board.spawn_due_scheduled(now_secs) {
             println!("[trigger] spawned {id} from schedule");
+            ai_commander::log_info!("daemon", "trigger spawned {id}");
         }
 
         // 2) watchdog pass (retry / escalate)
@@ -518,6 +524,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
             .unwrap_or(0);
         for (id, label) in board.watchdog_pass(now) {
             println!("[watchdog] {id}: {label}");
+            ai_commander::log_info!("daemon", "watchdog {id}: {label}");
             busy.remove(&id);
         }
 
@@ -566,6 +573,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                 .await;
             busy.insert(task.id.clone());
             println!("[run] {} '{}' on {harness}", task.id, task.title);
+            ai_commander::log_info!("daemon", "run {} on {harness}", task.id);
             break; // one at a time keeps the log readable
         }
 
