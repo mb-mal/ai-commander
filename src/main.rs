@@ -508,6 +508,9 @@ async fn run_daemon(cfg: Config) -> Result<()> {
     let mut busy: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut task_replies: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
+    // v4 Н2: task ids whose turn stream errored — their StreamDone is
+    // Failed even if a DONE: marker was printed before the break
+    let mut task_errors: std::collections::HashSet<String> = std::collections::HashSet::new();
     loop {
         // 1) drain finished turns via TaskRunner (Б8: classify + transition)
         use backend::PartKind;
@@ -537,6 +540,20 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                         }
                     }
                 }
+                backend::BackendEvent::PartUpdated {
+                    native_id, harness, ..
+                } => {
+                    // v4 Д1: tool-call progress (PartUpdated, no delta text)
+                    // is a liveness signal — renew the task lease
+                    let task_id = {
+                        let b = board.lock().unwrap();
+                        b.find_by_session(harness, native_id).map(|t| t.id)
+                    };
+                    if let Some(id) = task_id {
+                        let mut b = board.lock().unwrap();
+                        ai_commander::kanban::runner::on_activity(&mut b, &id);
+                    }
+                }
                 backend::BackendEvent::StreamDone { native_id, harness } => {
                     let task_id = {
                         let b = board.lock().unwrap();
@@ -544,15 +561,31 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                     };
                     if let Some(id) = task_id {
                         let reply = task_replies.remove(&id).unwrap_or_default();
+                        let errored = task_errors.remove(&id);
                         let outcome = {
                             let mut b = board.lock().unwrap();
-                            ai_commander::kanban::runner::on_stream_done(&mut b, &id, &reply)
+                            ai_commander::kanban::runner::on_stream_done_ex(
+                                &mut b, &id, &reply, errored,
+                            )
                         };
                         match outcome {
                             Ok(t) => println!("[done] {} → {:?}", t.id, t.status),
                             Err(e) => println!("[warn] {id} transition: {e}"),
                         }
                         busy.remove(&id);
+                    }
+                }
+                backend::BackendEvent::StreamError {
+                    native_id, harness, ..
+                } => {
+                    // v4 Н2: remember the broken stream; the following
+                    // StreamDone must not honor a printed DONE: marker
+                    let task_id = {
+                        let b = board.lock().unwrap();
+                        b.find_by_session(harness, native_id).map(|t| t.id)
+                    };
+                    if let Some(id) = task_id {
+                        task_errors.insert(id);
                     }
                 }
                 _ => {}
@@ -620,13 +653,28 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                 Err(e) => {
                     println!("[warn] launch {}: {e:#}", task.id);
                     ai_commander::log_warn!("daemon", "launch {}: {e:#}", task.id);
-                    // Д5: a failed launch must still end the turn — empty
-                    // reply → Failed → Н1 retry cap/backoff applies
-                    let _ = ai_commander::kanban::runner::on_stream_done(
-                        &mut board.lock().unwrap(),
-                        &task.id,
-                        "",
-                    );
+                    // v4: Start itself failing (broken worktree/branch, task
+                    // still Ready) escalates to a human — retrying the same
+                    // broken Start every 30 s would loop forever (attempts
+                    // never grow on a failed Start).
+                    // Д5: a failure AFTER Start (session/send) still ends the
+                    // turn via the Н1 retry cap.
+                    let still_ready = {
+                        let b = board.lock().unwrap();
+                        b.projection()
+                            .tasks
+                            .iter()
+                            .any(|t| t.id == task.id && t.status == TaskStatus::Ready)
+                    };
+                    let mut b = board.lock().unwrap();
+                    if still_ready {
+                        ai_commander::kanban::runner::launch_failed(&mut b, &task.id);
+                        println!("[escalate] {} → NeedsHuman (launch failure)", task.id);
+                    } else {
+                        let _ = ai_commander::kanban::runner::on_stream_done(
+                            &mut b, &task.id, "",
+                        );
+                    }
                     busy.remove(&task.id);
                 }
             }

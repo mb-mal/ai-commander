@@ -13,7 +13,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 /// Lease duration: renewed on every agent progress event.
-pub const LEASE_MS: i64 = 60_000; // 1 minute without output → stuck
+/// v4 Д1: tool calls can run silently for minutes (PartUpdated renews
+/// the lease, but a single long call emits no updates) — 5 minutes before
+/// the watchdog intervenes.
+pub const LEASE_MS: i64 = 300_000;
 
 pub fn default_max_attempts() -> u32 {
     3
@@ -90,6 +93,9 @@ impl TaskStatus {
             (Ready, Start) | (Blocked, Start) | (NeedsHuman, Start) => Some(InProgress),
             (Ready, SendBack) => Some(Backlog),
             (InProgress, Finish) => Some(Review),
+            // v4: Ready→NeedsHuman — a Start that cannot even begin
+            // (broken worktree/branch) escalates instead of retry-looping
+            (Ready, Ask) => Some(NeedsHuman),
             (InProgress, Interrupt) => Some(Ready),
             (InProgress, Block) => Some(Blocked),
             (InProgress, Ask) => Some(NeedsHuman),
