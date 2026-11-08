@@ -18,23 +18,15 @@ fn main() {
     let role = std::env::var("AI_COMMANDER_ROLE").unwrap_or_default();
     let mut board = match BoardStore::open_redb(&Kanban::path()) {
         Ok(b) => b,
-        Err(_e) => {
+        Err(e) => {
             // redb takes an exclusive lock (review v2 Б1): the TUI or daemon
-            // owns the DB. Fall back to TCP proxy via the A2A gateway.
-            match ai_commander::kanban::a2a::gateway_port() {
-                Some(port) => {
-                    eprintln!("board-mcp: redb locked, proxying via gateway on port {port}");
-                    run_proxy_mode(port, &role);
-                    return;
-                }
-                None => {
-                    eprintln!("board-mcp: cannot open the kanban store and no gateway is running.");
-                    eprintln!(
-                        "hint: start ai-commander (TUI or daemon) first, or stop the process holding the DB."
-                    );
-                    std::process::exit(1);
-                }
-            }
+            // owns the DB. Graceful exit with a clear message.
+            eprintln!("board-mcp: cannot open the kanban store: {e:#}");
+            eprintln!("hint: the board is likely open in ai-commander (TUI or daemon).");
+            eprintln!(
+                "       stop the owner process or set AI_COMMANDER_KANBAN_DB to a separate copy."
+            );
+            std::process::exit(1);
         }
     };
     let stdin = std::io::stdin();
@@ -237,83 +229,4 @@ fn call_tool(
         }
         other => Err(format!("unknown tool {other}")),
     }
-}
-
-/// Proxy mode: forward tools/call to the A2A gateway's /board endpoint
-/// (the gateway shares the owner's redb connection — review v2 Б1 fix).
-fn run_proxy_mode(port: u16, role: &str) {
-    use std::io::Write;
-    let stdin = std::io::stdin();
-    let mut out = std::io::stdout();
-    for line in stdin.lock().lines() {
-        let Ok(line) = line else { break };
-        let Ok(v) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        let Some(method) = v.get("method").and_then(Value::as_str).map(str::to_owned) else {
-            continue;
-        };
-        let id = v.get("id").cloned();
-        let params = v.get("params").cloned().unwrap_or(Value::Null);
-        let result = match method.as_str() {
-            "initialize" => Ok(json!({
-                "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "ai-commander-board", "version": env!("CARGO_PKG_VERSION")}
-            })),
-            "notifications/initialized" | "initialized" => continue,
-            "tools/list" => Ok(json!({"tools": tools()})),
-            "tools/call" => {
-                let name = params
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                match proxy_call(port, &name, &args, role) {
-                    Ok(text) => Ok(json!({"content": [{"type": "text", "text": text}]})),
-                    Err(e) => Ok(json!({
-                        "content": [{"type": "text", "text": format!("error: {e}")}],
-                        "isError": true
-                    })),
-                }
-            }
-            _ => Err("unknown method".to_string()),
-        };
-        let Some(id) = id else { continue };
-        let msg = match result {
-            Ok(r) => json!({"jsonrpc": "2.0", "id": id, "result": r}),
-            Err(e) => json!({"jsonrpc": "2.0", "id": id,
-                "error": {"code": -32601, "message": e}}),
-        };
-        let _ = writeln!(out, "{msg}");
-        let _ = out.flush();
-    }
-}
-
-fn proxy_call(port: u16, tool: &str, args: &Value, role: &str) -> Result<String, String> {
-    use std::io::{Read, Write};
-    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))
-        .map_err(|e| format!("gateway connect failed: {e}"))?;
-    let body = json!({"tool": tool, "args": args, "role": role}).to_string();
-    write!(
-        stream,
-        "POST /board HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    )
-    .map_err(|e| format!("gateway write failed: {e}"))?;
-    let mut buf = String::new();
-    stream
-        .read_to_string(&mut buf)
-        .map_err(|e| format!("gateway read failed: {e}"))?;
-    let body = buf.split("\r\n\r\n").nth(1).unwrap_or("");
-    let v: Value = serde_json::from_str(body).map_err(|e| format!("gateway bad JSON: {e}"))?;
-    if let Some(err) = v.get("error").and_then(Value::as_str) {
-        return Err(err.to_string());
-    }
-    v.get("result")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .ok_or_else(|| "gateway missing result".into())
 }

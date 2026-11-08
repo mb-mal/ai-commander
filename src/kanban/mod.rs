@@ -219,6 +219,7 @@ impl Kanban {
 pub mod a2a;
 pub mod otel;
 pub mod roles;
+pub mod runner;
 pub mod store;
 pub mod worktree;
 pub use store::{BoardStore, EventStore, RedbStore, SCHEMA_VERSION, StoredEvent};
