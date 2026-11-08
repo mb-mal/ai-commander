@@ -176,6 +176,32 @@ fn backoff_secs(attempts: u32) -> i64 {
     }
 }
 
+/// Д2: abort every stuck session and WAIT for all aborts to settle before
+/// the caller applies transitions. Fire-and-forget aborts raced the apply:
+/// the board re-launched a task while its agent process was still alive.
+pub async fn abort_stuck(
+    backends: &std::collections::HashMap<String, Arc<dyn Backend>>,
+    stuck: &[crate::kanban::store::StuckTask],
+) {
+    let mut handles = Vec::new();
+    for st in stuck {
+        if let Some(b) = backends.get(&st.harness).cloned() {
+            let sid = st.session_id.clone();
+            handles.push(tokio::spawn(async move {
+                // bounded: a wedged abort must not stall the watchdog
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    b.abort(&sid),
+                )
+                .await;
+            }));
+        }
+    }
+    for h in handles {
+        let _ = h.await;
+    }
+}
+
 /// Send a task to its harness backend (shared by TUI and daemon).
 pub async fn send_task(
     backend: &Arc<dyn Backend>,
@@ -280,5 +306,88 @@ mod tests {
         let after = b.projection().tasks[0].lease_until_ms.unwrap();
         assert!(after >= before, "lease must not shrink");
         assert!(reply.contains("writing code…"));
+    }
+
+    /// Д2: a slow abort — completion is recorded only after a delay.
+    struct SlowAbortBackend {
+        aborted: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::backend::Backend for SlowAbortBackend {
+        fn harness_id(&self) -> &str {
+            "slow"
+        }
+        async fn connect(&self) -> anyhow::Result<String> {
+            Ok("slow".into())
+        }
+        async fn refresh_sessions(&self) -> anyhow::Result<Vec<crate::backend::SessionInfo>> {
+            Ok(vec![])
+        }
+        async fn create_session(&self, _: &str) -> anyhow::Result<crate::backend::SessionInfo> {
+            Ok(crate::backend::SessionInfo {
+                native_id: "s".into(),
+                title: "t".into(),
+                updated_ms: 0,
+            })
+        }
+        async fn rename_session(&self, _: &str, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn delete_session(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn load_history(&self, _: &str) -> anyhow::Result<Vec<crate::backend::ChatMsg>> {
+            Ok(vec![])
+        }
+        async fn send(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[crate::backend::AttachmentMeta],
+            _: crate::backend::SendOpts<'_>,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn abort(&self, _: &str) -> anyhow::Result<()> {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            self.aborted.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        async fn list_models(&self) -> anyhow::Result<Vec<crate::backend::ModelInfo>> {
+            Ok(vec![])
+        }
+        async fn list_agents(&self) -> anyhow::Result<Vec<crate::backend::AgentInfo>> {
+            Ok(vec![])
+        }
+        fn shutdown(&self) {}
+        fn is_connected(&self) -> bool {
+            true
+        }
+    }
+
+    /// Д2: abort_stuck must WAIT for every abort to finish — a
+    /// fire-and-forget spawn would return before the abort completed.
+    #[tokio::test]
+    async fn abort_stuck_waits_for_aborts_to_settle() {
+        let aborted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let b: Arc<dyn crate::backend::Backend> =
+            Arc::new(SlowAbortBackend { aborted: aborted.clone() });
+        let mut backends = std::collections::HashMap::new();
+        backends.insert("slow".to_string(), b);
+
+        let stuck = vec![crate::kanban::store::StuckTask {
+            task_id: "t-0001".into(),
+            session_id: "ses_slow".into(),
+            harness: "slow".into(),
+            disposition: "retry",
+        }];
+
+        abort_stuck(&backends, &stuck).await;
+
+        assert!(
+            aborted.load(std::sync::atomic::Ordering::SeqCst),
+            "abort_stuck returned before the abort finished (Д2)"
+        );
     }
 }

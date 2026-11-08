@@ -557,6 +557,8 @@ async fn run_daemon(cfg: Config) -> Result<()> {
         }
 
         // 2) watchdog: scan stuck tasks → abort their sessions → apply (Б6)
+        // Д2: aborts are awaited (abort_stuck joins every handle) so a task
+        // is never re-launched while its old agent process is still alive
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
@@ -564,15 +566,12 @@ async fn run_daemon(cfg: Config) -> Result<()> {
         let stuck = board.watchdog_scan(now);
         if !stuck.is_empty() {
             for st in &stuck {
-                // abort the running session BEFORE retrying (no duplicate agents)
-                if let Some(b) = backends.get(&st.harness) {
-                    println!(
-                        "[watchdog] aborting {} session {}",
-                        st.task_id, st.session_id
-                    );
-                    let _ = b.abort(&st.session_id).await;
-                }
+                println!(
+                    "[watchdog] aborting {} session {}",
+                    st.task_id, st.session_id
+                );
             }
+            ai_commander::kanban::runner::abort_stuck(&backends, &stuck).await;
             for (id, label) in board.watchdog_apply(&stuck) {
                 println!("[watchdog] {id}: {label}");
                 ai_commander::log_info!("daemon", "watchdog {id}: {label}");
