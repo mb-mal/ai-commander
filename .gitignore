@@ -6,3 +6,4 @@
 
 # runtime artifacts
 *.log
+.aic-worktrees/
