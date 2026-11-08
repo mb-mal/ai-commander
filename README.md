@@ -222,6 +222,29 @@ new owner.
 - **A2A flake fix**: the TCP half-close race on Windows (WSAECONNRESET) is
   handled with connect/read retries in the gateway test
 
+## v2 review fixes
+
+Blockers from the v2 review addressed:
+- **Б1** board-mcp exits with a clear message (not a panic) when the DB is
+  locked by the TUI/daemon; IPC proxy is on the roadmap
+- **Б2** ACP permissions now match the schema: ,
+  deny sends , option matching by kind (allow_once/always, reject_once/always)
+- **Б3** cron schedules disabled (were spawning a task every 60 s) until a
+  real parser is in place
+- **Б4** worktree: commits agent work before merge ( from the role),
+  refuses  on dirty worktree (task → NeedsHuman, files preserved)
+- **Б8** daemon: transitions tasks on StreamDone (classify_reply), busy keyed
+  by task.id (was native_id → never cleared)
+- **Б9** daemon: uses  (DAG), role instructions prefix the
+  prompt, role model overrides harness default,  passed
+
+Security fixes:
+- A2A gateway disabled by default ( to opt in)
+- Project policies can only tighten user policies (deny > ask > allow;
+  a project  never weakens a user )
+-  written with 0600 permissions on Unix
+- MCP: an agent cannot  or  its own task
+
 ## Limitations & roadmap
 
 - dsh headless does not replay session context on `--session-id`, so the

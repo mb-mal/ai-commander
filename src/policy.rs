@@ -97,27 +97,56 @@ impl Policy {
         decision.unwrap_or(Effect::Ask)
     }
 
-    pub fn load(cwd: &Path) -> Policy {
-        let mut policy = Policy::default();
-        let load_one = |path: PathBuf, policy: &mut Policy| {
-            let Ok(raw) = std::fs::read_to_string(&path) else {
-                return;
-            };
-            if let Ok(f) = serde_yaml::from_str::<PolicyFile>(&raw) {
-                policy.rules.extend(f.rules);
-                policy.sources.push(path);
+    /// Project policies may only tighten (deny > ask > allow), never weaken
+    /// a user-level rule on the same target (review v2 security #7).
+    fn merge_tighten(user: Vec<Rule>, project: Vec<Rule>) -> Vec<Rule> {
+        let rank = |e: Effect| match e {
+            Effect::Deny => 3,
+            Effect::Ask => 2,
+            Effect::Allow => 1,
+        };
+        let mut rules = user;
+        for pr in project {
+            let weakens = rules.iter().any(|ur| {
+                let same_target = ur.action == pr.action || ur.action == "*" || pr.action == "*";
+                let same_resource = ur.pattern.is_empty()
+                    || pr.pattern.is_empty()
+                    || glob_match(&ur.pattern, &pr.pattern)
+                    || glob_match(&pr.pattern, &ur.pattern);
+                same_target && same_resource && rank(ur.effect) > rank(pr.effect)
+            });
+            if !weakens {
+                rules.push(pr);
             }
+        }
+        rules
+    }
+
+    pub fn load(cwd: &Path) -> Policy {
+        let mut user_rules: Vec<Rule> = Vec::new();
+        let mut proj_rules: Vec<Rule> = Vec::new();
+        let mut sources = Vec::new();
+        let read = |path: PathBuf| -> Option<Vec<Rule>> {
+            let raw = std::fs::read_to_string(&path).ok()?;
+            let f = serde_yaml::from_str::<PolicyFile>(&raw).ok()?;
+            Some(f.rules)
         };
         if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
-            load_one(
-                PathBuf::from(&home)
-                    .join(".ai-commander")
-                    .join("policy.yaml"),
-                &mut policy,
-            );
+            let p = PathBuf::from(&home)
+                .join(".ai-commander")
+                .join("policy.yaml");
+            if let Some(rules) = read(p.clone()) {
+                user_rules = rules;
+                sources.push(p);
+            }
         }
-        load_one(cwd.join(".ai-commander").join("policy.yaml"), &mut policy);
-        policy
+        let pp = cwd.join(".ai-commander").join("policy.yaml");
+        if let Some(rules) = read(pp.clone()) {
+            proj_rules = rules;
+            sources.push(pp);
+        }
+        let rules = Self::merge_tighten(user_rules, proj_rules);
+        Policy { rules, sources }
     }
 }
 
@@ -164,6 +193,45 @@ mod tests {
         assert_eq!(p.check("bash", "cat prod.env"), Effect::Deny);
         assert_eq!(p.check("edit", "src/lib.rs"), Effect::Allow);
         assert_eq!(p.check("edit", "docs/lib.rs"), Effect::Ask);
+    }
+
+    #[test]
+    fn project_policies_only_tighten() {
+        let mk = |a: &str, p: &str, e: Effect| Rule {
+            action: a.into(),
+            pattern: p.into(),
+            effect: e,
+        };
+        // project allow must not weaken user deny
+        let rules = Policy::merge_tighten(
+            vec![mk("bash", "git push*", Effect::Deny)],
+            vec![mk("bash", "", Effect::Allow)],
+        );
+        let p = Policy {
+            rules,
+            sources: Vec::new(),
+        };
+        assert_eq!(p.check("bash", "git push origin"), Effect::Deny);
+        // project deny on top of user ask — kept
+        let rules = Policy::merge_tighten(
+            vec![mk("edit", "", Effect::Ask)],
+            vec![mk("edit", "*.env", Effect::Deny)],
+        );
+        let p = Policy {
+            rules,
+            sources: Vec::new(),
+        };
+        assert_eq!(p.check("edit", "prod.env"), Effect::Deny);
+        // unrelated project rule — kept
+        let rules = Policy::merge_tighten(
+            vec![mk("bash", "", Effect::Ask)],
+            vec![mk("webfetch", "", Effect::Allow)],
+        );
+        let p = Policy {
+            rules,
+            sources: Vec::new(),
+        };
+        assert_eq!(p.check("webfetch", "x"), Effect::Allow);
     }
 
     #[test]

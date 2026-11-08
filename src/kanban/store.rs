@@ -712,31 +712,12 @@ Open questions: {open_questions}"
         Ok(())
     }
 
-    /// Cron triggers: recurring tasks whose next fire time has passed get
-    /// re-created as fresh Backlog children (parent id kept). A tiny 5-field
-    /// cron with minute granularity is enough for board scheduling.
-    pub fn spawn_due_scheduled(&mut self, now_secs: u64) -> Vec<String> {
-        let mut spawned = Vec::new();
-        let candidates: Vec<Task> = self
-            .proj
-            .tasks
-            .iter()
-            .filter(|t| !t.schedule.is_empty() && t.updated_ms / 1000 + 60 <= now_secs as i64)
-            .cloned()
-            .collect();
-        for t in candidates {
-            // one spawn per schedule window: bump updated_ms to now
-            let title = t.title.clone();
-            let child = self.add_task(&title);
-            if let Some(child_t) = self.proj.tasks.iter_mut().find(|x| x.id == child.id) {
-                child_t.schedule = String::new(); // child is a one-shot
-            }
-            if let Some(orig) = self.proj.tasks.iter_mut().find(|x| x.id == t.id) {
-                orig.updated_ms = crate::kanban::now_ms();
-            }
-            spawned.push(child.id);
-        }
-        spawned
+    /// Cron triggers — DISABLED (review v2 Б3): the schedule string is not
+    /// parsed as cron, so any non-empty value spawned a child every 60 s.
+    /// Returning empty until a real cron parser (croner) + next_fire_at
+    /// events are in place.
+    pub fn spawn_due_scheduled(&mut self, _now_secs: u64) -> Vec<String> {
+        Vec::new() // no-op until proper cron support (see roadmap)
     }
 
     /// DAG scheduler: Ready tasks whose dependencies are all settled
@@ -1073,28 +1054,23 @@ mod tests {
     }
 
     #[test]
-    fn scheduled_tasks_spawn_once_per_window() {
+    fn scheduled_tasks_are_disabled_until_cron_parser() {
+        // review v2 Б3: spawn_due_scheduled is a no-op; verify no task is
+        // created regardless of schedule string or elapsed time
         let mut b = BoardStore::open_memory();
-        let t = b.add_task("nightly");
+        let _t = b.add_task("nightly");
         b.proj.tasks[0].schedule = "0 3 * * *".into();
-        b.proj.tasks[0].updated_ms = 0; // backdate: due right away
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        b.proj.tasks[0].updated_ms = 0;
+        let now = 9_999_999_999u64;
         let spawned = b.spawn_due_scheduled(now);
-        assert_eq!(spawned.len(), 1);
+        assert!(
+            spawned.is_empty(),
+            "schedule must not spawn until cron is parsed"
+        );
         let spawned2 = b.spawn_due_scheduled(now);
-        assert!(spawned2.is_empty(), "one spawn per window");
-        // child is one-shot
-        let child = b
-            .projection()
-            .tasks
-            .iter()
-            .find(|x| x.id == spawned[0])
-            .unwrap();
-        assert!(child.schedule.is_empty());
-        let _ = t;
+        assert!(spawned2.is_empty());
+        // no children created at all
+        assert_eq!(b.projection().tasks.len(), 1, "no spawn, no child");
     }
 
     #[test]

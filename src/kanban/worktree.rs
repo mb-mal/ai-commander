@@ -92,20 +92,52 @@ pub fn start(repo: &Path, task: &Task) -> Result<PathBuf> {
 }
 
 /// Merge the task branch back and drop the worktree (Review→Done).
-/// Conflicts roll the merge back and leave the task in Review.
+/// Commits any uncommitted agent work first (review v2 Б4); refuses to
+/// `--force`-remove a dirty worktree — the task goes to NeedsHuman instead.
 pub fn finish(repo: &Path, task: &Task) -> Result<()> {
     let wt = worktree_path(repo, task);
     let branch = format!("ai-commander/{}", sanitize(&task.id));
     if !wt.exists() {
         return Ok(()); // nothing to merge (non-code task)
     }
-    // merge the branch into the base of the *main* repo checkout
+
+    // commit the agent's uncommitted work (review v2 Б4: --force lost it)
+    let _ = git(&wt, &["add", "-A"]);
+    let author = format!(
+        "{} <{}@ai-commander>",
+        task.role.as_deref().unwrap_or("agent"),
+        sanitize(&task.id)
+    );
+    let _ = git(
+        &wt,
+        &[
+            "commit",
+            "-m",
+            &format!("task {}", task.id),
+            "--author",
+            &author,
+        ],
+    );
+
+    // merge into the base (the repo that owns the worktree)
     git(repo, &["merge", "--no-ff", "--no-edit", &branch]).map_err(|e| {
-        // conflict: abort so the tree stays clean
         let _ = git(repo, &["merge", "--abort"]);
         anyhow!("merge conflict for {} — task stays in Review. {e}", task.id)
     })?;
-    cleanup(repo, task).context("remove worktree after merge")?;
+
+    // remove WITHOUT --force: dirty worktree means agent work might be lost
+    let still_dirty = git(&wt, &["status", "--porcelain"])
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(true);
+    if still_dirty {
+        bail!(
+            "worktree for {} still has uncommitted changes — NeedsHuman, files preserved in {}",
+            task.id,
+            wt.display()
+        );
+    }
+    let _ = git(repo, &["worktree", "remove", &wt.to_string_lossy()]);
+    let _ = git(repo, &["branch", "-D", &branch]);
     Ok(())
 }
 
@@ -121,16 +153,18 @@ pub fn drop(repo: &Path, task: &Task) -> Result<()> {
 fn cleanup(repo: &Path, task: &Task) -> Result<()> {
     let wt = worktree_path(repo, task);
     let branch = format!("ai-commander/{}", sanitize(&task.id));
-    let _ = git(
-        repo,
-        &["worktree", "remove", "--force", &wt.to_string_lossy()],
-    );
+    // commit stray changes first so nothing is lost (review v2 Б4)
+    let _ = git(&wt, &["add", "-A"]);
+    let _ = git(&wt, &["commit", "-m", &format!("cleanup {}", task.id)]);
+    // try without --force first; fall back only for Cancel (agent opted out)
+    git(repo, &["worktree", "remove", &wt.to_string_lossy()]).or_else(|_| {
+        git(
+            repo,
+            &["worktree", "remove", "--force", &wt.to_string_lossy()],
+        )
+    })?;
     let _ = git(repo, &["branch", "-D", &branch]);
-    if !wt.exists() {
-        Ok(())
-    } else {
-        bail!("worktree {} still present", wt.display())
-    }
+    Ok(())
 }
 
 /// Hook the FSM: returns a human-readable note when isolation applies.
