@@ -152,6 +152,10 @@ pub enum BackendEvent {
     SessionsChanged { harness: String },
     /// A draft chat got a real session after first message
     SessionCreated { harness: String, native_id: String, title: String },
+    /// The agent asks the user to approve an action (opencode permission flow)
+    PermissionRequest { harness: String, session_id: String, request_id: String, title: String },
+    /// SSE stream reconnected after a drop — UI should reload current history
+    Reconnected { harness: String },
     /// History loaded for a session
     History {
         harness: String,
@@ -208,6 +212,11 @@ pub trait Backend: Send + Sync {
     async fn send(&self, native_id: &str, text: &str, attachments: &[AttachmentMeta], opts: SendOpts<'_>) -> Result<()>;
     async fn abort(&self, native_id: &str) -> Result<()>;
 
+    /// Answer a PermissionRequest (opencode: once/always/reject).
+    async fn permission_reply(&self, _native_id: &str, _request_id: &str, _reply: &str) -> Result<()> {
+        anyhow::bail!("permissions are not supported by this harness")
+    }
+
     async fn list_models(&self) -> Result<Vec<ModelInfo>>;
     async fn list_agents(&self) -> Result<Vec<AgentInfo>>;
 
@@ -230,6 +239,28 @@ pub fn create_backend(cfg: &HarnessCfg, events: tokio::sync::mpsc::UnboundedSend
 /// Kinds the app can currently drive.
 pub fn supported_kind(kind: &str) -> bool {
     matches!(kind, "opencode" | "hermes" | "deepseek-harness")
+}
+
+/// Hard cap for a single attachment — protects RAM from multi-GB files
+/// (base64 inflates by ~4/3).
+pub const MAX_ATTACHMENT_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Kill a child process *tree*: `Child::kill` only hits the direct process,
+/// leaving interpreters/node spawned underneath alive as orphans.
+pub fn kill_tree(child: &mut std::process::Child) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &child.id().to_string()])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[cfg(test)]

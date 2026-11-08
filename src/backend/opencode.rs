@@ -57,6 +57,8 @@ pub struct OpenCodeBackend {
     connected: Arc<AtomicBool>,
     /// sessions we stream events for (others are ignored)
     known_sessions: Arc<Mutex<HashSet<String>>>,
+    /// bumps on every connect/shutdown so stale SSE loops exit
+    sse_gen: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl OpenCodeBackend {
@@ -92,6 +94,7 @@ impl OpenCodeBackend {
             child: Mutex::new(None),
             connected: Arc::new(AtomicBool::new(false)),
             known_sessions: Arc::new(Mutex::new(HashSet::new())),
+            sse_gen: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -181,6 +184,7 @@ impl OpenCodeBackend {
     /// Health probe: v2 serves it under /api (auth); plain /global/health
     /// answers 200 with SPA HTML on some builds, so it's only a fallback signal.
     async fn healthy(&self, base: &str) -> Option<Value> {
+        let looks_alive = |body: &str| !body.trim_start().starts_with('<'); // SPA HTML is not the API
         if let Ok(r) = self
             .http
             .get(format!("{base}/api/global/health"))
@@ -189,18 +193,25 @@ impl OpenCodeBackend {
             .await
         {
             if r.status().is_success() {
-                if let Ok(v) = r.json::<Value>().await {
+                let body = r.text().await.unwrap_or_default();
+                if !looks_alive(&body) {
+                    return None; // an HTML page answered, not the API
+                }
+                if let Ok(v) = serde_json::from_str::<Value>(&body) {
                     if v.get("data").is_some() || v.get("healthy").is_some() || v.get("version").is_some() {
                         return Some(v);
                     }
                 }
-                return Some(Value::Null); // 200 but unexpected body — still alive
+                return Some(Value::Null); // 200, non-HTML (some builds send an empty body)
             }
         }
         // legacy fallback
         if let Ok(r) = self.bare.get(format!("{base}/global/health")).timeout(Duration::from_millis(1500)).send().await {
             if r.status().is_success() {
-                return Some(Value::Null);
+                let body = r.text().await.unwrap_or_default();
+                if looks_alive(&body) {
+                    return Some(Value::Null);
+                }
             }
         }
         None
@@ -250,6 +261,7 @@ impl OpenCodeBackend {
             if self.healthy(&base).await.is_some() {
                 return Ok(base);
             }
+            tokio::time::sleep(Duration::from_millis(250)).await;
             {
                 let mut guard = self.child.lock().unwrap();
                 if let Some(c) = guard.as_mut() {
@@ -262,7 +274,7 @@ impl OpenCodeBackend {
             }
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
-        bail!("opencode server did not become healthy in 60s (log: {})", log_path.display());
+        bail!("opencode server did not become healthy in 200s (log: {})", log_path.display());
     }
 
     // --- SSE ---
@@ -271,14 +283,16 @@ impl OpenCodeBackend {
         let events = self.events.clone();
         let known = Arc::clone(&self.known_sessions);
         let connected = Arc::clone(&self.connected);
+        let sse_gen = Arc::clone(&self.sse_gen);
         let harness = self.cfg.id.clone();
+        let my_gen = self.sse_gen.fetch_add(1, Ordering::Relaxed) + 1;
         // same authenticated client as REST — /api/event rejects anonymous streams
         let client = self.http.clone();
         tokio::spawn(async move {
+            let mut backoff_secs = 1u64;
             loop {
-                if !connected.load(Ordering::Relaxed) {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                    continue;
+                if !connected.load(Ordering::Relaxed) || sse_gen.load(Ordering::Relaxed) != my_gen {
+                    return; // superseded by a newer stream or shutdown
                 }
                 let Ok(req) = client
                     .get(format!("{base}/api/event"))
@@ -289,21 +303,35 @@ impl OpenCodeBackend {
                     continue;
                 };
                 let Ok(resp) = client.execute(req).await else {
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                    backoff_secs = (backoff_secs * 2).min(8);
                     continue;
                 };
                 if !resp.status().is_success() {
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                    backoff_secs = (backoff_secs * 2).min(8);
                     continue;
                 }
                 let mut stream = resp.bytes_stream().eventsource();
+                let mut got_any = false;
                 loop {
                     match stream.next().await {
-                        Some(Ok(ev)) => handle_sse_event(&events, &known, &harness, &ev.data),
+                        Some(Ok(ev)) => {
+                            if !got_any {
+                                got_any = true;
+                                if backoff_secs > 1 {
+                                    // stream dropped and recovered — ask the UI to resync
+                                    let _ = events.send(BackendEvent::Reconnected { harness: harness.clone() });
+                                }
+                                backoff_secs = 1;
+                            }
+                            handle_sse_event(&events, &known, &harness, &ev.data);
+                        }
                         Some(Err(_)) | None => break,
                     }
                 }
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                backoff_secs = (backoff_secs * 2).min(8);
             }
         });
     }
@@ -344,11 +372,10 @@ fn truncate(s: &str, n: usize) -> String {
 }
 
 fn rand_suffix() -> String {
-    let t = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("{t:x}")
+    // 16 bytes of OS randomness — a nanosecond timestamp is guessable
+    let mut buf = [0u8; 16];
+    getrandom::fill(&mut buf).expect("OS randomness");
+    buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[async_trait]
@@ -409,8 +436,9 @@ impl Backend for OpenCodeBackend {
             .unwrap_or_default();
         list.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms));
         {
+            // union, not replace: a session created between the REST call and
+            // this write must not lose its events
             let mut ks = self.known_sessions.lock().unwrap();
-            ks.clear();
             ks.extend(list.iter().map(|s| s.native_id.clone()));
         }
         Ok(list)
@@ -502,24 +530,46 @@ impl Backend for OpenCodeBackend {
     }
 
     async fn send(&self, native_id: &str, text: &str, attachments: &[AttachmentMeta], opts: SendOpts<'_>) -> Result<()> {
+        for a in attachments {
+            if a.size > super::MAX_ATTACHMENT_BYTES {
+                bail!(
+                    "attachment {} is {} — over the {} MB limit",
+                    a.filename,
+                    a.size_label(),
+                    super::MAX_ATTACHMENT_BYTES / (1024 * 1024)
+                );
+            }
+        }
         // switch model/agent for subsequent turns when requested
         if let Some(m) = opts.model {
-            let _ = self
+            if let Err(e) = self
                 .send_json(
                     reqwest::Method::POST,
                     &format!("/api/session/{native_id}/model"),
                     Some(serde_json::json!({ "model": { "providerID": m.provider_id, "modelID": m.model_id } })),
                 )
-                .await;
+                .await
+            {
+                let _ = self.events.send(BackendEvent::Error {
+                    harness: self.cfg.id.clone(),
+                    error: format!("model switch failed: {e:#}"),
+                });
+            }
         }
         if let Some(agent) = opts.agent {
-            let _ = self
+            if let Err(e) = self
                 .send_json(
                     reqwest::Method::POST,
                     &format!("/api/session/{native_id}/agent"),
                     Some(serde_json::json!({ "agent": agent })),
                 )
-                .await;
+                .await
+            {
+                let _ = self.events.send(BackendEvent::Error {
+                    harness: self.cfg.id.clone(),
+                    error: format!("agent switch failed: {e:#}"),
+                });
+            }
         }
 
         let mut body = serde_json::json!({ "text": text });
@@ -543,6 +593,18 @@ impl Backend for OpenCodeBackend {
     /// This server build exposes no abort endpoint; the next prompt "steers"
     /// (interrupts) the current turn. The UI detaches locally on Esc.
     async fn abort(&self, _native_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    /// Answer a permission request: POST /api/session/{id}/permission/{rid}/reply
+    /// with {reply: "once" | "always" | "reject"} (v2 contract).
+    async fn permission_reply(&self, native_id: &str, request_id: &str, reply: &str) -> Result<()> {
+        self.send_json(
+            reqwest::Method::POST,
+            &format!("/api/session/{native_id}/permission/{request_id}/reply"),
+            Some(serde_json::json!({ "reply": reply })),
+        )
+        .await?;
         Ok(())
     }
 
@@ -588,9 +650,9 @@ impl Backend for OpenCodeBackend {
 
     fn shutdown(&self) {
         self.connected.store(false, Ordering::Relaxed);
+        self.sse_gen.fetch_add(1, Ordering::Relaxed);
         if let Some(mut child) = self.child.lock().unwrap().take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            super::kill_tree(&mut child);
         }
     }
 
@@ -644,6 +706,26 @@ fn handle_sse_event(
     let msg_id = || props.get("assistantMessageID").and_then(Value::as_str).unwrap_or("").to_string();
 
     match ty {
+        "permission.v2.asked" | "permission.updated" | "permission.asked" => {
+            let request_id = props.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+            let action = props.get("action").and_then(Value::as_str).unwrap_or("action");
+            let resource = props
+                .get("resources")
+                .and_then(Value::as_array)
+                .and_then(|a| a.first())
+                .and_then(Value::as_str)
+                .or_else(|| props.get("pattern").and_then(|p| p.as_str()))
+                .unwrap_or("");
+            let title = if resource.is_empty() { action.to_string() } else { format!("{action}: {resource}") };
+            if !sid.is_empty() && !request_id.is_empty() {
+                send(BackendEvent::PermissionRequest {
+                    harness: harness.into(),
+                    session_id: sid,
+                    request_id,
+                    title,
+                });
+            }
+        }
         "session.text.started" => {
             let ordinal = props.get("ordinal").and_then(Value::as_i64).unwrap_or(0);
             send(BackendEvent::PartUpdated {

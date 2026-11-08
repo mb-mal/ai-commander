@@ -111,6 +111,8 @@ pub enum ConfirmAction {
 #[derive(Clone)]
 pub enum ListAction {
     PickAgent { harness: String },
+    /// answer a harness permission request: sel 0=once 1=always 2=reject
+    PermissionReply { harness: String, session_id: String, request_id: String },
 }
 
 #[derive(Clone)]
@@ -152,6 +154,7 @@ pub enum SettingsKind {
     Workdir,
     Agent,
     DefaultModel,
+    AutoApprove,
 }
 
 pub struct App {
@@ -172,7 +175,11 @@ pub struct App {
 
     pub editor: Editor,
     pub attachments: Vec<AttachmentMeta>,
-    pub streaming: bool,
+    /// (harness, native_id) pairs with a turn in flight — busy state is
+    /// per-chat, not global, so switching chats never wedges the composer
+    pub busy: std::collections::HashSet<(String, String)>,
+    /// text of the last optimistic message, for rollback on send error
+    pub last_sent: Option<String>,
     /// false after Esc: live deltas are hidden, final history loads on StreamDone
     pub follow: bool,
 
@@ -211,7 +218,8 @@ impl App {
             agents: Default::default(),
             editor: Editor::new(),
             attachments: Vec::new(),
-            streaming: false,
+            busy: std::collections::HashSet::new(),
+            last_sent: None,
             follow: true,
             focus: Focus::Composer,
             show_sidebar: true,
@@ -230,6 +238,11 @@ impl App {
 
     pub fn lang(&self) -> Lang {
         self.cfg.lang
+    }
+
+    /// Is a turn in flight for the *currently open* chat?
+    pub fn busy_now(&self) -> bool {
+        self.busy.contains(&(self.cur.harness.clone(), self.cur.native_id.clone()))
     }
 
     pub fn tr(&self, s: Str) -> &'static str {
@@ -391,7 +404,7 @@ impl App {
     }
 
     pub fn send_current(&mut self) {
-        if self.streaming {
+        if self.busy_now() {
             return;
         }
         let text = self.editor.text();
@@ -425,7 +438,8 @@ impl App {
             parts,
             attachments: atts.clone(),
         });
-        self.streaming = true;
+        self.busy.insert((harness.clone(), self.cur.native_id.clone()));
+        self.last_sent = Some(text.clone());
         self.follow = true;
         self.bottom_offset = 0;
 
@@ -477,7 +491,7 @@ impl App {
     }
 
     pub fn abort_current(&mut self) {
-        if !self.streaming {
+        if !self.busy_now() {
             return;
         }
         // opencode's server exposes no abort endpoint: Esc detaches, the
@@ -491,7 +505,7 @@ impl App {
                 });
             }
         }
-        self.streaming = false;
+        self.busy.remove(&(self.cur.harness.clone(), self.cur.native_id.clone()));
         self.follow = false;
         self.toast(self.tr(Str::StopNote), false);
     }
@@ -561,8 +575,20 @@ impl App {
                 self.sessions.insert(harness, list);
             }
             BackendEvent::SessionCreated { harness, native_id, title } => {
-                if self.cur.harness == harness && self.cur.native_id.is_empty() {
-                    self.cur.native_id = native_id;
+                let old = if self.cur.harness == harness {
+                    if self.cur.native_id.is_empty() || self.cur.native_id.starts_with("pending-") {
+                        Some(std::mem::replace(&mut self.cur.native_id, native_id.clone()))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some(prev_id) = old {
+                    // keep per-chat busy state attached to the real id
+                    if self.busy.remove(&(harness.clone(), prev_id.clone())) {
+                        self.busy.insert((harness.clone(), native_id.clone()));
+                    }
                     self.cur.title = title;
                 }
                 self.spawn_refresh_sessions(&harness);
@@ -584,34 +610,60 @@ impl App {
                     self.apply_part(harness, native_id, msg_id, part.part_id, kind, text, false);
                 }
             }
+            BackendEvent::PermissionRequest { harness, session_id, request_id, title } => {
+                // the agent asks before acting — surface a modal (NC silver)
+                let lang = self.cfg.lang;
+                let items = vec![
+                    ("once".into(), t(lang, Str::PermOnce).to_string()),
+                    ("always".into(), t(lang, Str::PermAlways).to_string()),
+                    ("reject".into(), t(lang, Str::PermReject).to_string()),
+                ];
+                self.modal = Some(Modal::List {
+                    title: format!("⚠ {title}"),
+                    items,
+                    sel: 0,
+                    action: ListAction::PermissionReply { harness, session_id, request_id },
+                });
+            }
+            BackendEvent::Reconnected { harness } => {
+                // SSE dropped and recovered: resync list + current history
+                self.spawn_refresh_sessions(&harness);
+                if self.cur.harness == harness && !self.cur.native_id.is_empty() {
+                    let native_id = self.cur.native_id.clone();
+                    self.cur.loading = true;
+                    if let Some(b) = self.backends.get(&harness).cloned() {
+                        let tx = self.events_tx.clone();
+                        let h = harness.clone();
+                        tokio::spawn(async move {
+                            match b.load_history(&native_id).await {
+                                Ok(msgs) => {
+                                    let _ = tx.send(BackendEvent::History { harness: h, native_id, msgs });
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(BackendEvent::Error { harness: h, error: format!("history: {e:#}") });
+                                }
+                            }
+                        });
+                    }
+                }
+            }
             BackendEvent::StreamDone { harness, native_id } => {
+                // busy is per (harness, session) — clear regardless of the open chat
+                self.busy.remove(&(harness.clone(), native_id.clone()));
                 if self.cur.harness == harness && self.cur.native_id == native_id {
-                    self.streaming = false;
+                    self.last_sent = None;
                     if !self.follow {
                         // detached earlier — pull the finished turn from history
                         self.follow = true;
                         self.cur.loading = true;
-                        if let Some(b) = self.backends.get(&harness).cloned() {
-                            let tx = self.events_tx.clone();
-                            let (h, id) = (harness.clone(), native_id.clone());
-                            tokio::spawn(async move {
-                                match b.load_history(&id).await {
-                                    Ok(msgs) => {
-                                        let _ = tx.send(BackendEvent::History { harness: h, native_id: id, msgs });
-                                    }
-                                    Err(e) => {
-                                        let _ = tx.send(BackendEvent::Error { harness: h, error: format!("history: {e:#}") });
-                                    }
-                                }
-                            });
-                        }
+                        self.spawn_history_reload(&harness, &native_id);
                     }
                 }
                 self.spawn_refresh_sessions(&harness);
             }
             BackendEvent::StreamError { harness, native_id, error } => {
+                self.busy.remove(&(harness.clone(), native_id.clone()));
                 if self.cur.harness == harness && self.cur.native_id == native_id {
-                    self.streaming = false;
                     self.follow = true;
                     let msg = ChatMsg {
                         msg_id: format!("err_{}", self.cur.msgs.len()),
@@ -632,12 +684,44 @@ impl App {
             BackendEvent::Error { harness, error } => {
                 self.connecting.remove(&harness);
                 self.backend_err.insert(harness.clone(), error.clone());
-                if self.cur.harness == harness {
-                    self.streaming = false;
+                // rollback the optimistic message: put the text back into the composer
+                let is_cur = self.cur.harness == harness;
+                if is_cur {
+                    if let Some(text) = self.last_sent.take() {
+                        let last_is_local = self
+                            .cur
+                            .msgs
+                            .last()
+                            .map(|m| m.msg_id.starts_with("local_"))
+                            .unwrap_or(false);
+                        if last_is_local {
+                            self.cur.msgs.pop();
+                        }
+                        if !text.trim().is_empty() && self.editor.is_empty() {
+                            self.editor.set_text(&text);
+                        }
+                    }
                 }
                 let name = self.cfg.harness(&harness).map(|h| h.name.clone()).unwrap_or(harness);
                 self.toast(format!("{name}: {error}"), true);
             }
+        }
+    }
+
+    fn spawn_history_reload(&self, harness: &str, native_id: &str) {
+        if let Some(b) = self.backends.get(harness).cloned() {
+            let tx = self.events_tx.clone();
+            let (h, id) = (harness.to_string(), native_id.to_string());
+            tokio::spawn(async move {
+                match b.load_history(&id).await {
+                    Ok(msgs) => {
+                        let _ = tx.send(BackendEvent::History { harness: h, native_id: id, msgs });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(BackendEvent::Error { harness: h, error: format!("history: {e:#}") });
+                    }
+                }
+            });
         }
     }
 
@@ -654,7 +738,7 @@ impl App {
         if self.cur.harness != harness || self.cur.native_id != native_id {
             return;
         }
-        self.streaming = true;
+        
         self.bottom_offset = 0;
         let msg = match self.cur.msgs.iter_mut().find(|m| m.msg_id == msg_id) {
             Some(m) => m,
@@ -1044,7 +1128,15 @@ impl App {
         } else if picker.dir_mode {
             // in dir mode Enter on a file does nothing
         } else {
-            self.attachments.push(AttachmentMeta::from_path(&entry.path));
+            let meta = AttachmentMeta::from_path(&entry.path);
+            if meta.size > crate::backend::MAX_ATTACHMENT_BYTES {
+                self.toast(
+                    format!("{}: {} > {} MB", meta.filename, meta.size_label(), crate::backend::MAX_ATTACHMENT_BYTES / (1024 * 1024)),
+                    true,
+                );
+                return;
+            }
+            self.attachments.push(meta);
             self.modal = None;
         }
     }
@@ -1076,7 +1168,12 @@ impl App {
             return;
         }
         for p in marked {
-            self.attachments.push(AttachmentMeta::from_path(&p));
+            let meta = AttachmentMeta::from_path(&p);
+            if meta.size > crate::backend::MAX_ATTACHMENT_BYTES {
+                self.toast(format!("{}: oversize skipped", meta.filename), true);
+                continue;
+            }
+            self.attachments.push(meta);
         }
         self.modal = None;
     }
@@ -1402,6 +1499,14 @@ impl App {
                     action: ListAction::PickAgent { harness: id },
                 });
             }
+            SettingsKind::AutoApprove => {
+                let id = self.active_harness.clone();
+                if let Some(h) = self.cfg.harness_mut(&id) {
+                    h.auto_approve = !h.auto_approve;
+                }
+                let _ = self.cfg.save();
+                self.modal = Some(Modal::Settings { sel });
+            }
             SettingsKind::DefaultModel => {
                 let id = self.active_harness.clone();
                 self.modal = Some(Modal::ModelPicker {
@@ -1491,6 +1596,20 @@ impl App {
                 }
                 let _ = self.cfg.save();
             }
+            ListAction::PermissionReply { harness, session_id, request_id } => {
+                let reply = match id.as_str() {
+                    "always" => "always",
+                    "reject" => "reject",
+                    _ => "once",
+                };
+                if let Some(b) = self.backends.get(&harness).cloned() {
+                    tokio::spawn(async move {
+                        if let Err(e) = b.permission_reply(&session_id, &request_id, reply).await {
+                            eprintln!("permission reply failed: {e:#}");
+                        }
+                    });
+                }
+            }
         }
     }
 
@@ -1509,7 +1628,7 @@ impl App {
             kind: SettingsKind::Profile,
         });
         let h = self.cfg.harness(&self.active_harness);
-        let (hname, hkind, henabled, hsrv, hpw, hwd, hagent, hmodel, supported) = match h {
+        let (hname, hkind, henabled, hsrv, hpw, hwd, hagent, hmodel, hauto, supported) = match h {
             Some(h) => (
                 format!("{} [{}]", h.name, h.id),
                 h.kind.clone(),
@@ -1519,9 +1638,10 @@ impl App {
                 h.workdir.clone(),
                 h.agent.clone(),
                 h.default_model.as_ref().map(|m| m.display()).unwrap_or_default(),
+                h.auto_approve,
                 backend::supported_kind(&h.kind),
             ),
-            None => ("—".into(), String::new(), false, String::new(), String::new(), String::new(), String::new(), String::new(), false),
+            None => ("—".into(), String::new(), false, String::new(), String::new(), String::new(), String::new(), String::new(), false, false),
         };
         rows.push(SettingsRow {
             label: t(lang, Str::SettingsActiveHarness).into(),
@@ -1559,6 +1679,11 @@ impl App {
             label: t(lang, Str::SettingsAgent).into(),
             value: hagent.clone(),
             kind: SettingsKind::Agent,
+        });
+        rows.push(SettingsRow {
+            label: t(lang, Str::SettingsAutoApprove).into(),
+            value: if hauto { "✓".into() } else { "✗".into() },
+            kind: SettingsKind::AutoApprove,
         });
         rows.push(SettingsRow {
             label: t(lang, Str::SettingsDefaultModel).into(),

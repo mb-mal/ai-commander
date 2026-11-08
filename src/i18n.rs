@@ -114,6 +114,10 @@ pub enum Str {
     Draft,
     StopNote,
     SettingsServerPassword,
+    PermOnce,
+    PermAlways,
+    PermReject,
+    SettingsAutoApprove,
     // check mode
     CheckOk,
     CheckModels,
@@ -196,6 +200,10 @@ pub fn t(lang: Lang, key: Str) -> &'static str {
             Str::Draft => "draft",
             Str::StopNote => "stopped following — result loads when the turn ends (next message interrupts)",
             Str::SettingsServerPassword => "Server password (Basic auth)",
+            Str::PermOnce => "Allow once",
+            Str::PermAlways => "Always allow this session",
+            Str::PermReject => "Deny",
+            Str::SettingsAutoApprove => "Auto-approve tools (--yolo)",
 
             Str::CheckOk => "OK",
             Str::CheckModels => "models",
@@ -275,6 +283,10 @@ pub fn t(lang: Lang, key: Str) -> &'static str {
             Str::Draft => "черновик",
             Str::StopNote => "следование остановлено — результат подгрузится по завершении хода (следующее сообщение прервёт)",
             Str::SettingsServerPassword => "Пароль сервера (Basic auth)",
+            Str::PermOnce => "Разрешить один раз",
+            Str::PermAlways => "Всегда разрешать в этой сессии",
+            Str::PermReject => "Отклонить",
+            Str::SettingsAutoApprove => "Авто-подтверждение инструментов (--yolo)",
 
             Str::CheckOk => "ОК",
             Str::CheckModels => "модели",

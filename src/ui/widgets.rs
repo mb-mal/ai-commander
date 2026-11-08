@@ -69,7 +69,7 @@ fn draw_header(app: &App, f: &mut Frame, area: Rect) {
         .current_model()
         .map(|m| m.display())
         .unwrap_or_else(|| t(app.lang(), Str::None_).to_string());
-    let (state_sym, state_col) = if app.streaming {
+    let (state_sym, state_col) = if app.busy_now() {
         ("●", th.accent)
     } else if app.backend_err.contains_key(&app.cur.harness) {
         ("●", th.err)
@@ -278,7 +278,7 @@ fn draw_chat(app: &mut App, f: &mut Frame, area: Rect) {
     };
     let state = if app.cur.loading {
         t(lang, Str::Loading).to_string()
-    } else if app.streaming {
+    } else if app.busy_now() {
         t(lang, Str::StateBusy).to_string()
     } else {
         String::new()
@@ -338,7 +338,7 @@ pub fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             t(lang, Str::NoHistory).to_string()
         };
         out.push(Line::from(Span::styled(hint, th.dim_style())));
-        if app.streaming {
+        if app.busy_now() {
             out.push(Line::from(Span::styled(t(lang, Str::Generating), th.accent_style())));
         }
         return out;
@@ -399,7 +399,7 @@ pub fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                         }
                     }
                 }
-                if !any && app.streaming && i == app.cur.msgs.len() - 1 {
+                if !any && app.busy_now() && i == app.cur.msgs.len() - 1 {
                     out.push(Line::from(Span::styled(t(lang, Str::Generating), th.accent_style())));
                 }
             }
@@ -431,7 +431,7 @@ fn draw_composer(app: &mut App, f: &mut Frame, area: Rect) {
     };
 
     let title = chips.clone();
-    let hint = if app.streaming {
+    let hint = if app.busy_now() {
         format!(" {} · {} ", t(lang, Str::StopEsc), t(lang, Str::NewlineHint))
     } else {
         format!(" {} · {} ", t(lang, Str::SendEnter), t(lang, Str::NewlineHint))

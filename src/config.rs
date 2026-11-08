@@ -36,6 +36,9 @@ pub struct HarnessCfg {
     pub workdir: String,
     /// Sub-agent name for the harness (opencode: build/plan/…)
     pub agent: String,
+    /// Run the harness with unattended tool execution (hermes --yolo).
+    /// Off by default: the agent asks before running tools that need it.
+    pub auto_approve: bool,
     pub default_model: Option<ModelRef>,
 }
 
@@ -50,6 +53,7 @@ impl HarnessCfg {
             server_password: String::new(),
             workdir: String::new(),
             agent: "build".into(),
+            auto_approve: false,
             default_model: None, // picked live from GET /api/model on first Ctrl+K
         }
     }
@@ -64,6 +68,7 @@ impl HarnessCfg {
             server_password: String::new(),
             workdir: String::new(),
             agent: String::new(),
+            auto_approve: false,
             default_model: None,
         }
     }
@@ -91,8 +96,9 @@ impl Default for Config {
 }
 
 fn whoami() -> String {
-    // Demo profile — shown in the header, sidebar and settings
-    "@tsingular".into()
+    std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_else(|_| "user".into())
 }
 
 pub fn config_dir() -> PathBuf {
@@ -168,6 +174,8 @@ struct HarnessToml {
     workdir: String,
     #[serde(default)]
     agent: String,
+    #[serde(default)]
+    auto_approve: bool,
     default_model: Option<ModelToml>,
 }
 
@@ -195,6 +203,7 @@ impl serde::Serialize for Config {
                     server_password: h.server_password.clone(),
                     workdir: h.workdir.clone(),
                     agent: h.agent.clone(),
+                    auto_approve: h.auto_approve,
                     default_model: h.default_model.as_ref().map(|m| ModelToml {
                         provider: m.provider_id.clone(),
                         model: m.model_id.clone(),
@@ -224,6 +233,7 @@ impl<'de> serde::Deserialize<'de> for Config {
                     server_password: h.server_password,
                     workdir: h.workdir,
                     agent: h.agent,
+                    auto_approve: h.auto_approve,
                     default_model: h.default_model.map(|m| ModelRef {
                         provider_id: m.provider,
                         model_id: m.model,

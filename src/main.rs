@@ -271,38 +271,64 @@ fn spawn_input_thread(tx: tokio::sync::mpsc::UnboundedSender<CEvent>) {
     });
 }
 
+/// RAII terminal guard: raw mode, alternate screen, mouse and paste capture
+/// are restored on *every* exit path — panics, errors, Ctrl+C, normal quit.
+struct TerminalGuard {
+    terminal: Option<Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>>,
+}
+
+impl TerminalGuard {
+    fn release(&mut self) {
+        let _ = disable_raw_mode();
+        if let Some(t) = self.terminal.as_mut() {
+            let _ = execute!(
+                t.backend_mut(),
+                LeaveAlternateScreen,
+                cev::DisableMouseCapture,
+                cev::DisableBracketedPaste
+            );
+            let _ = t.show_cursor();
+        }
+        self.terminal = None;
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 async fn run_tui(cfg: Config) -> Result<()> {
-    // terminal setup with panic-safe restore
+    // panic hook restores everything too (incl. mouse + paste)
     let orig_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
-        let _ = execute!(stdout(), LeaveAlternateScreen);
+        let _ = execute!(
+            stdout(),
+            LeaveAlternateScreen,
+            cev::DisableMouseCapture,
+            cev::DisableBracketedPaste
+        );
         orig_hook(info);
     }));
 
     enable_raw_mode()?;
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen, cev::EnableMouseCapture, cev::EnableBracketedPaste)?;
-    let mut terminal = Terminal::new(ratatui::backend::CrosstermBackend::new(stdout))?;
+    let terminal = Terminal::new(ratatui::backend::CrosstermBackend::new(stdout))?;
+    let mut guard = TerminalGuard { terminal: Some(terminal) };
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     spawn_input_thread(tx);
 
     let mut app = ui::App::new(cfg, rx);
-    app.run(&mut terminal).await?;
+    let run_result = app.run(guard.terminal.as_mut().expect("terminal")).await;
 
-    // teardown
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        cev::DisableMouseCapture,
-        cev::DisableBracketedPaste
-    )?;
-    terminal.show_cursor()?;
-
+    // kill harness servers on every path, then restore the terminal via Drop
     for (_, b) in &app.backends {
         b.shutdown();
     }
-    Ok(())
+    guard.release();
+    run_result
 }
