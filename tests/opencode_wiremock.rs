@@ -169,3 +169,107 @@ async fn broken_see_stream_does_not_crash_backend() {
     while let Ok(_ev) = rx.try_recv() {}
     b.shutdown();
 }
+
+/// Recording mock: answers 200/204 to everything, records (request line, body).
+fn spawn_recorder() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log2 = log.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(match stream.try_clone() {
+                Ok(s) => s,
+                Err(_) => continue,
+            });
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() {
+                continue;
+            }
+            let req_line = line.trim().to_string();
+            // headers + Content-Length, then the body bytes
+            let mut len = 0usize;
+            loop {
+                let mut h = String::new();
+                if reader.read_line(&mut h).is_err() || h.trim().is_empty() {
+                    break;
+                }
+                if let Some(v) = h
+                    .to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                    .and_then(|v| v.trim().parse().ok())
+                {
+                    len = v;
+                }
+            }
+            let mut body = vec![0u8; len];
+            if len > 0 {
+                use std::io::Read;
+                let _ = reader.read_exact(&mut body);
+            }
+            log2.lock().unwrap().push((
+                req_line.clone(),
+                String::from_utf8_lossy(&body).into_owned(),
+            ));
+            let mut stream = stream;
+            let status = if req_line.starts_with("POST") && !req_line.contains("prompt") {
+                "204 No Content"
+            } else {
+                "200 OK"
+            };
+            let body_out = if status == "200 OK" { "{\"data\":[]}" } else { "" };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body_out}",
+                body_out.len()
+            );
+            let _ = stream.flush();
+        }
+    });
+    (port, log)
+}
+
+/// Н3: a task send with a cwd must move the session to that directory
+/// (the task's worktree) BEFORE the prompt is posted.
+#[tokio::test]
+async fn send_with_cwd_moves_session_before_prompt() {
+    let (port, log) = spawn_recorder();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let b = create_backend(&cfg_for(port), tx).unwrap();
+    b.connect().await.expect("connect ok");
+
+    let worktree = std::path::Path::new("G:/Dev/repo/.aic-worktrees/t-0042");
+    b.send(
+        "ses_n3",
+        "implement it",
+        &[],
+        ai_commander::backend::SendOpts {
+            model: None,
+            agent: None,
+            mcp_role: None,
+            cwd: Some(worktree),
+        },
+    )
+    .await
+    .expect("send ok");
+
+    let reqs = log.lock().unwrap().clone();
+    let move_at = reqs
+        .iter()
+        .position(|(l, _)| l.starts_with("POST /api/session/ses_n3/move"));
+    let prompt_at = reqs
+        .iter()
+        .position(|(l, _)| l.starts_with("POST /api/session/ses_n3/prompt"));
+    let move_at = move_at.expect("send with cwd must call /move (Н3)");
+    let prompt_at = prompt_at.expect("send must call /prompt");
+    assert!(
+        move_at < prompt_at,
+        "move must precede the prompt: {reqs:?}"
+    );
+    assert!(
+        reqs[move_at].1.contains("G:/Dev/repo/.aic-worktrees/t-0042"),
+        "move body must carry the worktree: {}",
+        reqs[move_at].1
+    );
+    b.shutdown();
+}

@@ -1756,7 +1756,8 @@ impl App {
         self.board_act(action);
     }
 
-    /// Execute a task: create a harness session and send the task prompt.
+    /// Execute a task in its worktree (Н3): Start creates the worktree, the
+    /// session is created with cwd=worktree, the agent works there.
     fn run_task(&mut self, task: &kanban::Task) {
         let Some(harness) = task.harness.clone() else {
             self.toast("assign a harness first (a)", true);
@@ -1766,43 +1767,56 @@ impl App {
             self.toast("harness unavailable", true);
             return;
         };
-        {
-            let cwd = std::env::current_dir().unwrap_or_default();
-            let started = {
-                let mut board = self.board.lock().unwrap();
-                board
-                    .transition_in(&cwd, &task.id, kanban::TaskAction::Start)
-                    .ok()
-            };
-            if let Some(t) = started {
-                self.toast(format!("{} ▶ running on {harness}", t.id), false);
-            }
-        }
 
-        // B9: shared TaskRunner — role instructions, role model, mcp_role
+        // B9+Н3: shared TaskRunner — Start (worktree) + ctx with cwd, under
+        // the board lock; the async part below never holds the lock across
+        // an `.await` (std::sync::MutexGuard is not Send).
         let roles = kanban::roles::RoleSet::load(&std::env::current_dir().unwrap_or_default());
-        let ctx = kanban::runner::launch_ctx(task, &self.cfg, &roles);
+        let repo = std::env::current_dir().unwrap_or_default();
+        let ctx = {
+            let mut board = self.board.lock().unwrap();
+            kanban::runner::prepare_launch(&mut board, task, &self.cfg, &roles, &repo)
+        };
+        let ctx = match ctx {
+            Ok(ctx) => {
+                self.toast(format!("{} ▶ running on {harness}", task.id), false);
+                ctx
+            }
+            Err(e) => {
+                self.toast(format!("start {}: {e:#}", task.id), true);
+                return;
+            }
+        };
+
         let task_owned = task.clone();
         let tx = self.events_tx.clone();
         let harness_clone = harness.clone();
         let task_id = task.id.clone();
+        let board = self.board.clone();
         tokio::spawn(async move {
-            match b.create_session(&format!("task {task_id}")).await {
+            let launched = match b.create_session(&format!("task {task_id}")).await {
                 Ok(session) => {
+                    let sid = session.native_id.clone();
                     let _ = tx.send(BackendEvent::TaskLinked {
-                        harness: harness_clone,
-                        task_id,
-                        session_id: session.native_id.clone(),
+                        harness: harness_clone.clone(),
+                        task_id: task_id.clone(),
+                        session_id: sid.clone(),
                     });
-                    let _ =
-                        kanban::runner::send_task(&b, &task_owned, &ctx, &session.native_id).await;
+                    kanban::runner::send_task(&b, &task_owned, &ctx, &sid).await
                 }
-                Err(e) => {
-                    let _ = tx.send(BackendEvent::Error {
-                        harness: harness_clone,
-                        error: format!("task {task_id}: {e:#}"),
-                    });
+                Err(e) => Err(e),
+            };
+            if let Err(e) = launched {
+                // Д5: a failed send must still end the turn — empty reply →
+                // Failed → the Н1 retry cap/backoff applies
+                {
+                    let mut board = board.lock().unwrap();
+                    let _ = kanban::runner::on_stream_done(&mut board, &task_id, "");
                 }
+                let _ = tx.send(BackendEvent::Error {
+                    harness: harness_clone,
+                    error: format!("task {task_id}: {e:#}"),
+                });
             }
         });
     }

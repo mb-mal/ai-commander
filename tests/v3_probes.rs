@@ -94,3 +94,57 @@ fn done_marker_required() {
     let after = runner::on_stream_done(&mut b, &t.id, "DONE: implemented and tested").unwrap();
     assert_eq!(after.status, TaskStatus::Review, "DONE: marker → Review");
 }
+
+/// Н3: a launched task carries its worktree as the cwd so the agent works
+/// in isolation, not in the shared repo checkout.
+#[test]
+fn launch_runs_in_worktree() {
+    // real (throwaway) git repo — worktrees only exist in one
+    let dir = std::env::temp_dir().join(format!("aic-n3-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {} in {:?}: {}{}",
+            args.join(" "),
+            dir,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "t"]);
+    std::fs::write(dir.join("r.txt"), "base\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "base"]);
+
+    let mut b = BoardStore::open_memory();
+    let t = b.add_task("isolate me");
+    b.transition(&t.id, TaskAction::Promote).unwrap();
+    let task = b.projection().tasks.last().unwrap().clone();
+
+    let roles = ai_commander::kanban::roles::RoleSet::default();
+    let cfg = ai_commander::config::Config::default();
+    let ctx = runner::prepare_launch(&mut b, &task, &cfg, &roles, &dir).expect("prepare_launch");
+
+    let expected = ai_commander::kanban::worktree::worktree_path(&dir, &task);
+    assert_eq!(
+        ctx.cwd.as_deref(),
+        Some(expected.as_path()),
+        "launch cwd must be the task worktree (Н3)"
+    );
+    assert!(expected.exists(), "worktree must exist after Start");
+    assert!(
+        expected.join(".git").exists(),
+        "worktree must be a git worktree"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

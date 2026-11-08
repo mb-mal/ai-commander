@@ -472,7 +472,7 @@ fn print_mcp_config() -> Result<()> {
 /// harnesses, retries stuck ones via the watchdog, keeps the board moving
 /// while no TUI is open. Stop with Ctrl+C.
 async fn run_daemon(cfg: Config) -> Result<()> {
-    use ai_commander::kanban::{TaskAction, TaskStatus, store::BoardStore};
+    use ai_commander::kanban::{TaskStatus, store::BoardStore};
     use backend::{BackendEvent, create_backend};
     use std::time::Instant;
 
@@ -593,33 +593,33 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                 continue;
             }
 
-            // B9: shared TaskRunner — role instructions, role model, mcp_role
+            // B9+Н3: shared TaskRunner — Start creates the worktree, the
+            // session is created with cwd=worktree so the agent works there
             let roles = ai_commander::kanban::roles::RoleSet::load(
                 &std::env::current_dir().unwrap_or_default(),
             );
-            let ctx = ai_commander::kanban::runner::launch_ctx(&task, &cfg, &roles);
-            let session = match b.create_session(&task.title).await {
-                Ok(s) => s,
-                Err(e) => {
-                    println!("[warn] create_session for {}: {e}", task.id);
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    continue;
-                }
-            };
-            board.link_session(&task.id, &session.native_id);
-            let cwd = std::env::current_dir().unwrap_or_default();
-            if board
-                .transition_in(&cwd, &task.id, TaskAction::Start)
-                .is_err()
+            match ai_commander::kanban::runner::launch_task(b, &mut board, &task, &cfg, &roles)
+                .await
             {
-                continue;
+                Ok(_session_id) => {
+                    busy.insert(task.id.clone());
+                    println!("[run] {} '{}' on {harness}", task.id, task.title);
+                    ai_commander::log_info!("daemon", "run {} on {harness}", task.id);
+                    break; // one at a time keeps the log readable
+                }
+                Err(e) => {
+                    println!("[warn] launch {}: {e:#}", task.id);
+                    ai_commander::log_warn!("daemon", "launch {}: {e:#}", task.id);
+                    // Д5: a failed launch must still end the turn — empty
+                    // reply → Failed → Н1 retry cap/backoff applies
+                    let _ = ai_commander::kanban::runner::on_stream_done(
+                        &mut board,
+                        &task.id,
+                        "",
+                    );
+                    busy.remove(&task.id);
+                }
             }
-            let _ =
-                ai_commander::kanban::runner::send_task(b, &task, &ctx, &session.native_id).await;
-            busy.insert(task.id.clone());
-            println!("[run] {} '{}' on {harness}", task.id, task.title);
-            ai_commander::log_info!("daemon", "run {} on {harness}", task.id);
-            break; // one at a time keeps the log readable
         }
 
         // 4) stop when everything is terminal
