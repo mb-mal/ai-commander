@@ -143,6 +143,7 @@ pub enum ListAction {
         request_id: String,
     },
     AssignHarness,
+    AssignRole,
 }
 
 #[derive(Clone)]
@@ -666,7 +667,18 @@ impl App {
                         self.on_input(ev);
                     }
                 }
-                _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                _ = tokio::time::sleep(Duration::from_millis(1000)) => {
+                    // kanban watchdog: once a second is plenty for 10-minute windows
+                    let acted = {
+                        let mut b = self.board.lock().unwrap();
+                        b.watchdog_pass(std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0))
+                    };
+                    for (id, label) in acted {
+                        self.toast(format!("⚠ {id}: {label} (watchdog)"), true);
+                    }
                     let expired = self
                         .toast
                         .as_ref()
@@ -1594,6 +1606,25 @@ impl App {
                     action: ListAction::AssignHarness,
                 });
             }
+            (KeyCode::Char('o' | 'O'), false) => {
+                // assign a role from .ai-commander/agents/*.md
+                let rs = kanban::roles::RoleSet::load(&std::env::current_dir().unwrap_or_default());
+                let items: Vec<(String, String)> = rs
+                    .roles
+                    .iter()
+                    .map(|(id, r)| (id.clone(), r.name.clone()))
+                    .collect();
+                if items.is_empty() {
+                    self.toast("no roles: add .ai-commander/agents/<id>.md", true);
+                } else {
+                    self.modal = Some(Modal::List {
+                        title: "Assign role".into(),
+                        items,
+                        sel: 0,
+                        action: ListAction::AssignRole,
+                    });
+                }
+            }
             (KeyCode::Char('d' | 'D'), false) => {
                 self.board_act(kanban::TaskAction::Approve);
             }
@@ -2257,6 +2288,19 @@ impl App {
                 if let Some(t) = self.selected_board_task() {
                     let mut b = self.board.lock().unwrap();
                     let _ = b.assign(&t.id, Some(id));
+                }
+            }
+            ListAction::AssignRole => {
+                if let Some(t) = self.selected_board_task() {
+                    let mut b = self.board.lock().unwrap();
+                    // role carries its harness; keep the current one if unset
+                    let harness = b
+                        .projection()
+                        .tasks
+                        .iter()
+                        .find(|x| x.id == t.id)
+                        .and_then(|x| x.harness.clone());
+                    let _ = b.assign_with_role(&t.id, harness, Some(id));
                 }
             }
             ListAction::PermissionReply {

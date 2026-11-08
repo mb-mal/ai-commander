@@ -369,8 +369,11 @@ impl BoardStore {
             acceptance: Vec::new(),
             status: TaskStatus::Backlog,
             harness: None,
+            role: None,
             session_id: None,
             attempts: 0,
+            started_ms: None,
+            max_attempts: crate::kanban::default_max_attempts(),
             created_ms: crate::kanban::now_ms(),
             updated_ms: crate::kanban::now_ms(),
         };
@@ -391,6 +394,13 @@ impl BoardStore {
             t.updated_ms = crate::kanban::now_ms();
             if action == TaskAction::Start {
                 t.attempts += 1;
+                t.started_ms = Some(crate::kanban::now_ms());
+            }
+            if matches!(
+                next,
+                TaskStatus::Done | TaskStatus::Cancelled | TaskStatus::Review
+            ) {
+                t.started_ms = None;
             }
         }
         let t = self
@@ -412,6 +422,24 @@ impl BoardStore {
         t.updated_ms = crate::kanban::now_ms();
         let snap = t.clone();
         self.commit(task_id, "edited", Some(snap));
+        Ok(())
+    }
+
+    /// assign a harness and (optionally) a role in one go
+    pub fn assign_with_role(
+        &mut self,
+        task_id: &str,
+        harness: Option<String>,
+        role: Option<String>,
+    ) -> Result<(), String> {
+        let Some(t) = self.proj.tasks.iter_mut().find(|t| t.id == task_id) else {
+            return Err("task not found".into());
+        };
+        t.harness = harness;
+        t.role = role;
+        t.updated_ms = crate::kanban::now_ms();
+        let snap = t.clone();
+        self.commit(task_id, "assigned", Some(snap));
         Ok(())
     }
 
@@ -452,6 +480,61 @@ impl BoardStore {
             let snap = t.clone();
             self.commit(&id, "rebound", Some(snap));
         }
+    }
+
+    /// Watchdog pass: InProgress tasks without a finishing StreamDone past
+    /// STUCK_AFTER_MS are interrupted back to Ready (retry) or, once attempts
+    /// are exhausted, escalated to NeedsHuman. Returns the tasks acted on.
+    pub fn watchdog_pass(&mut self, now: i64) -> Vec<(String, &'static str)> {
+        let stuck_ids: Vec<String> = self
+            .proj
+            .tasks
+            .iter()
+            .filter(|t| {
+                t.status == TaskStatus::InProgress
+                    && t.started_ms
+                        .map(|s| now - s > crate::kanban::STUCK_AFTER_MS)
+                        .unwrap_or(false)
+            })
+            .map(|t| t.id.clone())
+            .collect();
+        let mut acted = Vec::new();
+        for id in stuck_ids {
+            let attempts = self
+                .proj
+                .tasks
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| t.attempts)
+                .unwrap_or(0);
+            let max = self
+                .proj
+                .tasks
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| t.max_attempts)
+                .unwrap_or(crate::kanban::default_max_attempts());
+            let action = if attempts >= max {
+                TaskAction::Ask // escalate: agent went silent too many times
+            } else {
+                TaskAction::Interrupt // retry
+            };
+            let label = if action == TaskAction::Ask {
+                "escalated"
+            } else {
+                "retried"
+            };
+            if self.transition(&id, action).is_ok() {
+                // clear started_ms on Interrupt too (next Start re-stamps)
+                if action == TaskAction::Interrupt {
+                    if let Some(t) = self.proj.tasks.iter_mut().find(|t| t.id == id) {
+                        t.started_ms = None;
+                    }
+                }
+                acted.push((id, label));
+            }
+        }
+        acted
     }
 
     pub fn find_by_session(&self, harness: &str, session: &str) -> Option<Task> {

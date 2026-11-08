@@ -12,7 +12,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-pub(crate) fn now_ms() -> i64 {
+pub fn default_max_attempts() -> u32 {
+    3
+}
+
+/// A turn is considered stuck after this long without a StreamDone.
+pub const STUCK_AFTER_MS: i64 = 10 * 60 * 1000;
+
+fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -108,11 +115,20 @@ pub struct Task {
     /// harness id the task runs on
     #[serde(default)]
     pub harness: Option<String>,
+    /// role id (.ai-commander/agents/<id>.md) whose instructions prefix the prompt
+    #[serde(default)]
+    pub role: Option<String>,
     /// linked chat session (native id; pending-* until the first turn)
     #[serde(default)]
     pub session_id: Option<String>,
     #[serde(default)]
     pub attempts: u32,
+    /// wall-clock of the current Start (for the stuck-task watchdog)
+    #[serde(default)]
+    pub started_ms: Option<i64>,
+    /// max attempts before the task escalates to NeedsHuman
+    #[serde(default = "default_max_attempts")]
+    pub max_attempts: u32,
     pub created_ms: i64,
     pub updated_ms: i64,
 }
@@ -142,6 +158,7 @@ impl Kanban {
     }
 }
 
+pub mod roles;
 pub mod store;
 pub use store::{BoardStore, EventStore, RedbStore, SCHEMA_VERSION, StoredEvent};
 
@@ -209,8 +226,11 @@ mod tests {
             acceptance: vec!["tests pass".into()],
             status,
             harness: Some("oc".into()),
+            role: None,
             session_id: None,
             attempts: 0,
+            started_ms: None,
+            max_attempts: default_max_attempts(),
             created_ms: 1,
             updated_ms: 1,
         }

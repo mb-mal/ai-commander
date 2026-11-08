@@ -139,6 +139,16 @@ the log, snapshot == fold(log).
   classified (`DONE:` → Review, `BLOCKED:` → Blocked, `ASK:` → Needs human)
   and drives the FSM automatically
 - Headless: `ai-commander --task "do something" --harness oc`
+- **Watchdog**: InProgress tasks silent for 10 minutes are retried
+  (attempts++) or escalated to Needs human after `max_attempts` (default 3)
+- **Roles**: `~/.ai-commander/agents/<id>.md` (YAML frontmatter: name/harness/
+  model/autonomy + markdown instructions) and `.ai-commander/agents/…` at
+  project level (project wins). Assign with `o` on the board; the role's
+  instructions prefix the task prompt. Teams: `.ai-commander/teams/<id>.yaml`
+  (name/lead/members).
+- **Daemon**: `ai-commander --daemon` runs the board without a UI — launches
+  Ready tasks, retries stuck ones via the watchdog, exits when the board
+  settles. The TUI sees the same store, so tasks continue while it is closed.
 
 ## Limitations & roadmap
 

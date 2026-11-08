@@ -42,6 +42,7 @@ struct Args {
     check: bool,
     send: String,
     task: String,
+    daemon: bool,
     wait_secs: u64,
     server: String,
     lang: String,
@@ -57,6 +58,7 @@ fn parse_args() -> Args {
             "--check" => args.check = true,
             "--send" => args.send = it.next().unwrap_or_default(),
             "--task" => args.task = it.next().unwrap_or_default(),
+            "--daemon" => args.daemon = true,
             "--wait" => args.wait_secs = it.next().and_then(|s| s.parse().ok()).unwrap_or(60),
             "--server" => args.server = it.next().unwrap_or_default(),
             "--lang" => args.lang = it.next().unwrap_or_default(),
@@ -100,6 +102,9 @@ async fn main() -> Result<()> {
 
     if args.check {
         return run_check(cfg, &args.harness).await;
+    }
+    if args.daemon {
+        return run_daemon(cfg).await;
     }
     if !args.task.is_empty() {
         return run_task(cfg, &args.task, args.wait_secs.max(5), &args.harness).await;
@@ -418,6 +423,120 @@ async fn run_task(cfg: Config, title: &str, wait_secs: u64, harness_id: &str) ->
     );
     b.shutdown();
     Ok(())
+}
+
+// ---------------- daemon ----------------
+
+/// Background executor: runs Ready tasks (harness assigned) through their
+/// harnesses, retries stuck ones via the watchdog, keeps the board moving
+/// while no TUI is open. Stop with Ctrl+C.
+async fn run_daemon(cfg: Config) -> Result<()> {
+    use ai_commander::kanban::{TaskAction, TaskStatus, store::BoardStore};
+    use backend::{BackendEvent, SendOpts, create_backend};
+    use std::time::Instant;
+
+    let mut backends: std::collections::HashMap<String, std::sync::Arc<dyn backend::Backend>> =
+        std::collections::HashMap::new();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BackendEvent>();
+    for h in cfg
+        .harnesses
+        .iter()
+        .filter(|h| h.enabled && backend::supported_kind(&h.kind))
+    {
+        if let Ok(b) = create_backend(h, tx.clone()) {
+            if b.connect().await.is_ok() {
+                backends.insert(h.id.clone(), b);
+            }
+        }
+    }
+    if backends.is_empty() {
+        anyhow::bail!("daemon: no usable harness backends");
+    }
+    println!("daemon up: {} harness(es); Ctrl+C to stop", backends.len());
+
+    let mut board = BoardStore::open_redb(&ai_commander::kanban::Kanban::path())?;
+    let mut busy: std::collections::HashSet<String> = std::collections::HashSet::new();
+    loop {
+        // 1) drain finished turns
+        while let Ok(ev) = rx.try_recv() {
+            if let backend::BackendEvent::StreamDone { native_id, .. } = &ev {
+                busy.remove(native_id);
+            }
+        }
+
+        // 2) watchdog pass (retry / escalate)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        for (id, label) in board.watchdog_pass(now) {
+            println!("[watchdog] {id}: {label}");
+            busy.remove(&id);
+        }
+
+        // 3) launch one Ready task per idle harness
+        let ready: Vec<ai_commander::kanban::Task> =
+            board.projection().by_status(TaskStatus::Ready);
+        for task in ready {
+            let Some(harness) = task.harness.clone() else {
+                continue;
+            };
+            let Some(b) = backends.get(&harness) else {
+                continue;
+            };
+            if busy.contains(&task.id) {
+                continue;
+            }
+            let prompt = ai_commander::kanban::task_prompt(&task);
+            let session = match b.create_session(&task.title).await {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            board.link_session(&task.id, &session.native_id);
+            if board.transition(&task.id, TaskAction::Start).is_err() {
+                continue;
+            }
+            let model = cfg.harness(&harness).and_then(|h| h.default_model.clone());
+            let agent = cfg
+                .harness(&harness)
+                .map(|h| h.agent.clone())
+                .filter(|a| !a.is_empty());
+            let _ = b
+                .send(
+                    &session.native_id,
+                    &prompt,
+                    &[],
+                    SendOpts {
+                        model: model.as_ref(),
+                        agent: agent.as_deref(),
+                    },
+                )
+                .await;
+            busy.insert(task.id.clone());
+            println!("[run] {} '{}' on {harness}", task.id, task.title);
+            break; // one at a time keeps the log readable
+        }
+
+        // 4) stop when everything is terminal
+        let all_done = board.projection().tasks.iter().all(|t| {
+            matches!(
+                t.status,
+                TaskStatus::Done
+                    | TaskStatus::Cancelled
+                    | TaskStatus::NeedsHuman
+                    | TaskStatus::Blocked
+            )
+        });
+        if all_done && busy.is_empty() && !board.projection().tasks.is_empty() {
+            println!("daemon: board settled, exiting");
+            for b in backends.values() {
+                b.shutdown();
+            }
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let _ = Instant::now();
+    }
 }
 
 // ---------------- TUI ----------------
