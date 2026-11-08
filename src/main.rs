@@ -471,7 +471,7 @@ fn print_mcp_config() -> Result<()> {
 /// while no TUI is open. Stop with Ctrl+C.
 async fn run_daemon(cfg: Config) -> Result<()> {
     use ai_commander::kanban::{TaskAction, TaskStatus, store::BoardStore};
-    use backend::{BackendEvent, SendOpts, create_backend};
+    use backend::{BackendEvent, create_backend};
     use std::time::Instant;
 
     let mut backends: std::collections::HashMap<String, std::sync::Arc<dyn backend::Backend>> =
@@ -504,11 +504,43 @@ async fn run_daemon(cfg: Config) -> Result<()> {
 
     let mut otel_last_seq: u64 = 0;
     let mut busy: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut task_replies: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     loop {
-        // 1) drain finished turns
+        // 1) drain finished turns via TaskRunner (Б8: classify + transition)
+        use backend::PartKind;
         while let Ok(ev) = rx.try_recv() {
-            if let backend::BackendEvent::StreamDone { native_id, .. } = &ev {
-                busy.remove(native_id);
+            match &ev {
+                backend::BackendEvent::PartDelta {
+                    native_id,
+                    harness,
+                    delta,
+                    kind,
+                    ..
+                } => {
+                    if *kind == PartKind::Text {
+                        if let Some(task) = board.find_by_session(harness, native_id) {
+                            let mut reply = task_replies.remove(&task.id).unwrap_or_default();
+                            ai_commander::kanban::runner::on_progress(
+                                &mut board, &task.id, delta, &mut reply,
+                            );
+                            task_replies.insert(task.id.clone(), reply);
+                        }
+                    }
+                }
+                backend::BackendEvent::StreamDone { native_id, harness } => {
+                    if let Some(task) = board.find_by_session(harness, native_id) {
+                        let reply = task_replies.remove(&task.id).unwrap_or_default();
+                        match ai_commander::kanban::runner::on_stream_done(
+                            &mut board, &task.id, &reply,
+                        ) {
+                            Ok(t) => println!("[done] {} → {:?}", t.id, t.status),
+                            Err(e) => println!("[warn] {} transition: {e}", task.id),
+                        }
+                        busy.remove(&task.id);
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -546,9 +578,8 @@ async fn run_daemon(cfg: Config) -> Result<()> {
             }
         }
 
-        // 3) launch one Ready task per idle harness
-        let ready: Vec<ai_commander::kanban::Task> =
-            board.projection().by_status(TaskStatus::Ready);
+        // 3) launch one launchable task per idle harness (B9: DAG-aware)
+        let ready: Vec<ai_commander::kanban::Task> = board.launchable();
         for task in ready {
             let Some(harness) = task.harness.clone() else {
                 continue;
@@ -559,10 +590,19 @@ async fn run_daemon(cfg: Config) -> Result<()> {
             if busy.contains(&task.id) {
                 continue;
             }
-            let prompt = ai_commander::kanban::task_prompt(&task);
+
+            // B9: shared TaskRunner — role instructions, role model, mcp_role
+            let roles = ai_commander::kanban::roles::RoleSet::load(
+                &std::env::current_dir().unwrap_or_default(),
+            );
+            let ctx = ai_commander::kanban::runner::launch_ctx(&task, &cfg, &roles);
             let session = match b.create_session(&task.title).await {
                 Ok(s) => s,
-                Err(_) => continue,
+                Err(e) => {
+                    println!("[warn] create_session for {}: {e}", task.id);
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    continue;
+                }
             };
             board.link_session(&task.id, &session.native_id);
             let cwd = std::env::current_dir().unwrap_or_default();
@@ -572,23 +612,8 @@ async fn run_daemon(cfg: Config) -> Result<()> {
             {
                 continue;
             }
-            let model = cfg.harness(&harness).and_then(|h| h.default_model.clone());
-            let agent = cfg
-                .harness(&harness)
-                .map(|h| h.agent.clone())
-                .filter(|a| !a.is_empty());
-            let _ = b
-                .send(
-                    &session.native_id,
-                    &prompt,
-                    &[],
-                    SendOpts {
-                        model: model.as_ref(),
-                        agent: agent.as_deref(),
-                        mcp_role: None,
-                    },
-                )
-                .await;
+            let _ =
+                ai_commander::kanban::runner::send_task(b, &task, &ctx, &session.native_id).await;
             busy.insert(task.id.clone());
             println!("[run] {} '{}' on {harness}", task.id, task.title);
             ai_commander::log_info!("daemon", "run {} on {harness}", task.id);
