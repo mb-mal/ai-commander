@@ -328,8 +328,11 @@ async fn run_task(cfg: Config, title: &str, wait_secs: u64, harness_id: &str) ->
 
     let mut board = BoardStore::open_redb(&ai_commander::kanban::Kanban::path())?;
     let task = board.add_task(title);
+    let role = std::env::var("AI_COMMANDER_ROLE")
+        .ok()
+        .filter(|r| !r.is_empty());
     board
-        .assign(&task.id, Some(harness_cfg.id.clone()))
+        .assign_with_role(&task.id, Some(harness_cfg.id.clone()), role)
         .map_err(anyhow::Error::msg)?;
     let task = board
         .transition(&task.id, TaskAction::Promote)

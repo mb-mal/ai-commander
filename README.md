@@ -149,6 +149,7 @@ the log, snapshot == fold(log).
 - **Daemon**: `ai-commander --daemon` runs the board without a UI — launches
   Ready tasks, retries stuck ones via the watchdog, exits when the board
   settles. The TUI sees the same store, so tasks continue while it is closed.
+  Headless task runs honor `AI_COMMANDER_ROLE=<id>` to pick a role.
 
 ## Limitations & roadmap
 
