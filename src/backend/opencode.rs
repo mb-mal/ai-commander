@@ -892,6 +892,8 @@ fn handle_sse_event(
                     session_id: sid,
                     request_id,
                     title,
+                    action: action.to_string(),
+                    resource: resource.to_string(),
                 });
             }
         }

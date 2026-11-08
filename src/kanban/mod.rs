@@ -103,6 +103,17 @@ pub enum TaskAction {
     Ask,
 }
 
+/// A thread entry on a task: agent/human comment, handoff contract or a
+/// system note. This is the board's communication channel.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Comment {
+    pub author: String,
+    /// "comment" | "handoff" | "system"
+    pub kind: String,
+    pub text: String,
+    pub ts_ms: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Task {
     pub id: String,
@@ -118,6 +129,12 @@ pub struct Task {
     /// role id (.ai-commander/agents/<id>.md) whose instructions prefix the prompt
     #[serde(default)]
     pub role: Option<String>,
+    /// task thread: comments, handoffs, system notes (agent inbox)
+    #[serde(default)]
+    pub comments: Vec<Comment>,
+    /// DAG: task ids that must be Done/Cancelled before this one launches
+    #[serde(default)]
+    pub depends_on: Vec<String>,
     /// linked chat session (native id; pending-* until the first turn)
     #[serde(default)]
     pub session_id: Option<String>,
@@ -141,6 +158,11 @@ pub struct Kanban {
 
 impl Kanban {
     pub fn path() -> PathBuf {
+        if let Ok(p) = std::env::var("AI_COMMANDER_KANBAN_DB") {
+            if !p.is_empty() {
+                return PathBuf::from(p);
+            }
+        }
         crate::config::config_dir().join("kanban.redb")
     }
 
@@ -227,6 +249,8 @@ mod tests {
             status,
             harness: Some("oc".into()),
             role: None,
+            comments: Vec::new(),
+            depends_on: Vec::new(),
             session_id: None,
             attempts: 0,
             started_ms: None,

@@ -370,6 +370,8 @@ impl BoardStore {
             status: TaskStatus::Backlog,
             harness: None,
             role: None,
+            comments: Vec::new(),
+            depends_on: Vec::new(),
             session_id: None,
             attempts: 0,
             started_ms: None,
@@ -480,6 +482,138 @@ impl BoardStore {
             let snap = t.clone();
             self.commit(&id, "rebound", Some(snap));
         }
+    }
+
+    /// Append a thread entry (comment / handoff / system note).
+    pub fn comment(
+        &mut self,
+        task_id: &str,
+        author: &str,
+        kind: &str,
+        text: &str,
+    ) -> Result<(), String> {
+        let Some(t) = self.proj.tasks.iter_mut().find(|t| t.id == task_id) else {
+            return Err(format!("task {task_id} not found"));
+        };
+        t.comments.push(super::Comment {
+            author: author.to_string(),
+            kind: kind.to_string(),
+            text: text.to_string(),
+            ts_ms: crate::kanban::now_ms(),
+        });
+        t.updated_ms = crate::kanban::now_ms();
+        let snap = t.clone();
+        self.commit(task_id, &format!("comment:{kind}"), Some(snap));
+        Ok(())
+    }
+
+    /// Structured handoff contract (review §7): summary is mandatory, the
+    /// task is re-assigned to `to_role` and returns to Ready so the new
+    /// owner picks it up. An empty/short summary is rejected.
+    pub fn handoff(
+        &mut self,
+        task_id: &str,
+        from: &str,
+        to_role: &str,
+        summary: &str,
+        open_questions: &str,
+    ) -> Result<Task, String> {
+        if summary.trim().len() < 10 {
+            return Err("handoff rejected: summary must be at least 10 characters".into());
+        }
+        if to_role.trim().is_empty() {
+            return Err("handoff rejected: to_role is required".into());
+        }
+        {
+            let Some(t) = self.proj.tasks.iter_mut().find(|t| t.id == task_id) else {
+                return Err(format!("task {task_id} not found"));
+            };
+            t.role = Some(to_role.to_string());
+            let mut text = format!(
+                "[handoff {from} → {to_role}]
+{summary}"
+            );
+            if !open_questions.trim().is_empty() {
+                text.push_str(&format!(
+                    "
+Open questions: {open_questions}"
+                ));
+            }
+            t.comments.push(super::Comment {
+                author: from.to_string(),
+                kind: "handoff".into(),
+                text,
+                ts_ms: crate::kanban::now_ms(),
+            });
+            t.updated_ms = crate::kanban::now_ms();
+        }
+        // an in-flight turn must go back to Ready for the new owner
+        let t = self
+            .proj
+            .tasks
+            .iter()
+            .find(|t| t.id == task_id)
+            .cloned()
+            .unwrap();
+        if t.status == TaskStatus::InProgress {
+            self.transition(task_id, TaskAction::Interrupt)?;
+        }
+        let t = self
+            .proj
+            .tasks
+            .iter()
+            .find(|t| t.id == task_id)
+            .cloned()
+            .unwrap();
+        self.commit(task_id, "handoff", Some(t.clone()));
+        Ok(t)
+    }
+
+    /// Thread entries after `since_ms` (the agent's inbox).
+    pub fn read_inbox(&self, task_id: &str, since_ms: i64) -> Option<&[super::Comment]> {
+        self.proj
+            .tasks
+            .iter()
+            .find(|t| t.id == task_id)
+            .map(|t| &t.comments[..])
+            .map(|all| {
+                &all[all
+                    .iter()
+                    .position(|c| c.ts_ms > since_ms)
+                    .unwrap_or(all.len())..]
+            })
+    }
+
+    /// Set DAG dependencies (forward references to not-yet-created task ids
+    /// are allowed; a missing dependency counts as settled at launch time).
+    pub fn set_depends(&mut self, task_id: &str, deps: Vec<String>) -> Result<(), String> {
+        let Some(t) = self.proj.tasks.iter_mut().find(|t| t.id == task_id) else {
+            return Err("task not found".into());
+        };
+        t.depends_on = deps;
+        t.updated_ms = crate::kanban::now_ms();
+        let snap = t.clone();
+        self.commit(task_id, "depends", Some(snap));
+        Ok(())
+    }
+
+    /// DAG scheduler: Ready tasks whose dependencies are all settled
+    /// (Done or Cancelled) — the daemon launches only these.
+    pub fn launchable(&self) -> Vec<Task> {
+        let settled = |id: &str| {
+            self.proj
+                .tasks
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| matches!(t.status, TaskStatus::Done | TaskStatus::Cancelled))
+                .unwrap_or(true) // missing dep counts as settled to avoid deadlock
+        };
+        self.proj
+            .tasks
+            .iter()
+            .filter(|t| t.status == TaskStatus::Ready && t.depends_on.iter().all(|d| settled(d)))
+            .cloned()
+            .collect()
     }
 
     /// Watchdog pass: InProgress tasks without a finishing StreamDone past
@@ -613,6 +747,68 @@ mod tests {
             Some("ses_real")
         );
         assert!(bs.find_by_session("oc", "ses_real").is_some());
+    }
+
+    #[test]
+    fn dag_launchable_respects_dependencies() {
+        let mut b = BoardStore::open_memory();
+        let t1 = b.add_task("first");
+        let t2 = b.add_task("second");
+        b.set_depends(&t2.id, vec![t1.id.clone()]).unwrap();
+        b.transition(&t1.id, TaskAction::Promote).unwrap();
+        b.transition(&t2.id, TaskAction::Promote).unwrap();
+        assert_eq!(b.projection().by_status(TaskStatus::Ready).len(), 2);
+        // t2 is Ready but blocked by t1
+        let launchable = b.launchable();
+        assert_eq!(launchable.len(), 1, "only t1 is launchable");
+        assert_eq!(launchable[0].id, t1.id);
+        // finish t1 -> t2 unblocked
+        b.transition(&t1.id, TaskAction::Start).unwrap();
+        b.transition(&t1.id, TaskAction::Finish).unwrap();
+        b.transition(&t1.id, TaskAction::Approve).unwrap();
+        let launchable = b.launchable();
+        assert_eq!(launchable.len(), 1);
+        assert_eq!(launchable[0].id, t2.id, "t2 unblocked after t1 Done");
+        // unknown dep counts as settled (no deadlock)
+        let t3 = b.add_task("third");
+        b.set_depends(&t3.id, vec!["t-9999".into()]).unwrap();
+        b.transition(&t3.id, TaskAction::Promote).unwrap();
+        assert!(b.launchable().iter().any(|t| t.id == t3.id));
+    }
+
+    #[test]
+    fn handoff_contract_validated() {
+        let mut b = BoardStore::open_memory();
+        let t = b.add_task("x");
+        assert!(
+            b.handoff(&t.id, "coder", "reviewer", "short", "").is_err(),
+            "summary too short"
+        );
+        let updated = b
+            .handoff(&t.id, "coder", "reviewer", "draft done, please review", "?")
+            .unwrap();
+        assert_eq!(updated.role.as_deref(), Some("reviewer"));
+        // in-flight task goes back to Ready for the new owner
+        b.transition(&t.id, TaskAction::Promote).unwrap();
+        b.transition(&t.id, TaskAction::Start).unwrap();
+        let updated = b
+            .handoff(&t.id, "reviewer", "coder", "rework needed, see notes", "")
+            .unwrap();
+        assert_eq!(updated.status, TaskStatus::Ready);
+        assert!(updated.comments.iter().any(|c| c.kind == "handoff"));
+    }
+
+    #[test]
+    fn inbox_reads_only_new_entries() {
+        let mut b = BoardStore::open_memory();
+        let t = b.add_task("x");
+        b.comment(&t.id, "coder", "comment", "first").unwrap();
+        let ts = b.projection().tasks[0].comments[0].ts_ms;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        b.comment(&t.id, "reviewer", "comment", "second").unwrap();
+        let inbox = b.read_inbox(&t.id, ts).unwrap();
+        assert_eq!(inbox.len(), 1);
+        assert!(inbox[0].text.contains("second"));
     }
 
     #[test]

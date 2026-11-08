@@ -151,14 +151,39 @@ the log, snapshot == fold(log).
   settles. The TUI sees the same store, so tasks continue while it is closed.
   Headless task runs honor `AI_COMMANDER_ROLE=<id>` to pick a role.
 
+### Agent-to-agent board (MCP)
+
+The board is exposed to agents as MCP tools by the `board-mcp` binary
+(newline JSON-RPC over stdio, MCP 2024-11-05): `board.create_task`,
+`board.update_task`, `board.comment`, `board.handoff`, `board.read_inbox`,
+`board.ask_human`. The role identity is the per-session token
+(`AI_COMMANDER_ROLE` env): every mutation is authored by that role, and
+start/finish are ownership-checked. Handoffs carry a validated contract
+(summary ≥ 10 chars + open questions) and return the task to Ready for the
+new owner.
+
+- ACP harness: the board server is injected automatically into every task
+  session with a role (`session/new mcpServers`)
+- any harness: `ai-commander --print-mcp-config` prints the snippet for
+  its own MCP config
+
+### Task DAG & policy engine
+
+- Tasks may declare `depends_on` (task ids; forward refs allowed): the
+  daemon only launches Ready tasks whose dependencies are Done/Cancelled
+- Permission requests (opencode) are evaluated against
+  `.ai-commander/policy.yaml`: `allow / ask / deny` rules with `*` wildcard
+  patterns over action + resource; strictest match wins, no rule → ask.
+  Allow auto-replies, deny auto-rejects, ask opens the modal
+
 ## Limitations & roadmap
 
 - dsh headless does not replay session context on `--session-id`, so the
   backend folds stored history into the task text; `Esc` for opencode only
   detaches (no server abort); reasoning/tool history is not persisted for
   CLI harnesses (text only).
-- Kanban v1 has leases/watchdog and multi-agent teams on the roadmap; the
-  event-sourced core (EventStore + FSM + auto-execution) is in place.
+- On the roadmap: git-worktree isolation per task, cron/event triggers,
+  A2A gateway, cost budgets.
 - The `opencode-acp` harness (Agent Client Protocol) is the newest connection:
   it uses the `agent-client-protocol` schema crate, real `session/cancel` and
   real permission requests; the older HTTP backend stays as the battle-tested

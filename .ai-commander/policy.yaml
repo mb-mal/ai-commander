@@ -1,0 +1,22 @@
+# ai-commander permission policy (project level)
+# Strictest matching rule wins: deny > ask > allow; no match -> ask.
+# pattern: '*' wildcards over the action's primary resource (command/path);
+#          empty pattern matches any resource.
+rules:
+  # secrets never leave the machine
+  - action: bash
+    pattern: "*cat *.env*"
+    effect: deny
+  - action: edit
+    pattern: "*.env"
+    effect: deny
+  # day-to-day coding is fine without asking
+  - action: edit
+    pattern: "src/*"
+    effect: allow
+  - action: webfetch
+    effect: allow
+  # history rewrites and pushes always ask
+  - action: bash
+    pattern: "git push*"
+    effect: ask

@@ -5,4 +5,5 @@ pub mod backend;
 pub mod config;
 pub mod i18n;
 pub mod kanban;
+pub mod policy;
 pub mod ui;

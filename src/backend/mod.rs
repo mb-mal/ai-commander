@@ -172,6 +172,10 @@ pub enum BackendEvent {
         session_id: String,
         request_id: String,
         title: String,
+        /// action name (e.g. "bash") for the policy engine
+        action: String,
+        /// primary resource (path/command) for pattern rules
+        resource: String,
     },
     /// SSE stream reconnected after a drop — UI should reload current history
     Reconnected { harness: String },
@@ -219,6 +223,8 @@ pub enum BackendEvent {
 pub struct SendOpts<'a> {
     pub model: Option<&'a ModelRef>,
     pub agent: Option<&'a str>,
+    /// role token: the ACP backend injects the board MCP server bound to it
+    pub mcp_role: Option<&'a str>,
 }
 
 #[async_trait]

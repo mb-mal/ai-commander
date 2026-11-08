@@ -247,6 +247,8 @@ pub struct App {
     pub hit: HitAreas,
     /// kanban screen state
     pub mode: UiMode,
+    /// allow/ask/deny rules for harness permission requests
+    pub policy: crate::policy::Policy,
     pub board: Arc<std::sync::Mutex<kanban::store::BoardStore>>,
     pub board_col: usize,
     pub board_row: usize,
@@ -296,6 +298,7 @@ impl App {
             toast: None,
             quit: false,
             mode: UiMode::Chat,
+            policy: crate::policy::Policy::load(&std::env::current_dir().unwrap_or_default()),
             board: Arc::new(std::sync::Mutex::new(
                 kanban::store::BoardStore::open_redb(&kanban::Kanban::path())
                     .unwrap_or_else(|_| kanban::store::BoardStore::open_memory()),
@@ -600,6 +603,7 @@ impl App {
                     SendOpts {
                         model: model.as_ref(),
                         agent: agent.as_deref(),
+                        mcp_role: None,
                     },
                 )
                 .await
@@ -813,7 +817,33 @@ impl App {
                 session_id,
                 request_id,
                 title,
+                action,
+                resource,
             } => {
+                // policy engine: deny wins over ask over allow; no rule -> ask
+                match self.policy.check(&action, &resource) {
+                    crate::policy::Effect::Allow => {
+                        let (s, r) = (session_id.clone(), request_id.clone());
+                        if let Some(b) = self.backends.get(&harness).cloned() {
+                            tokio::spawn(async move {
+                                let _ = b.permission_reply(&s, &r, "once").await;
+                            });
+                        }
+                        self.toast(format!("✓ auto-allowed {action}: {resource}"), false);
+                        return;
+                    }
+                    crate::policy::Effect::Deny => {
+                        let (s, r) = (session_id.clone(), request_id.clone());
+                        if let Some(b) = self.backends.get(&harness).cloned() {
+                            tokio::spawn(async move {
+                                let _ = b.permission_reply(&s, &r, "reject").await;
+                            });
+                        }
+                        self.toast(format!("✗ auto-denied {action}: {resource}"), true);
+                        return;
+                    }
+                    crate::policy::Effect::Ask => {}
+                }
                 // the agent asks before acting — surface a modal (NC silver)
                 let lang = self.cfg.lang;
                 let items = vec![
@@ -1706,6 +1736,7 @@ impl App {
             }
         }
         let prompt = kanban::task_prompt(task);
+        let task_role = task.role.clone();
         let tx = self.events_tx.clone();
         let harness_clone = harness.clone();
         let task_id = task.id.clone();
@@ -1739,6 +1770,7 @@ impl App {
                                 SendOpts {
                                     model: model.as_ref(),
                                     agent: agent.as_deref(),
+                                    mcp_role: task_role.as_deref(),
                                 },
                             )
                             .await;
@@ -2622,6 +2654,8 @@ mod tests {
             session_id: "ses_1".into(),
             request_id: "jsonrpc:7".into(),
             title: "bash: rm -rf".into(),
+            action: "bash".into(),
+            resource: "rm -rf /".into(),
         });
         assert!(
             matches!(

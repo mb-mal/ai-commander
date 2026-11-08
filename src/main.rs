@@ -43,6 +43,7 @@ struct Args {
     send: String,
     task: String,
     daemon: bool,
+    print_mcp: bool,
     wait_secs: u64,
     server: String,
     lang: String,
@@ -59,6 +60,7 @@ fn parse_args() -> Args {
             "--send" => args.send = it.next().unwrap_or_default(),
             "--task" => args.task = it.next().unwrap_or_default(),
             "--daemon" => args.daemon = true,
+            "--print-mcp-config" => args.print_mcp = true,
             "--wait" => args.wait_secs = it.next().and_then(|s| s.parse().ok()).unwrap_or(60),
             "--server" => args.server = it.next().unwrap_or_default(),
             "--lang" => args.lang = it.next().unwrap_or_default(),
@@ -105,6 +107,9 @@ async fn main() -> Result<()> {
     }
     if args.daemon {
         return run_daemon(cfg).await;
+    }
+    if args.print_mcp {
+        return print_mcp_config();
     }
     if !args.task.is_empty() {
         return run_task(cfg, &args.task, args.wait_secs.max(5), &args.harness).await;
@@ -154,6 +159,7 @@ async fn run_send(cfg: Config, text: &str, wait_secs: u64, harness_id: &str) -> 
         SendOpts {
             model: model.as_ref(),
             agent: agent.as_deref(),
+            mcp_role: None,
         },
     )
     .await?;
@@ -367,6 +373,7 @@ async fn run_task(cfg: Config, title: &str, wait_secs: u64, harness_id: &str) ->
         SendOpts {
             model: model.as_ref(),
             agent: agent.as_deref(),
+            mcp_role: None,
         },
     )
     .await?;
@@ -425,6 +432,29 @@ async fn run_task(cfg: Config, title: &str, wait_secs: u64, harness_id: &str) ->
         final_task.id, final_task.status
     );
     b.shutdown();
+    Ok(())
+}
+
+fn print_mcp_config() -> Result<()> {
+    let exe = std::env::current_exe()?;
+    let bin = exe
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("board-mcp.exe");
+    let bin_str = bin.to_string_lossy();
+    println!(
+        "# opencode.jsonc — add to your config so agent sessions get the board:
+\"mcp\": {{
+  \"board\": {{
+    \"type\": \"local\",
+    \"command\": [\"{bin_str}\"],
+    \"environment\": {{\"AI_COMMANDER_ROLE\": \"coder\"}}
+  }}
+}}
+
+# hermes / dsh: point their MCP config at the same binary with
+# AI_COMMANDER_ROLE=<role> in the environment."
+    );
     Ok(())
 }
 
@@ -512,6 +542,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                     SendOpts {
                         model: model.as_ref(),
                         agent: agent.as_deref(),
+                        mcp_role: None,
                     },
                 )
                 .await;

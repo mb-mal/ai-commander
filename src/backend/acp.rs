@@ -398,6 +398,8 @@ impl Backend for AcpBackend {
                                 session_id: sid,
                                 request_id: format!("jsonrpc:{jsonrpc_id}"),
                                 title,
+                                action: "session".into(),
+                                resource: String::new(),
                             });
                             permissions.lock().unwrap().push(PendingPermission {
                                 jsonrpc_id,
@@ -531,7 +533,7 @@ impl Backend for AcpBackend {
         native_id: &str,
         text: &str,
         attachments: &[AttachmentMeta],
-        _opts: SendOpts<'_>,
+        opts: SendOpts<'_>,
     ) -> Result<()> {
         for a in attachments {
             if a.size > MAX_ATTACHMENT_BYTES {
@@ -574,6 +576,7 @@ impl Backend for AcpBackend {
         let models = Arc::clone(&self.models);
         let sent_id = native_id.to_string();
         let user_text = text.to_string();
+        let mcp_role = opts.mcp_role.map(str::to_owned);
         let blocks_clone = blocks.clone();
         let cwd_clone = cwd.clone();
 
@@ -590,14 +593,24 @@ impl Backend for AcpBackend {
                 rx
             };
 
+            // board MCP server: same binaries dir, role token via env
+            let mcp_servers = |role: Option<&str>| -> Value {
+                match role.and_then(board_mcp_entry) {
+                    Some(entry) => json!({"board": entry}),
+                    None => json!({}),
+                }
+            };
             let real_id: String = if resume {
                 let _load = rpc(
                     "session/load",
-                    json!({"sessionId": sent_id, "cwd": cwd_clone, "mcpServers": []}),
+                    json!({"sessionId": sent_id, "cwd": cwd_clone, "mcpServers": mcp_servers(mcp_role.as_deref())}),
                 );
                 sent_id.clone()
             } else {
-                let rx = rpc("session/new", json!({"cwd": cwd_clone, "mcpServers": []}));
+                let rx = rpc(
+                    "session/new",
+                    json!({"cwd": cwd_clone, "mcpServers": mcp_servers(mcp_role.as_deref())}),
+                );
                 match rx.recv_timeout(Duration::from_secs(20)) {
                     Ok(v) => {
                         // capture the model list for Ctrl+K
@@ -823,4 +836,25 @@ impl Backend for AcpBackend {
     fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Relaxed)
     }
+}
+
+/// Path to the board-mcp sibling binary for ACP mcpServers injection.
+fn board_mcp_entry(role: &str) -> Option<Value> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let name = if cfg!(windows) {
+        "board-mcp.exe"
+    } else {
+        "board-mcp"
+    };
+    let bin = dir.join(name);
+    if !bin.exists() {
+        return None;
+    }
+    Some(json!({
+        "type": "stdio",
+        "command": bin.to_string_lossy(),
+        "args": [],
+        "env": {"AI_COMMANDER_ROLE": role}
+    }))
 }
