@@ -2,12 +2,19 @@
 name = "ai-commander"
 version = "0.1.0"
 edition = "2024"
-description = "ChatGPT-style TUI for AI agent harnesses (opencode, ...) with NC-era aesthetics"
+rust-version = "1.85"
+description = "ChatGPT-style TUI for AI agent harnesses (opencode, hermes, deepseek-harness) with Norton-Commander aesthetics"
+license = "MIT"
+repository = "https://github.com/mb-mal/ai-commander"
+homepage = "https://github.com/mb-mal/ai-commander"
+readme = "README.md"
+keywords = ["tui", "ai", "agent", "chat", "ratatui"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 ratatui = "0.29"
 crossterm = "0.28"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 # No TLS feature on purpose: harnesses run on localhost http, and TLS backends
 # (aws-lc-rs) need a C toolchain. Add `rustls` feature back if you need https.
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }

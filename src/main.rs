@@ -326,7 +326,7 @@ async fn run_tui(cfg: Config) -> Result<()> {
     let run_result = app.run(guard.terminal.as_mut().expect("terminal")).await;
 
     // kill harness servers on every path, then restore the terminal via Drop
-    for (_, b) in &app.backends {
+    for b in app.backends.values() {
         b.shutdown();
     }
     guard.release();

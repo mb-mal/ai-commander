@@ -601,13 +601,13 @@ impl App {
             }
             BackendEvent::PartDelta { harness, native_id, msg_id, part_id, kind, delta } => {
                 if self.follow {
-                    self.apply_part(harness, native_id, msg_id, part_id, kind, delta, true);
+                    self.apply_part((harness, native_id), msg_id, part_id, kind, delta, true);
                 }
             }
             BackendEvent::PartUpdated { harness, native_id, msg_id, part } => {
                 if self.follow {
                     let (kind, text) = (part.kind, part.text);
-                    self.apply_part(harness, native_id, msg_id, part.part_id, kind, text, false);
+                    self.apply_part((harness, native_id), msg_id, part.part_id, kind, text, false);
                 }
             }
             BackendEvent::PermissionRequest { harness, session_id, request_id, title } => {
@@ -727,8 +727,7 @@ impl App {
 
     fn apply_part(
         &mut self,
-        harness: String,
-        native_id: String,
+        (harness, native_id): (String, String),
         msg_id: String,
         part_id: String,
         kind: PartKind,
@@ -1085,8 +1084,8 @@ impl App {
                         files.push(entry);
                     }
                 }
-                dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-                files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                dirs.sort_by_key(|a| a.name.to_lowercase());
+                files.sort_by_key(|a| a.name.to_lowercase());
                 picker.entries = dirs;
                 picker.entries.extend(files);
             }

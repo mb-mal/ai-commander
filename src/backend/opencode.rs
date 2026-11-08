@@ -120,7 +120,7 @@ impl OpenCodeBackend {
         if !status.is_success() {
             bail!("GET {path} -> {status}: {}", truncate(&text, 300));
         }
-        Ok(serde_json::from_str(&text).with_context(|| format!("parse GET {path}: {}", truncate(&text, 300)))?)
+        serde_json::from_str(&text).with_context(|| format!("parse GET {path}: {}", truncate(&text, 300)))
     }
 
     async fn send_json(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value> {
@@ -161,7 +161,7 @@ impl OpenCodeBackend {
                     let derived = shim
                         .parent()
                         .map(|p| p.join("node_modules").join("@opencode").join("cli").join("bin").join("opencode.exe"));
-                    if let Some(exe) = derived.map(|p| if p.exists() { Some(p) } else { None }).flatten() {
+                    if let Some(exe) = derived.filter(|p| p.exists()) {
                         return Ok(exe);
                     }
                     let sibling = shim.with_file_name("opencode.exe");
@@ -314,21 +314,16 @@ impl OpenCodeBackend {
                 }
                 let mut stream = resp.bytes_stream().eventsource();
                 let mut got_any = false;
-                loop {
-                    match stream.next().await {
-                        Some(Ok(ev)) => {
-                            if !got_any {
-                                got_any = true;
-                                if backoff_secs > 1 {
-                                    // stream dropped and recovered — ask the UI to resync
-                                    let _ = events.send(BackendEvent::Reconnected { harness: harness.clone() });
-                                }
-                                backoff_secs = 1;
-                            }
-                            handle_sse_event(&events, &known, &harness, &ev.data);
+                while let Some(Ok(ev)) = stream.next().await {
+                    if !got_any {
+                        got_any = true;
+                        if backoff_secs > 1 {
+                            // stream dropped and recovered — ask the UI to resync
+                            let _ = events.send(BackendEvent::Reconnected { harness: harness.clone() });
                         }
-                        Some(Err(_)) | None => break,
+                        backoff_secs = 1;
                     }
+                    handle_sse_event(&events, &known, &harness, &ev.data);
                 }
                 tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
                 backoff_secs = (backoff_secs * 2).min(8);
@@ -434,7 +429,7 @@ impl Backend for OpenCodeBackend {
             .and_then(Value::as_array)
             .map(|a| a.iter().map(|s| self.map_session(s)).collect())
             .unwrap_or_default();
-        list.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms));
+        list.sort_by_key(|s| std::cmp::Reverse(s.updated_ms));
         {
             // union, not replace: a session created between the REST call and
             // this write must not lose its events

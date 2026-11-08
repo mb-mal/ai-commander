@@ -204,7 +204,7 @@ fn draw_sidebar(app: &mut App, f: &mut Frame, area: Rect) {
         }
         let empty: Vec<crate::backend::SessionInfo> = Vec::new();
         let list = app.sessions.get(&h.id).unwrap_or(&empty);
-        if list.is_empty() && app.backends.get(&h.id).is_none() {
+        if list.is_empty() && !app.backends.contains_key(&h.id) {
             continue;
         }
         let active_h = app.active_harness == h.id;
@@ -233,7 +233,7 @@ fn draw_sidebar(app: &mut App, f: &mut Frame, area: Rect) {
             let time_style = if selected { Style::new().fg(th.dim).bg(th.sel_bg) } else { th.dim_style() };
             let pad = (list_area.width as usize).saturating_sub(title.chars().count() + time.chars().count() + 5);
             lines.push(Line::from(vec![
-                Span::styled(format!("{marker}"), style),
+                Span::styled(marker.to_string(), style),
                 Span::styled(title, style),
                 Span::styled(" ".repeat(pad), style),
                 Span::styled(time, time_style),

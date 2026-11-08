@@ -157,7 +157,7 @@ impl Editor {
         let mut row_offset = 0usize;
         for (i, line) in self.lines.iter().enumerate() {
             let n = line.chars().count();
-            let wrapped = if n == 0 { 1 } else { (n + width - 1) / width };
+            let wrapped = if n == 0 { 1 } else { n.div_ceil(width) };
             if i == self.row {
                 let c = self.col.min(n);
                 let r = c / width;

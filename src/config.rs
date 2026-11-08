@@ -250,9 +250,11 @@ mod tests {
 
     #[test]
     fn config_roundtrip() {
-        let mut cfg = Config::default();
-        cfg.lang = Lang::Ru;
-        cfg.profile_name = "@tsingular".into();
+        let mut cfg = Config {
+            lang: Lang::Ru,
+            profile_name: "@tsingular".into(),
+            ..Config::default()
+        };
         cfg.harness_mut("oc").unwrap().default_model = Some(ModelRef {
             provider_id: "deepseek".into(),
             model_id: "deepseek-chat".into(),
@@ -265,6 +267,6 @@ mod tests {
             back.harness("oc").unwrap().default_model.as_ref().unwrap().display(),
             "deepseek/deepseek-chat"
         );
-        assert!(back.harness("hermes").unwrap().enabled == false);
+        assert!(!back.harness("hermes").unwrap().enabled);
     }
 }
