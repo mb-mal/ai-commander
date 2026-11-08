@@ -33,9 +33,15 @@ pub type ToolHandler = Arc<dyn Fn(&str, &Value, &str) -> Result<String, String> 
 /// publish the port. Runs until the process exits; call [`cleanup`] on a
 /// graceful shutdown.
 pub fn serve(handle: ToolHandler) -> std::io::Result<u16> {
+    serve_at(&port_file(), handle)
+}
+
+/// Path-explicit variant (tests use their own port file instead of the
+/// process-global env override, which races other tests).
+pub fn serve_at(path: &std::path::Path, handle: ToolHandler) -> std::io::Result<u16> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
-    std::fs::write(port_file(), port.to_string())?;
+    std::fs::write(path, port.to_string())?;
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let handle = handle.clone();
@@ -47,10 +53,11 @@ pub fn serve(handle: ToolHandler) -> std::io::Result<u16> {
 
 /// Convenience: serve directly from a shared BoardStore (TUI shape).
 pub fn serve_board(board: Arc<Mutex<BoardStore>>) -> std::io::Result<u16> {
-    serve(Arc::new(move |tool, args, role| {
+    let handle: ToolHandler = Arc::new(move |tool, args, role| {
         let mut b = board.lock().unwrap();
         super::board_tool_call(tool, args, role, &mut b)
-    }))
+    });
+    serve(handle)
 }
 
 fn serve_conn(stream: TcpStream, handle: ToolHandler) {
@@ -94,7 +101,17 @@ pub fn owner_alive() -> bool {
 
 /// One board tool call to the owner. `None` = no owner reachable.
 pub fn call_owner(tool: &str, args: &Value, role: &str) -> Option<Result<String, String>> {
-    let port: u16 = std::fs::read_to_string(port_file())
+    call_owner_at(&port_file(), tool, args, role)
+}
+
+/// Path-explicit variant for tests (see [`serve_at`]).
+pub fn call_owner_at(
+    port_file: &std::path::Path,
+    tool: &str,
+    args: &Value,
+    role: &str,
+) -> Option<Result<String, String>> {
+    let port: u16 = std::fs::read_to_string(port_file)
         .ok()?
         .trim()
         .parse()
@@ -125,39 +142,51 @@ mod tests {
     use super::*;
 
     /// Б1: a client call reaches the OWNER's store — one store, no
-    /// duplicates. Served and called in-process here; the cross-process
-    /// proof lives in tests/board_ipc.rs (board-mcp over MCP stdio).
+    /// duplicates. Served and called in-process here (own port file, no
+    /// env override — that races other tests in this binary); the
+    /// cross-process proof lives in tests/board_ipc.rs.
     #[test]
     fn tool_call_hits_the_owners_store() {
-        let board = Arc::new(Mutex::new(BoardStore::open_memory()));
-        let port_file = std::env::temp_dir().join(format!("aic-ipc-{}", std::process::id()));
-        let _ = std::fs::remove_file(&port_file);
-        // SAFETY: env override before any threads reference it in this test
-        unsafe { std::env::set_var("AI_COMMANDER_BOARD_PORT", &port_file) };
+        let store = Arc::new(Mutex::new(BoardStore::open_memory()));
+        let handle: ToolHandler = {
+            let store = store.clone();
+            Arc::new(move |tool, args, role| {
+                let mut b = store.lock().unwrap();
+                super::super::board_tool_call(tool, args, role, &mut b)
+            })
+        };
+        let pf = std::env::temp_dir().join(format!("aic-ipc-{}", std::process::id()));
+        let _ = std::fs::remove_file(&pf);
 
-        let port = serve_board(board.clone()).expect("serve");
+        let port = serve_at(&pf, handle).expect("serve");
         assert!(port > 0);
-        assert_eq!(
-            std::fs::read_to_string(&port_file).unwrap(),
-            port.to_string()
-        );
+        assert_eq!(std::fs::read_to_string(&pf).unwrap(), port.to_string());
 
-        let res = call_owner("board.create_task", &json!({"title": "via ipc"}), "coder")
-            .expect("owner reachable")
-            .expect("tool ok");
+        let res = call_owner_at(
+            &pf,
+            "board.create_task",
+            &json!({"title": "via ipc"}),
+            "coder",
+        )
+        .expect("owner reachable")
+        .expect("tool ok");
         assert!(res.contains("Backlog"), "created: {res}");
 
         // the task lives in the owner's store — no second store involved
-        let b = board.lock().unwrap();
         assert!(
-            b.projection().tasks.iter().any(|t| t.title == "via ipc"),
+            store
+                .lock()
+                .unwrap()
+                .projection()
+                .tasks
+                .iter()
+                .any(|t| t.title == "via ipc"),
             "task must be in the owner's store"
         );
 
         // ping-style unknown tool surfaces the error, not silence
-        assert!(call_owner("board.nope", &json!({}), "coder").is_some());
+        assert!(call_owner_at(&pf, "board.nope", &json!({}), "coder").is_some());
 
-        cleanup();
-        assert!(!port_file.exists(), "cleanup removes the port file");
+        let _ = std::fs::remove_file(&pf);
     }
 }
