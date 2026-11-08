@@ -171,7 +171,8 @@ async fn broken_see_stream_does_not_crash_backend() {
 }
 
 /// Recording mock: answers 200/204 to everything, records (request line, body).
-fn spawn_recorder() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>) {
+type ReqLog = std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>;
+fn spawn_recorder() -> (u16, ReqLog) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -217,7 +218,11 @@ fn spawn_recorder() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<(String, String
             } else {
                 "200 OK"
             };
-            let body_out = if status == "200 OK" { "{\"data\":[]}" } else { "" };
+            let body_out = if status == "200 OK" {
+                "{\"data\":[]}"
+            } else {
+                ""
+            };
             let _ = write!(
                 stream,
                 "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body_out}",
@@ -267,7 +272,9 @@ async fn send_with_cwd_moves_session_before_prompt() {
         "move must precede the prompt: {reqs:?}"
     );
     assert!(
-        reqs[move_at].1.contains("G:/Dev/repo/.aic-worktrees/t-0042"),
+        reqs[move_at]
+            .1
+            .contains("G:/Dev/repo/.aic-worktrees/t-0042"),
         "move body must carry the worktree: {}",
         reqs[move_at].1
     );

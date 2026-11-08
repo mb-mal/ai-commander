@@ -189,11 +189,8 @@ pub async fn abort_stuck(
             let sid = st.session_id.clone();
             handles.push(tokio::spawn(async move {
                 // bounded: a wedged abort must not stall the watchdog
-                let _ = tokio::time::timeout(
-                    std::time::Duration::from_secs(10),
-                    b.abort(&sid),
-                )
-                .await;
+                let _ =
+                    tokio::time::timeout(std::time::Duration::from_secs(10), b.abort(&sid)).await;
             }));
         }
     }
@@ -351,7 +348,8 @@ mod tests {
         }
         async fn abort(&self, _: &str) -> anyhow::Result<()> {
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-            self.aborted.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.aborted
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
         async fn list_models(&self) -> anyhow::Result<Vec<crate::backend::ModelInfo>> {
@@ -371,8 +369,9 @@ mod tests {
     #[tokio::test]
     async fn abort_stuck_waits_for_aborts_to_settle() {
         let aborted = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let b: Arc<dyn crate::backend::Backend> =
-            Arc::new(SlowAbortBackend { aborted: aborted.clone() });
+        let b: Arc<dyn crate::backend::Backend> = Arc::new(SlowAbortBackend {
+            aborted: aborted.clone(),
+        });
         let mut backends = std::collections::HashMap::new();
         backends.insert("slow".to_string(), b);
 
