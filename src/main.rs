@@ -611,11 +611,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                     ai_commander::log_warn!("daemon", "launch {}: {e:#}", task.id);
                     // Д5: a failed launch must still end the turn — empty
                     // reply → Failed → Н1 retry cap/backoff applies
-                    let _ = ai_commander::kanban::runner::on_stream_done(
-                        &mut board,
-                        &task.id,
-                        "",
-                    );
+                    let _ = ai_commander::kanban::runner::on_stream_done(&mut board, &task.id, "");
                     busy.remove(&task.id);
                 }
             }
