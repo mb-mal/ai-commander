@@ -693,15 +693,10 @@ impl App {
                         b.watchdog_scan(now)
                     };
                     if !stuck.is_empty() {
-                        // abort each stuck session via its backend
-                        for st in &stuck {
-                            if let Some(b) = self.backends.get(&st.harness).cloned() {
-                                let sid = st.session_id.clone();
-                                tokio::spawn(async move {
-                                    let _ = b.abort(&sid).await;
-                                });
-                            }
-                        }
+                        // Д2: abort each stuck session and WAIT (no
+                        // fire-and-forget) — the board must not re-launch
+                        // while the old agent process is still alive
+                        kanban::runner::abort_stuck(&self.backends, &stuck).await;
                         // then apply the transitions
                         let acted = {
                             let mut b = self.board.lock().unwrap();
