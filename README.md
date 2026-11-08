@@ -119,7 +119,7 @@ agent (build/plan/…), default model. Everything persists in `config.toml`.
 ## Tests
 
 ```bash
-cargo test   # 20: SSE/NDJSON mapping, markdown, i18n, config round-trip, wrap, editor, mime, atomic store
+cargo test   # 25: event mapping (SSE/NDJSON/ACP), App regression tests (busy rebind, rollback, permissions), markdown, i18n, config, wrap, grapheme editor, mime, atomic store
 ```
 
 ## Limitations & roadmap

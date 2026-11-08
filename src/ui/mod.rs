@@ -60,6 +60,9 @@ pub struct CurrentChat {
     pub harness: String,
     /// "" = draft (not created server-side yet)
     pub native_id: String,
+    /// id before a pending->real rebind: StreamDone with the old id must
+    /// still finish this chat's turn
+    pub prev_native_id: Option<String>,
     pub title: String,
     pub msgs: Vec<ChatMsg>,
     pub loading: bool,
@@ -71,6 +74,7 @@ impl CurrentChat {
         CurrentChat {
             harness: harness.into(),
             native_id: String::new(),
+            prev_native_id: None,
             title: String::new(),
             msgs: Vec::new(),
             loading: false,
@@ -226,6 +230,11 @@ pub struct App {
     pub quit: bool,
     /// clickable zones, refreshed on every draw
     pub hit: HitAreas,
+    /// render cache: (msg_id, part_id) -> (width, text_len, rendered lines)
+    pub render_cache: std::collections::HashMap<
+        (String, String),
+        (usize, usize, Vec<ratatui::text::Line<'static>>),
+    >,
 
     pub events_tx: tokio::sync::mpsc::UnboundedSender<BackendEvent>,
     events_rx: tokio::sync::mpsc::UnboundedReceiver<BackendEvent>,
@@ -264,6 +273,7 @@ impl App {
             toast: None,
             quit: false,
             hit: HitAreas::default(),
+            render_cache: std::collections::HashMap::new(),
             events_tx,
             events_rx,
             input_rx,
@@ -436,6 +446,7 @@ impl App {
         self.cur = CurrentChat {
             harness: harness.into(),
             native_id: native_id.into(),
+            prev_native_id: None,
             title,
             msgs: Vec::new(),
             loading: true,
@@ -611,6 +622,13 @@ impl App {
                     if let Some(ev) = ev {
                         self.on_backend_event(ev);
                     }
+                    // coalesce a burst of stream events into one frame
+                    for _ in 0..64 {
+                        match self.events_rx.try_recv() {
+                            Ok(ev) => self.on_backend_event(ev),
+                            Err(_) => break,
+                        }
+                    }
                 }
                 ev = self.input_rx.recv() => {
                     if let Some(ev) = ev {
@@ -635,7 +653,7 @@ impl App {
         Ok(())
     }
 
-    fn on_backend_event(&mut self, ev: BackendEvent) {
+    pub(crate) fn on_backend_event(&mut self, ev: BackendEvent) {
         match ev {
             BackendEvent::Connected { harness, version } => {
                 self.connecting.remove(&harness);
@@ -665,6 +683,7 @@ impl App {
             } => {
                 let old = if self.cur.harness == harness {
                     if self.cur.native_id.is_empty() || self.cur.native_id.starts_with("pending-") {
+                        self.cur.prev_native_id = Some(self.cur.native_id.clone());
                         Some(std::mem::replace(
                             &mut self.cur.native_id,
                             native_id.clone(),
@@ -780,6 +799,15 @@ impl App {
             BackendEvent::StreamDone { harness, native_id } => {
                 // busy is per (harness, session) — clear regardless of the open chat
                 self.busy.remove(&(harness.clone(), native_id.clone()));
+                // the turn finished under the pre-rebind (pending) id: finish
+                // the rebound current chat as well
+                if self.cur.harness == harness
+                    && self.cur.prev_native_id.as_deref() == Some(native_id.as_str())
+                {
+                    self.busy
+                        .remove(&(harness.clone(), self.cur.native_id.clone()));
+                    self.cur.prev_native_id = None;
+                }
                 if self.cur.harness == harness && self.cur.native_id == native_id {
                     self.last_sent = None;
                     if !self.follow {
@@ -2050,5 +2078,246 @@ impl App {
             kind: SettingsKind::DefaultModel,
         });
         rows
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::{
+        AgentInfo, AttachmentMeta, Backend, BackendEvent, ChatMsg, ModelInfo, PartKind, RenderPart,
+        SendOpts, SessionInfo,
+    };
+    use async_trait::async_trait;
+    use std::sync::Mutex as StdMutex;
+
+    /// Scenario-driven fake harness backend: no IO, just the event contract.
+    struct ScriptedBackend {
+        harness: String,
+        last_permission: StdMutex<Option<(String, String)>>, // (session, request id)
+    }
+
+    #[async_trait]
+    impl Backend for ScriptedBackend {
+        fn harness_id(&self) -> &str {
+            &self.harness
+        }
+        async fn connect(&self) -> anyhow::Result<String> {
+            Ok("scripted".into())
+        }
+        async fn refresh_sessions(&self) -> anyhow::Result<Vec<SessionInfo>> {
+            Ok(Vec::new())
+        }
+        async fn create_session(&self, _title: &str) -> anyhow::Result<SessionInfo> {
+            Ok(SessionInfo {
+                native_id: "pending-1".into(),
+                title: "t".into(),
+                updated_ms: 0,
+            })
+        }
+        async fn rename_session(&self, _id: &str, _t: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn delete_session(&self, _id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn load_history(&self, _id: &str) -> anyhow::Result<Vec<ChatMsg>> {
+            Ok(Vec::new())
+        }
+        async fn send(
+            &self,
+            _id: &str,
+            _text: &str,
+            _attachments: &[AttachmentMeta],
+            _opts: SendOpts<'_>,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn abort(&self, _id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn permission_reply(&self, sid: &str, rid: &str, _reply: &str) -> anyhow::Result<()> {
+            *self.last_permission.lock().unwrap() = Some((sid.into(), rid.into()));
+            Ok(())
+        }
+        async fn list_models(&self) -> anyhow::Result<Vec<ModelInfo>> {
+            Ok(Vec::new())
+        }
+        async fn list_agents(&self) -> anyhow::Result<Vec<AgentInfo>> {
+            Ok(Vec::new())
+        }
+        fn shutdown(&self) {}
+        fn is_connected(&self) -> bool {
+            true
+        }
+    }
+
+    fn app_with(kind: &str) -> App {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let cfg = crate::config::Config {
+            lang: crate::i18n::Lang::En,
+            profile_name: "tester".into(),
+            harnesses: vec![crate::config::HarnessCfg {
+                id: kind.into(),
+                name: "Scripted".into(),
+                // unsupported kind on purpose: App::new must not connect or
+                // spawn any real harness process from unit tests
+                kind: "stub".into(),
+                enabled: true,
+                server_url: String::new(),
+                server_password: String::new(),
+                workdir: String::new(),
+                agent: String::new(),
+                auto_approve: false,
+                default_model: None,
+            }],
+        };
+        App::new(cfg, rx)
+    }
+
+    // Regression 1 (the review's wedge): a pending id is rebound to the real
+    // one; StreamDone must still clear the busy state.
+    #[tokio::test]
+    async fn busy_clears_after_pending_rebind() {
+        let mut app = app_with("hermes");
+        app.backends.insert(
+            "hermes".into(),
+            std::sync::Arc::new(ScriptedBackend {
+                harness: "hermes".into(),
+                last_permission: StdMutex::new(None),
+            }),
+        );
+        app.cur.harness = "hermes".into();
+        app.cur.native_id = "pending-1".into();
+        app.busy.insert(("hermes".into(), "pending-1".into()));
+
+        app.on_backend_event(BackendEvent::PartDelta {
+            harness: "hermes".into(),
+            native_id: "pending-1".into(),
+            msg_id: "hm".into(),
+            part_id: "t0".into(),
+            kind: PartKind::Text,
+            delta: "hi".into(),
+        });
+        assert!(app.busy_now(), "busy while streaming");
+
+        app.on_backend_event(BackendEvent::SessionCreated {
+            harness: "hermes".into(),
+            native_id: "local-real".into(),
+            title: "t".into(),
+        });
+        assert_eq!(app.cur.native_id, "local-real", "cur rebound to real id");
+        assert!(app.busy_now(), "busy follows the rebound id");
+
+        app.on_backend_event(BackendEvent::StreamDone {
+            harness: "hermes".into(),
+            native_id: "pending-1".into(), // backend sends the id the UI tracked
+        });
+        assert!(!app.busy_now(), "busy cleared — the old wedge is gone");
+    }
+
+    // Regression 2: send error rolls the optimistic message back into the editor.
+    #[tokio::test]
+    async fn send_error_rolls_back_optimistic_message() {
+        let mut app = app_with("hermes");
+        app.backends.insert(
+            "hermes".into(),
+            std::sync::Arc::new(ScriptedBackend {
+                harness: "hermes".into(),
+                last_permission: StdMutex::new(None),
+            }),
+        );
+        app.cur.harness = "hermes".into();
+        app.cur.native_id = "pending-1".into();
+        app.editor.set_text("");
+        app.last_sent = Some("hello?".into());
+        app.cur.msgs.push(ChatMsg {
+            msg_id: "local_0".into(),
+            role: crate::backend::Role::User,
+            parts: vec![RenderPart {
+                part_id: "t0".into(),
+                kind: PartKind::Text,
+                text: "hello?".into(),
+            }],
+            attachments: Vec::new(),
+        });
+
+        app.on_backend_event(BackendEvent::Error {
+            harness: "hermes".into(),
+            error: "send failed".into(),
+        });
+        assert!(app.cur.msgs.is_empty(), "optimistic message removed");
+        assert_eq!(app.editor.text(), "hello?", "text restored to the composer");
+    }
+
+    // Regression 3: permission requests open the modal and the answer reaches
+    // the backend.
+    #[tokio::test]
+    async fn permission_request_opens_modal_and_replies() {
+        let mut app = app_with("opencode");
+        let backend = std::sync::Arc::new(ScriptedBackend {
+            harness: "opencode".into(),
+            last_permission: StdMutex::new(None),
+        });
+        app.backends.insert("opencode".into(), backend.clone());
+        app.cur.harness = "opencode".into();
+        app.cur.native_id = "ses_1".into();
+
+        app.on_backend_event(BackendEvent::PermissionRequest {
+            harness: "opencode".into(),
+            session_id: "ses_1".into(),
+            request_id: "jsonrpc:7".into(),
+            title: "bash: rm -rf".into(),
+        });
+        assert!(
+            matches!(
+                &app.modal,
+                Some(Modal::List {
+                    action: ListAction::PermissionReply { .. },
+                    ..
+                })
+            ),
+            "permission modal opened"
+        );
+        let Some(Modal::List {
+            items, sel, action, ..
+        }) = app.modal.clone()
+        else {
+            unreachable!()
+        };
+        assert_eq!(items.len(), 3, "once / always / reject");
+
+        let id = items.get(sel).map(|(i, _)| i.clone()).unwrap_or_default();
+        app.apply_list(id, action);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(
+            backend.last_permission.lock().unwrap().clone(),
+            Some(("ses_1".into(), "jsonrpc:7".into())),
+            "reply reached the backend"
+        );
+    }
+
+    // Regression 4: events of a foreign session must not clear another chat's
+    // busy state (and must not render into it).
+    #[tokio::test]
+    async fn foreign_stream_done_does_not_touch_current_chat() {
+        let mut app = app_with("hermes");
+        app.backends.insert(
+            "hermes".into(),
+            std::sync::Arc::new(ScriptedBackend {
+                harness: "hermes".into(),
+                last_permission: StdMutex::new(None),
+            }),
+        );
+        app.cur.harness = "hermes".into();
+        app.cur.native_id = "local-A".into();
+        app.busy.insert(("hermes".into(), "local-A".into()));
+
+        app.on_backend_event(BackendEvent::StreamDone {
+            harness: "hermes".into(),
+            native_id: "local-B".into(),
+        });
+        assert!(app.busy_now(), "chat A is still busy after B finished");
+        assert!(app.cur.msgs.is_empty(), "B's events do not render into A");
     }
 }

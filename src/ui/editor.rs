@@ -1,5 +1,6 @@
 //! Minimal multi-line text editor for the composer (no external widget deps,
-//! full control over Enter/Alt+Enter behaviour and unicode).
+//! full control over Enter/Alt+Enter behaviour and unicode). Cursor movement
+//! and deletion are grapheme-aware (emoji, CJK combining sequences).
 
 #[derive(Debug, Clone, Default)]
 pub struct Editor {
@@ -87,12 +88,35 @@ impl Editor {
         self.col = 0;
     }
 
+    /// Char index of the start of the grapheme that *contains or ends at*
+    /// `char_idx` — i.e. deleting backwards from `char_idx` removes exactly
+    /// that grapheme (works for emoji, CJK and combining marks).
+    fn floor_grapheme(&self, line: &str, char_idx: usize) -> usize {
+        use unicode_segmentation::UnicodeSegmentation;
+        let mut start = 0usize;
+        for g in line.graphemes(true) {
+            let len = g.chars().count();
+            if char_idx < start + len {
+                return start;
+            }
+            start += len;
+        }
+        start
+    }
+
     pub fn backspace(&mut self) {
         if self.col > 0 {
-            let mut chars = self.line_chars();
-            chars.remove(self.col - 1);
-            self.set_line_from_chars(chars);
-            self.col -= 1;
+            let line = self.lines[self.row].clone();
+            let target = self.floor_grapheme(&line, self.col - 1);
+            let removed = target..self.col;
+            let kept: String = line
+                .chars()
+                .enumerate()
+                .filter(|(i, _)| !removed.contains(i))
+                .map(|(_, c)| c)
+                .collect();
+            self.lines[self.row] = kept;
+            self.col = target;
         } else if self.row > 0 {
             let line = self.lines.remove(self.row);
             self.row -= 1;
@@ -197,6 +221,17 @@ mod tests {
         ed.backspace(); // join empty line into "ab"
         assert_eq!(ed.text(), "ab");
         assert_eq!((ed.row, ed.col), (0, 2));
+    }
+
+    #[test]
+    fn backspace_removes_whole_grapheme() {
+        let mut ed = Editor::with_text("привет👍!");
+        ed.end();
+        // "👍" is one grapheme of two chars: one backspace removes both
+        ed.backspace(); // removes '!'
+        ed.backspace(); // removes the whole emoji
+        assert_eq!(ed.text(), "привет");
+        assert_eq!(ed.col, 6);
     }
 
     #[test]

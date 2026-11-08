@@ -428,7 +428,7 @@ fn attach_label(atts: &[AttachmentMeta]) -> String {
     names.join(", ")
 }
 
-pub fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+pub fn build_chat_lines(app: &mut App, width: usize) -> Vec<Line<'static>> {
     let th = &THEME;
     let lang = app.lang();
     let mut out: Vec<Line<'static>> = Vec::new();
@@ -470,12 +470,24 @@ pub fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 }
                 out.push(Line::from(header));
                 for part in &msg.parts {
-                    for l in wrap_str(&part.text, width.saturating_sub(2).max(1)) {
-                        out.push(Line::from(Span::styled(
-                            format!(" {l}"),
-                            Style::new().fg(th.fg).bg(th.bg),
-                        )));
+                    let key = (msg.msg_id.clone(), part.part_id.clone());
+                    let entry = app.render_cache.entry(key).or_insert((0, 0, Vec::new()));
+                    if entry.0 != width || entry.1 != part.text.len() {
+                        *entry = (
+                            width,
+                            part.text.len(),
+                            wrap_str(&part.text, width.saturating_sub(2).max(1))
+                                .into_iter()
+                                .map(|l| {
+                                    Line::from(Span::styled(
+                                        format!(" {l}"),
+                                        Style::new().fg(th.fg).bg(th.bg),
+                                    ))
+                                })
+                                .collect(),
+                        );
                     }
+                    out.extend(entry.2.iter().cloned());
                 }
             }
             Role::Assistant => {
@@ -488,23 +500,31 @@ pub fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                     match part.kind {
                         PartKind::Text => {
                             any = true;
-                            let md = super::markdown::render_markdown(&part.text, th);
-                            for line in md {
-                                for wrapped in
-                                    wrap_spans(line.spans.clone(), width.saturating_sub(2).max(1))
-                                {
-                                    out.push(Line::from(
-                                        wrapped
-                                            .spans
-                                            .into_iter()
-                                            .map(|mut s| {
-                                                s.style = s.style.bg(th.bg);
-                                                Span::styled(format!(" {}", s.content), s.style)
-                                            })
-                                            .collect::<Vec<_>>(),
-                                    ));
+                            let key = (msg.msg_id.clone(), part.part_id.clone());
+                            let entry = app.render_cache.entry(key).or_insert((0, 0, Vec::new()));
+                            if entry.0 != width || entry.1 != part.text.len() {
+                                let md = super::markdown::render_markdown(&part.text, th);
+                                let mut lines = Vec::new();
+                                for line in md {
+                                    for wrapped in wrap_spans(
+                                        line.spans.clone(),
+                                        width.saturating_sub(2).max(1),
+                                    ) {
+                                        lines.push(Line::from(
+                                            wrapped
+                                                .spans
+                                                .into_iter()
+                                                .map(|mut s| {
+                                                    s.style = s.style.bg(th.bg);
+                                                    Span::styled(format!(" {}", s.content), s.style)
+                                                })
+                                                .collect::<Vec<_>>(),
+                                        ));
+                                    }
                                 }
+                                *entry = (width, part.text.len(), lines);
                             }
+                            out.extend(entry.2.iter().cloned());
                         }
                         PartKind::Reasoning => {
                             any = true;
