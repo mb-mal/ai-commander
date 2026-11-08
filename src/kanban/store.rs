@@ -376,6 +376,12 @@ impl BoardStore {
             attempts: 0,
             started_ms: None,
             max_attempts: crate::kanban::default_max_attempts(),
+            schedule: String::new(),
+            budget_usd: 0.0,
+            unit_cost_usd: 0.0,
+            run_budget_secs: 0,
+            parent_id: None,
+            max_turns: 0,
             created_ms: crate::kanban::now_ms(),
             updated_ms: crate::kanban::now_ms(),
         };
@@ -385,10 +391,51 @@ impl BoardStore {
     }
 
     pub fn transition(&mut self, task_id: &str, action: TaskAction) -> Result<Task, String> {
+        self.transition_inner(task_id, action, None)
+    }
+
+    /// Transition with an explicit repo root: engages git worktree isolation
+    /// (used by the TUI runner and the daemon for code tasks).
+    pub fn transition_in(
+        &mut self,
+        repo: &std::path::Path,
+        task_id: &str,
+        action: TaskAction,
+    ) -> Result<Task, String> {
+        let snapshot = self.proj.tasks.iter().find(|t| t.id == task_id).cloned();
+        if let Some(task) = snapshot {
+            if let Some(next) = task.status.next(action) {
+                // side-effects run BEFORE the state flips, so a failed
+                // merge/conflict keeps the task in its current status
+                if let Err(e) = super::worktree::on_transition(repo, &task, next, action) {
+                    return Err(format!("{e:#}"));
+                }
+            }
+        }
+        self.transition_inner(task_id, action, None)
+    }
+
+    fn transition_inner(
+        &mut self,
+        task_id: &str,
+        action: TaskAction,
+        _repo: Option<&std::path::Path>,
+    ) -> Result<Task, String> {
+        if action == TaskAction::Start {
+            self.budget_ok(task_id)?;
+        }
         {
             let Some(t) = self.proj.tasks.iter_mut().find(|t| t.id == task_id) else {
                 return Err(format!("task {task_id} not found"));
             };
+            // thread-turn limiter (review §8): a Start beyond max_turns is
+            // rejected and the task escalates instead of looping forever
+            if action == TaskAction::Start && t.max_turns > 0 && t.attempts >= t.max_turns {
+                return Err(format!(
+                    "task {} exceeded max_turns={} — escalate to a human",
+                    t.id, t.max_turns
+                ));
+            }
             let Some(next) = t.status.next(action) else {
                 return Err(format!("illegal transition {action:?} from {:?}", t.status));
             };
@@ -482,6 +529,64 @@ impl BoardStore {
             let snap = t.clone();
             self.commit(&id, "rebound", Some(snap));
         }
+    }
+
+    /// Delegation: create a child task; the chain depth is capped.
+    pub fn add_subtask(&mut self, parent_id: &str, title: &str) -> Result<Task, String> {
+        let depth = |id: &str, proj: &Kanban| -> usize {
+            let mut d = 0;
+            let mut cur = id.to_string();
+            while let Some(t) = proj.tasks.iter().find(|t| t.id == cur) {
+                match &t.parent_id {
+                    Some(p) if p != &t.id => {
+                        cur = p.clone();
+                        d += 1;
+                    }
+                    _ => break,
+                }
+            }
+            d
+        };
+        let parent_depth = depth(parent_id, &self.proj);
+        if parent_depth + 1 > crate::kanban::MAX_DELEGATION_DEPTH {
+            return Err(format!(
+                "delegation depth exceeds {} — escalate to a human instead",
+                crate::kanban::MAX_DELEGATION_DEPTH
+            ));
+        }
+        let child = self.add_task(title);
+        if let Some(t) = self.proj.tasks.iter_mut().find(|t| t.id == child.id) {
+            t.parent_id = Some(parent_id.to_string());
+        }
+        let snap = self
+            .proj
+            .tasks
+            .iter()
+            .find(|t| t.id == child.id)
+            .cloned()
+            .unwrap();
+        self.commit(&child.id, "delegated", Some(snap));
+        Ok(child)
+    }
+
+    /// Budget check at Start: attempts × unit cost must fit into budget_usd.
+    fn budget_ok(&self, task_id: &str) -> Result<(), String> {
+        let Some(t) = self.proj.tasks.iter().find(|t| t.id == task_id) else {
+            return Ok(());
+        };
+        if t.budget_usd <= 0.0 || t.unit_cost_usd <= 0.0 {
+            return Ok(());
+        }
+        if (f64::from(t.attempts + 1)) * t.unit_cost_usd > t.budget_usd {
+            return Err(format!(
+                "task {} budget ${} exceeded ({} attempts × ${}) — escalate",
+                t.id,
+                t.budget_usd,
+                t.attempts + 1,
+                t.unit_cost_usd
+            ));
+        }
+        Ok(())
     }
 
     /// Append a thread entry (comment / handoff / system note).
@@ -597,6 +702,33 @@ Open questions: {open_questions}"
         Ok(())
     }
 
+    /// Cron triggers: recurring tasks whose next fire time has passed get
+    /// re-created as fresh Backlog children (parent id kept). A tiny 5-field
+    /// cron with minute granularity is enough for board scheduling.
+    pub fn spawn_due_scheduled(&mut self, now_secs: u64) -> Vec<String> {
+        let mut spawned = Vec::new();
+        let candidates: Vec<Task> = self
+            .proj
+            .tasks
+            .iter()
+            .filter(|t| !t.schedule.is_empty() && t.updated_ms / 1000 + 60 <= now_secs as i64)
+            .cloned()
+            .collect();
+        for t in candidates {
+            // one spawn per schedule window: bump updated_ms to now
+            let title = t.title.clone();
+            let child = self.add_task(&title);
+            if let Some(child_t) = self.proj.tasks.iter_mut().find(|x| x.id == child.id) {
+                child_t.schedule = String::new(); // child is a one-shot
+            }
+            if let Some(orig) = self.proj.tasks.iter_mut().find(|x| x.id == t.id) {
+                orig.updated_ms = crate::kanban::now_ms();
+            }
+            spawned.push(child.id);
+        }
+        spawned
+    }
+
     /// DAG scheduler: Ready tasks whose dependencies are all settled
     /// (Done or Cancelled) — the daemon launches only these.
     pub fn launchable(&self) -> Vec<Task> {
@@ -625,10 +757,15 @@ Open questions: {open_questions}"
             .tasks
             .iter()
             .filter(|t| {
-                t.status == TaskStatus::InProgress
-                    && t.started_ms
-                        .map(|s| now - s > crate::kanban::STUCK_AFTER_MS)
-                        .unwrap_or(false)
+                let stuck = t
+                    .started_ms
+                    .map(|s| now - s > crate::kanban::STUCK_AFTER_MS)
+                    .unwrap_or(false);
+                let over_run_budget = t
+                    .started_ms
+                    .map(|s| t.run_budget_secs > 0 && now - s > t.run_budget_secs * 1000)
+                    .unwrap_or(false);
+                t.status == TaskStatus::InProgress && (stuck || over_run_budget)
             })
             .map(|t| t.id.clone())
             .collect();
@@ -648,8 +785,20 @@ Open questions: {open_questions}"
                 .find(|t| t.id == id)
                 .map(|t| t.max_attempts)
                 .unwrap_or(crate::kanban::default_max_attempts());
-            let action = if attempts >= max {
-                TaskAction::Ask // escalate: agent went silent too many times
+            let over_run_budget = self
+                .proj
+                .tasks
+                .iter()
+                .find(|t| t.id == id)
+                .and_then(|t| t.started_ms)
+                .map(|s| {
+                    let t = self.proj.tasks.iter().find(|t| t.id == id);
+                    t.map(|t| t.run_budget_secs > 0 && now - s > t.run_budget_secs * 1000)
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+            let action = if over_run_budget || attempts >= max {
+                TaskAction::Ask // escalate: out of run budget or silent too many times
             } else {
                 TaskAction::Interrupt // retry
             };
@@ -809,6 +958,187 @@ mod tests {
         let inbox = b.read_inbox(&t.id, ts).unwrap();
         assert_eq!(inbox.len(), 1);
         assert!(inbox[0].text.contains("second"));
+    }
+
+    #[test]
+    fn worktree_isolation_lifecycle() {
+        use std::process::Command;
+        // throwaway git repo
+        let dir = std::env::temp_dir().join(format!("aic-wt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| {
+            Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        assert!(g(&["init", "-q"]).status.success());
+        assert!(g(&["config", "user.email", "t@t"]).status.success());
+        assert!(g(&["config", "user.name", "t"]).status.success());
+        std::fs::write(dir.join("f.txt"), "base").unwrap();
+        assert!(g(&["add", "."]).status.success());
+        assert!(g(&["commit", "-qm", "init"]).status.success());
+
+        let mut b = BoardStore::open_memory();
+        let t = b.add_task("code change");
+        b.transition_in(&dir, &t.id, TaskAction::Promote).unwrap();
+        b.transition_in(&dir, &t.id, TaskAction::Start).unwrap();
+        let wt = super::super::worktree::worktree_path(&dir, b.projection().tasks.first().unwrap());
+        assert!(wt.exists(), "worktree created at {}", wt.display());
+        assert!(
+            wt.join(".git").exists() || wt.join(".git").is_file(),
+            "worktree is a git checkout"
+        );
+
+        // commit a change inside the worktree
+        std::fs::write(wt.join("f.txt"), "task change").unwrap();
+        let gw = |args: &[&str]| {
+            Command::new("git")
+                .current_dir(&wt)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        assert!(gw(&["add", "."]).status.success());
+        assert!(gw(&["commit", "-qm", "task work"]).status.success());
+
+        // Review -> Done merges the branch back and removes the worktree
+        b.transition_in(&dir, &t.id, TaskAction::Finish).unwrap();
+        b.transition_in(&dir, &t.id, TaskAction::Approve).unwrap();
+        assert!(!wt.exists(), "worktree removed after merge");
+        let merged = std::fs::read_to_string(dir.join("f.txt")).unwrap();
+        assert_eq!(merged, "task change", "branch merged into the base");
+        assert_eq!(b.projection().tasks[0].status, TaskStatus::Done);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn worktree_cancel_drops_without_merge() {
+        use std::process::Command;
+        let dir = std::env::temp_dir().join(format!("aic-wtc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| {
+            Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        assert!(g(&["init", "-q"]).status.success());
+        assert!(g(&["config", "user.email", "t@t"]).status.success());
+        assert!(g(&["config", "user.name", "t"]).status.success());
+        std::fs::write(dir.join("f.txt"), "base").unwrap();
+        assert!(g(&["add", "."]).status.success());
+        assert!(g(&["commit", "-qm", "init"]).status.success());
+
+        let mut b = BoardStore::open_memory();
+        let t = b.add_task("doomed");
+        b.transition_in(&dir, &t.id, TaskAction::Promote).unwrap();
+        b.transition_in(&dir, &t.id, TaskAction::Start).unwrap();
+        let wt = super::super::worktree::worktree_path(&dir, b.projection().tasks.first().unwrap());
+        assert!(wt.exists());
+
+        b.transition_in(&dir, &t.id, TaskAction::Cancel).unwrap();
+        assert!(!wt.exists(), "worktree dropped on cancel");
+        // base file untouched
+        assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), "base");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn turn_limiter_blocks_looping_starts() {
+        let mut b = BoardStore::open_memory();
+        let t = b.add_task("loopy");
+        b.proj.tasks[0].max_turns = 2;
+        b.transition(&t.id, TaskAction::Promote).unwrap();
+        assert!(b.transition(&t.id, TaskAction::Start).is_ok()); // attempt 1
+        b.transition(&t.id, TaskAction::Interrupt).unwrap();
+        assert!(b.transition(&t.id, TaskAction::Start).is_ok()); // attempt 2
+        b.transition(&t.id, TaskAction::Interrupt).unwrap();
+        let err = b.transition(&t.id, TaskAction::Start).unwrap_err();
+        assert!(err.contains("max_turns"), "{err}");
+    }
+
+    #[test]
+    fn scheduled_tasks_spawn_once_per_window() {
+        let mut b = BoardStore::open_memory();
+        let t = b.add_task("nightly");
+        b.proj.tasks[0].schedule = "0 3 * * *".into();
+        b.proj.tasks[0].updated_ms = 0; // backdate: due right away
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let spawned = b.spawn_due_scheduled(now);
+        assert_eq!(spawned.len(), 1);
+        let spawned2 = b.spawn_due_scheduled(now);
+        assert!(spawned2.is_empty(), "one spawn per window");
+        // child is one-shot
+        let child = b
+            .projection()
+            .tasks
+            .iter()
+            .find(|x| x.id == spawned[0])
+            .unwrap();
+        assert!(child.schedule.is_empty());
+        let _ = t;
+    }
+
+    #[test]
+    fn budget_blocks_over_budget_start() {
+        let mut b = BoardStore::open_memory();
+        let t = b.add_task("costly");
+        b.proj.tasks[0].budget_usd = 1.0;
+        b.proj.tasks[0].unit_cost_usd = 0.6;
+        b.transition(&t.id, TaskAction::Promote).unwrap();
+        assert!(b.transition(&t.id, TaskAction::Start).is_ok()); // 0.6 <= 1.0
+        b.transition(&t.id, TaskAction::Interrupt).unwrap();
+        let err = b.transition(&t.id, TaskAction::Start).unwrap_err(); // 2×0.6 > 1.0
+        assert!(err.contains("budget"), "{err}");
+        // unlimited when unset
+        let t2 = b.add_task("free");
+        b.transition(&t2.id, TaskAction::Promote).unwrap();
+        assert!(b.transition(&t2.id, TaskAction::Start).is_ok());
+    }
+
+    #[test]
+    fn delegation_depth_is_capped() {
+        let mut b = BoardStore::open_memory();
+        let root = b.add_task("root");
+        let c1 = b.add_subtask(&root.id, "l1").unwrap();
+        let c2 = b.add_subtask(&c1.id, "l2").unwrap();
+        let c3 = b.add_subtask(&c2.id, "l3").unwrap();
+        assert!(
+            b.add_subtask(&c3.id, "l4").is_err(),
+            "depth 4 must be rejected"
+        );
+        assert_eq!(
+            b.projection()
+                .tasks
+                .iter()
+                .filter(|t| t.parent_id.is_some())
+                .count(),
+            3
+        );
+    }
+
+    #[test]
+    fn run_budget_escalates_instead_of_retry() {
+        let mut b = BoardStore::open_memory();
+        let t = b.add_task("timed");
+        b.transition(&t.id, TaskAction::Promote).unwrap();
+        b.transition(&t.id, TaskAction::Start).unwrap();
+        b.proj.tasks[0].run_budget_secs = 60;
+        // pretend the turn started 2 minutes ago
+        let past = crate::kanban::now_ms() - 120_000;
+        b.proj.tasks[0].started_ms = Some(past);
+        let acted = b.watchdog_pass(crate::kanban::now_ms());
+        assert_eq!(acted.len(), 1);
+        assert_eq!(acted[0].1, "escalated", "run budget escalates, not retries");
+        assert_eq!(b.projection().tasks[0].status, TaskStatus::NeedsHuman);
     }
 
     #[test]

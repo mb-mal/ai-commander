@@ -1727,9 +1727,12 @@ impl App {
             return;
         };
         {
+            let cwd = std::env::current_dir().unwrap_or_default();
             let started = {
                 let mut board = self.board.lock().unwrap();
-                board.transition(&task.id, kanban::TaskAction::Start).ok()
+                board
+                    .transition_in(&cwd, &task.id, kanban::TaskAction::Start)
+                    .ok()
             };
             if let Some(t) = started {
                 self.toast(format!("{} ▶ running on {harness}", t.id), false);

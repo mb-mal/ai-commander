@@ -497,6 +497,15 @@ async fn run_daemon(cfg: Config) -> Result<()> {
             }
         }
 
+        // 1.5) cron triggers: spawn due recurring tasks
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        for id in board.spawn_due_scheduled(now_secs) {
+            println!("[trigger] spawned {id} from schedule");
+        }
+
         // 2) watchdog pass (retry / escalate)
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -526,7 +535,11 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                 Err(_) => continue,
             };
             board.link_session(&task.id, &session.native_id);
-            if board.transition(&task.id, TaskAction::Start).is_err() {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            if board
+                .transition_in(&cwd, &task.id, TaskAction::Start)
+                .is_err()
+            {
                 continue;
             }
             let model = cfg.harness(&harness).and_then(|h| h.default_model.clone());
