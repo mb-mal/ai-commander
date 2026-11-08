@@ -32,7 +32,9 @@ use super::{
 use crate::config::HarnessCfg;
 
 use agent_client_protocol::schema::v1::{
-    ContentBlock, SessionNotification, SessionUpdate, ToolCallStatus,
+    CancelNotification, ContentBlock, EnvVariable, ImageContent, InitializeRequest,
+    LoadSessionRequest, McpServer, McpServerStdio, NewSessionRequest, PromptRequest,
+    SessionNotification, SessionUpdate, TextContent, ToolCallStatus,
 };
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -314,12 +316,11 @@ impl Backend for AcpBackend {
         *self.child.lock().unwrap() = Some(child);
 
         // initialize; the response flips `connected` from the reader thread
+        // (Б2: params built from the schema types, not hand-rolled json!)
+        let init = InitializeRequest::new(agent_client_protocol::schema::ProtocolVersion::V1);
         let _init = self.call(
             "initialize",
-            json!({
-                "protocolVersion": 1,
-                "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}}
-            }),
+            serde_json::to_value(&init).unwrap_or(Value::Null),
         );
 
         let events = self.events.clone();
@@ -552,13 +553,14 @@ impl Backend for AcpBackend {
         let resume = !native_id.is_empty() && !native_id.starts_with("pending-");
         let cwd = self.cwd().to_string_lossy().into_owned();
 
-        let mut blocks: Vec<Value> = vec![json!({"type": "text", "text": text})];
+        // Б2: prompt content blocks are schema ContentBlock values
+        let mut blocks: Vec<ContentBlock> = vec![ContentBlock::Text(TextContent::new(text))];
         for a in attachments {
             if a.mime.starts_with("image/") {
                 if let Ok(data) = std::fs::read(&a.path) {
                     use base64::Engine as _;
                     let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                    blocks.push(json!({"type": "image", "data": b64, "mimeType": a.mime}));
+                    blocks.push(ContentBlock::Image(ImageContent::new(b64, &a.mime)));
                 }
             }
         }
@@ -596,11 +598,9 @@ impl Backend for AcpBackend {
             };
 
             // board MCP server: same binaries dir, role token via env
-            let mcp_servers = |role: Option<&str>| -> Value {
-                match role.and_then(board_mcp_entry) {
-                    Some(entry) => json!([entry]),
-                    None => json!([]),
-                }
+            // (Б2: typed McpServer list, not json!)
+            let mcp_servers = |role: Option<&str>| -> Vec<McpServer> {
+                role.and_then(board_mcp_entry).into_iter().collect()
             };
             // Н3: prefer the task's worktree cwd over the harness default
             let cwd_str = cwd_override
@@ -608,15 +608,21 @@ impl Backend for AcpBackend {
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or(cwd_base.clone());
             let real_id: String = if resume {
+                // Б2: schema-typed session/load params
+                let load = LoadSessionRequest::new(sent_id.clone(), cwd_str.clone())
+                    .mcp_servers(mcp_servers(mcp_role.as_deref()));
                 let _load = rpc(
                     "session/load",
-                    json!({"sessionId": sent_id, "cwd": cwd_str, "mcpServers": mcp_servers(mcp_role.as_deref())}),
+                    serde_json::to_value(&load).unwrap_or(Value::Null),
                 );
                 sent_id.clone()
             } else {
+                // Б2: schema-typed session/new params
+                let new = NewSessionRequest::new(cwd_str.clone())
+                    .mcp_servers(mcp_servers(mcp_role.as_deref()));
                 let rx = rpc(
                     "session/new",
-                    json!({"cwd": cwd_str, "mcpServers": mcp_servers(mcp_role.as_deref())}),
+                    serde_json::to_value(&new).unwrap_or(Value::Null),
                 );
                 match rx.recv_timeout(Duration::from_secs(20)) {
                     Ok(v) => {
@@ -679,9 +685,11 @@ impl Backend for AcpBackend {
                 });
             }
 
+            // Б2: schema-typed session/prompt params
+            let prompt = PromptRequest::new(real_id.clone(), blocks_clone);
             let rx = rpc(
                 "session/prompt",
-                json!({"sessionId": real_id, "prompt": blocks_clone}),
+                serde_json::to_value(&prompt).unwrap_or(Value::Null),
             );
             match rx.recv_timeout(Duration::from_secs(900)) {
                 Ok(result) => {
@@ -770,9 +778,12 @@ impl Backend for AcpBackend {
             .find(|(_, v)| v.as_str() == native_id)
             .map(|(k, _)| k.clone())
         {
+            // Б2: schema-typed CancelNotification (sessionId only — the old
+            // hand-rolled payload carried an off-schema "reason" field)
+            let cancel = CancelNotification::new(real.to_string());
             self.notify(
                 "session/cancel",
-                json!({"sessionId": real, "reason": "user cancelled"}),
+                serde_json::to_value(&cancel).unwrap_or(Value::Null),
             );
         }
         Ok(())
@@ -860,10 +871,17 @@ impl Backend for AcpBackend {
     }
 }
 
-/// Path to the board-mcp sibling binary for ACP mcpServers injection.
-fn board_mcp_entry(role: &str) -> Option<Value> {
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?;
+/// Board MCP server descriptor for session/new — typed (Б2): the old
+/// hand-rolled json sent `env` as a map, but the schema (and strict agents)
+/// require an array of {name, value} and a server `name`.
+fn board_mcp_entry(role: &str) -> Option<McpServer> {
+    let dir = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.to_path_buf()))?;
+    board_mcp_at(&dir, role)
+}
+
+fn board_mcp_at(dir: &std::path::Path, role: &str) -> Option<McpServer> {
     let name = if cfg!(windows) {
         "board-mcp.exe"
     } else {
@@ -873,10 +891,50 @@ fn board_mcp_entry(role: &str) -> Option<Value> {
     if !bin.exists() {
         return None;
     }
-    Some(json!({
-        "type": "stdio",
-        "command": bin.to_string_lossy(),
-        "args": [],
-        "env": {"AI_COMMANDER_ROLE": role}
-    }))
+    Some(McpServer::Stdio(
+        McpServerStdio::new("board", bin).env(vec![EnvVariable::new("AI_COMMANDER_ROLE", role)]),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Б2: the board MCP descriptor embedded in session/new must be
+    /// schema-canonical — strict agents reject the old hand-rolled json
+    /// (env as a map, missing server name). Round-trip through the typed
+    /// NewSessionRequest proves the payload a strict agent accepts.
+    #[test]
+    fn board_mcp_entry_is_schema_canonical() {
+        let dir = std::env::temp_dir().join(format!("aic-b2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = if cfg!(windows) {
+            dir.join("board-mcp.exe")
+        } else {
+            dir.join("board-mcp")
+        };
+        std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
+
+        let entry = board_mcp_at(&dir, "coder").expect("entry when the binary exists");
+        let req = NewSessionRequest::new(&dir).mcp_servers(vec![entry]);
+        let v = serde_json::to_value(&req).unwrap();
+
+        // strict-agent check: deserialize + exact round-trip
+        let parsed: NewSessionRequest = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), v, "canonical");
+
+        // env must be the schema array form, not the old map
+        let env = &v["mcpServers"][0]["env"];
+        assert!(
+            env.is_array(),
+            "env must be an array of {{name,value}}: {env}"
+        );
+        assert_eq!(env[0]["name"], "AI_COMMANDER_ROLE");
+        assert_eq!(env[0]["value"], "coder");
+        // the server must carry a name (absent in the old payload)
+        assert_eq!(v["mcpServers"][0]["name"], "board");
+
+        assert!(board_mcp_at(&dir, "x").is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

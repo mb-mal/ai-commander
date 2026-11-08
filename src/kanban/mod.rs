@@ -241,6 +241,7 @@ impl Kanban {
 }
 
 pub mod a2a;
+pub mod ipc;
 pub mod otel;
 pub mod roles;
 pub mod runner;

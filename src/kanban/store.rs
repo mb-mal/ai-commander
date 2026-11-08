@@ -462,9 +462,16 @@ impl BoardStore {
                     .map(|deps| {
                         deps.iter()
                             .filter(|d| {
-                                self.proj.tasks.iter().find(|x| x.id == **d).is_some_and(|x| {
-                                    !matches!(x.status, TaskStatus::Done | TaskStatus::Cancelled)
-                                })
+                                self.proj
+                                    .tasks
+                                    .iter()
+                                    .find(|x| x.id == **d)
+                                    .is_some_and(|x| {
+                                        !matches!(
+                                            x.status,
+                                            TaskStatus::Done | TaskStatus::Cancelled
+                                        )
+                                    })
                             })
                             .cloned()
                             .collect()

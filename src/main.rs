@@ -493,7 +493,16 @@ async fn run_daemon(cfg: Config) -> Result<()> {
     if backends.is_empty() {
         anyhow::bail!("daemon: no usable harness backends");
     }
-    let mut board = BoardStore::open_redb(&ai_commander::kanban::Kanban::path())?;
+    // Б1: the daemon owns the board exclusively and serves board tool calls
+    // over IPC so secondary processes (board-mcp per agent) don't need the
+    // redb lock and never open a second store.
+    let board = std::sync::Arc::new(std::sync::Mutex::new(BoardStore::open_redb(
+        &ai_commander::kanban::Kanban::path(),
+    )?));
+    match ai_commander::kanban::ipc::serve_board(board.clone()) {
+        Ok(port) => println!("board IPC owner on 127.0.0.1:{port}"),
+        Err(e) => println!("[warn] board IPC server: {e}"),
+    }
 
     // A2A gateway: disabled during the IPC owner refactor (the old
     // gateway_handle created a second BoardStore that duplicated ids)
@@ -521,25 +530,38 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                     ..
                 } => {
                     if *kind == PartKind::Text {
-                        if let Some(task) = board.find_by_session(harness, native_id) {
-                            let mut reply = task_replies.remove(&task.id).unwrap_or_default();
-                            ai_commander::kanban::runner::on_progress(
-                                &mut board, &task.id, delta, &mut reply,
-                            );
-                            task_replies.insert(task.id.clone(), reply);
+                        let task_id = {
+                            let b = board.lock().unwrap();
+                            b.find_by_session(harness, native_id).map(|t| t.id)
+                        };
+                        if let Some(id) = task_id {
+                            let mut reply = task_replies.remove(&id).unwrap_or_default();
+                            {
+                                let mut b = board.lock().unwrap();
+                                ai_commander::kanban::runner::on_progress(
+                                    &mut b, &id, delta, &mut reply,
+                                );
+                            }
+                            task_replies.insert(id, reply);
                         }
                     }
                 }
                 backend::BackendEvent::StreamDone { native_id, harness } => {
-                    if let Some(task) = board.find_by_session(harness, native_id) {
-                        let reply = task_replies.remove(&task.id).unwrap_or_default();
-                        match ai_commander::kanban::runner::on_stream_done(
-                            &mut board, &task.id, &reply,
-                        ) {
+                    let task_id = {
+                        let b = board.lock().unwrap();
+                        b.find_by_session(harness, native_id).map(|t| t.id)
+                    };
+                    if let Some(id) = task_id {
+                        let reply = task_replies.remove(&id).unwrap_or_default();
+                        let outcome = {
+                            let mut b = board.lock().unwrap();
+                            ai_commander::kanban::runner::on_stream_done(&mut b, &id, &reply)
+                        };
+                        match outcome {
                             Ok(t) => println!("[done] {} → {:?}", t.id, t.status),
-                            Err(e) => println!("[warn] {} transition: {e}", task.id),
+                            Err(e) => println!("[warn] {id} transition: {e}"),
                         }
-                        busy.remove(&task.id);
+                        busy.remove(&id);
                     }
                 }
                 _ => {}
@@ -551,7 +573,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        for id in board.spawn_due_scheduled(now_secs) {
+        for id in board.lock().unwrap().spawn_due_scheduled(now_secs) {
             println!("[trigger] spawned {id} from schedule");
             ai_commander::log_info!("daemon", "trigger spawned {id}");
         }
@@ -563,7 +585,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
-        let stuck = board.watchdog_scan(now);
+        let stuck = board.lock().unwrap().watchdog_scan(now);
         if !stuck.is_empty() {
             for st in &stuck {
                 println!(
@@ -572,7 +594,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                 );
             }
             ai_commander::kanban::runner::abort_stuck(&backends, &stuck).await;
-            for (id, label) in board.watchdog_apply(&stuck) {
+            for (id, label) in board.lock().unwrap().watchdog_apply(&stuck) {
                 println!("[watchdog] {id}: {label}");
                 ai_commander::log_info!("daemon", "watchdog {id}: {label}");
                 busy.remove(&id);
@@ -580,7 +602,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
         }
 
         // 3) launch one launchable task per idle harness (B9: DAG-aware)
-        let ready: Vec<ai_commander::kanban::Task> = board.launchable();
+        let ready: Vec<ai_commander::kanban::Task> = board.lock().unwrap().launchable();
         for task in ready {
             let Some(harness) = task.harness.clone() else {
                 continue;
@@ -597,9 +619,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
             let roles = ai_commander::kanban::roles::RoleSet::cached(
                 &std::env::current_dir().unwrap_or_default(),
             );
-            match ai_commander::kanban::runner::launch_task(b, &mut board, &task, &cfg, &roles)
-                .await
-            {
+            match ai_commander::kanban::runner::launch_task(b, &board, &task, &cfg, &roles).await {
                 Ok(_session_id) => {
                     busy.insert(task.id.clone());
                     println!("[run] {} '{}' on {harness}", task.id, task.title);
@@ -611,32 +631,41 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                     ai_commander::log_warn!("daemon", "launch {}: {e:#}", task.id);
                     // Д5: a failed launch must still end the turn — empty
                     // reply → Failed → Н1 retry cap/backoff applies
-                    let _ = ai_commander::kanban::runner::on_stream_done(&mut board, &task.id, "");
+                    let _ = ai_commander::kanban::runner::on_stream_done(
+                        &mut board.lock().unwrap(),
+                        &task.id,
+                        "",
+                    );
                     busy.remove(&task.id);
                 }
             }
         }
 
         // 4) stop when everything is terminal
-        let all_done = board.projection().tasks.iter().all(|t| {
-            matches!(
-                t.status,
-                TaskStatus::Done
-                    | TaskStatus::Cancelled
-                    | TaskStatus::NeedsHuman
-                    | TaskStatus::Blocked
-            )
-        });
-        if all_done && busy.is_empty() && !board.projection().tasks.is_empty() {
+        let all_done = {
+            let b = board.lock().unwrap();
+            !b.projection().tasks.is_empty()
+                && b.projection().tasks.iter().all(|t| {
+                    matches!(
+                        t.status,
+                        TaskStatus::Done
+                            | TaskStatus::Cancelled
+                            | TaskStatus::NeedsHuman
+                            | TaskStatus::Blocked
+                    )
+                })
+        };
+        if all_done && busy.is_empty() {
             println!("daemon: board settled, exiting");
             for b in backends.values() {
                 b.shutdown();
             }
+            ai_commander::kanban::ipc::cleanup();
             return Ok(());
         }
         // OTel export: new events since the last pass -> spans.jsonl
         {
-            let last = board.last_events(usize::MAX);
+            let last = board.lock().unwrap().last_events(usize::MAX);
             if let Some(newest) = last.last() {
                 if newest.seq > otel_last_seq {
                     let fresh: Vec<_> = last
@@ -747,6 +776,8 @@ async fn run_tui(cfg: Config) -> Result<()> {
     for b in app.backends.values() {
         b.shutdown();
     }
+    // Б1: the TUI owned the board — unpublish the IPC port file
+    ai_commander::kanban::ipc::cleanup();
     guard.release();
     run_result
 }
