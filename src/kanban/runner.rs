@@ -60,8 +60,41 @@ pub fn launch_ctx(task: &Task, cfg: &Config, roles: &RoleSet) -> LaunchCtx {
     }
 }
 
+/// Н3 sync phase: Start (which creates the worktree) and build the launch
+/// context with `cwd` pointing at the task's worktree. Split out of
+/// `launch_task` so the TUI can run it under its board lock, then do the
+/// async session/send without holding the lock across `.await`.
+pub fn prepare_launch(
+    board: &mut BoardStore,
+    task: &Task,
+    cfg: &Config,
+    roles: &RoleSet,
+    repo: &std::path::Path,
+) -> anyhow::Result<LaunchCtx> {
+    // 1. Start first — this creates the worktree (Н3: agent must work there)
+    board
+        .transition_in(repo, &task.id, TaskAction::Start)
+        .map_err(|e| anyhow::anyhow!("Start failed: {e}"))?;
+
+    // 2. Find the worktree path (created by transition_in's Start hook)
+    let worktree = crate::kanban::worktree::worktree_path(repo, task);
+    let cwd = if worktree.exists() {
+        worktree
+    } else {
+        // not a git repo or worktree failed — use the repo dir
+        repo.to_path_buf()
+    };
+
+    // 3. Build the launch context with the worktree cwd
+    let mut ctx = launch_ctx(task, cfg, roles);
+    ctx.cwd = Some(cwd);
+    Ok(ctx)
+}
+
 /// Н3: launch a task in its worktree — Start (creates worktree) →
 /// create_session(cwd=worktree) → send. Returns the linked session id.
+/// The daemon owns the board directly; the TUI composes the same steps via
+/// `prepare_launch` + `send_task` (it keeps the board behind a Mutex).
 pub async fn launch_task(
     backend: &Arc<dyn Backend>,
     board: &mut BoardStore,
@@ -69,33 +102,17 @@ pub async fn launch_task(
     cfg: &Config,
     roles: &RoleSet,
 ) -> anyhow::Result<String> {
-    // 1. Start first — this creates the worktree (Н3: agent must work there)
     let repo = std::env::current_dir().unwrap_or_default();
-    let _started = board
-        .transition_in(&repo, &task.id, TaskAction::Start)
-        .map_err(|e| anyhow::anyhow!("Start failed: {e}"))?;
+    let ctx = prepare_launch(board, task, cfg, roles, &repo)?;
 
-    // 2. Find the worktree path (created by transition_in's Start hook)
-    let worktree = crate::kanban::worktree::worktree_path(&repo, task);
-    let cwd = if worktree.exists() {
-        worktree
-    } else {
-        // not a git repo or worktree failed — use the repo dir
-        repo.clone()
-    };
-
-    // 3. Build the launch context with the worktree cwd
-    let mut ctx = launch_ctx(task, cfg, roles);
-    ctx.cwd = Some(cwd);
-
-    // 4. Create the session (backends should use ctx.cwd as the working dir)
+    // Create the session (backends use ctx.cwd as the working dir)
     let session = backend
         .create_session(&task.title)
         .await
         .map_err(|e| anyhow::anyhow!("create_session: {e:#}"))?;
     board.link_session(&task.id, &session.native_id);
 
-    // 5. Send with the worktree cwd
+    // Send with the worktree cwd
     send_task(backend, task, &ctx, &session.native_id).await?;
     Ok(session.native_id)
 }

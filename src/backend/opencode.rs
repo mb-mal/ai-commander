@@ -653,6 +653,26 @@ impl Backend for OpenCodeBackend {
                 );
             }
         }
+        // Н3: move the session to the task's worktree so the agent works in
+        // isolation (POST /api/session/{id}/move, verified against the live
+        // server: switches the session's projectID). Idempotent per session.
+        if let Some(cwd) = opts.cwd {
+            let dir = cwd.to_string_lossy().replace('\\', "/");
+            if let Err(e) = self
+                .send_json(
+                    reqwest::Method::POST,
+                    &format!("/api/session/{native_id}/move"),
+                    Some(serde_json::json!({ "directory": dir })),
+                )
+                .await
+            {
+                let _ = self.events.send(BackendEvent::Error {
+                    harness: self.cfg.id.clone(),
+                    error: format!("session move to {dir} failed: {e:#}"),
+                });
+                crate::log_warn!("opencode", "session move to {dir} failed: {e:#}");
+            }
+        }
         // switch model/agent for subsequent turns when requested
         if let Some(m) = opts.model {
             if let Err(e) = self
