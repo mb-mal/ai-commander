@@ -682,16 +682,33 @@ impl App {
                     }
                 }
                 _ = tokio::time::sleep(Duration::from_millis(1000)) => {
-                    // kanban watchdog: once a second is plenty for 10-minute windows
-                    let acted = {
-                        let mut b = self.board.lock().unwrap();
-                        b.watchdog_pass(std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis() as i64)
-                            .unwrap_or(0))
+                    // watchdog: scan → abort stuck sessions → apply (Б6)
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0);
+                    let stuck = {
+                        let b = self.board.lock().unwrap();
+                        b.watchdog_scan(now)
                     };
-                    for (id, label) in acted {
-                        self.toast(format!("⚠ {id}: {label} (watchdog)"), true);
+                    if !stuck.is_empty() {
+                        // abort each stuck session via its backend
+                        for st in &stuck {
+                            if let Some(b) = self.backends.get(&st.harness).cloned() {
+                                let sid = st.session_id.clone();
+                                tokio::spawn(async move {
+                                    let _ = b.abort(&sid).await;
+                                });
+                            }
+                        }
+                        // then apply the transitions
+                        let acted = {
+                            let mut b = self.board.lock().unwrap();
+                            b.watchdog_apply(&stuck)
+                        };
+                        for (id, label) in acted {
+                            self.toast(format!("⚠ {id}: {label} (watchdog)"), true);
+                        }
                     }
                     let expired = self
                         .toast
@@ -800,6 +817,17 @@ impl App {
                 kind,
                 delta,
             } => {
+                // heartbeat (B6): renew lease for task-linked sessions
+                if kind == PartKind::Text {
+                    let task_id = {
+                        let b = self.board.lock().unwrap();
+                        b.find_by_session(&harness, &native_id).map(|t| t.id)
+                    };
+                    if let Some(id) = task_id {
+                        let mut b = self.board.lock().unwrap();
+                        kanban::runner::on_progress_no_reply(&mut b, &id, &delta);
+                    }
+                }
                 if self.follow {
                     self.apply_part((harness, native_id), msg_id, part_id, kind, delta, true);
                 }
@@ -1752,54 +1780,32 @@ impl App {
                 self.toast(format!("{} ▶ running on {harness}", t.id), false);
             }
         }
-        let prompt = kanban::task_prompt(task);
-        let task_role = task.role.clone();
+
+        // B9: shared TaskRunner — role instructions, role model, mcp_role
+        let roles = kanban::roles::RoleSet::load(&std::env::current_dir().unwrap_or_default());
+        let ctx = kanban::runner::launch_ctx(task, &self.cfg, &roles);
+        let task_owned = task.clone();
         let tx = self.events_tx.clone();
         let harness_clone = harness.clone();
         let task_id = task.id.clone();
-        let model = self
-            .cfg
-            .harness(&harness)
-            .and_then(|h| h.default_model.clone());
-        let agent = self
-            .cfg
-            .harness(&harness)
-            .map(|h| h.agent.clone())
-            .filter(|a| !a.is_empty());
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("rt");
-            rt.block_on(async move {
-                match b.create_session(&format!("task {task_id}")).await {
-                    Ok(session) => {
-                        let _ = tx.send(BackendEvent::TaskLinked {
-                            harness: harness_clone,
-                            task_id,
-                            session_id: session.native_id.clone(),
-                        });
-                        let _ = b
-                            .send(
-                                &session.native_id,
-                                &prompt,
-                                &[],
-                                SendOpts {
-                                    model: model.as_ref(),
-                                    agent: agent.as_deref(),
-                                    mcp_role: task_role.as_deref(),
-                                },
-                            )
-                            .await;
-                    }
-                    Err(e) => {
-                        let _ = tx.send(BackendEvent::Error {
-                            harness: harness_clone,
-                            error: format!("task {task_id}: {e:#}"),
-                        });
-                    }
+        tokio::spawn(async move {
+            match b.create_session(&format!("task {task_id}")).await {
+                Ok(session) => {
+                    let _ = tx.send(BackendEvent::TaskLinked {
+                        harness: harness_clone,
+                        task_id,
+                        session_id: session.native_id.clone(),
+                    });
+                    let _ =
+                        kanban::runner::send_task(&b, &task_owned, &ctx, &session.native_id).await;
                 }
-            });
+                Err(e) => {
+                    let _ = tx.send(BackendEvent::Error {
+                        harness: harness_clone,
+                        error: format!("task {task_id}: {e:#}"),
+                    });
+                }
+            }
         });
     }
 
