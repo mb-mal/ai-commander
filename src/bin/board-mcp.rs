@@ -16,7 +16,19 @@ use serde_json::{Value, json};
 
 fn main() {
     let role = std::env::var("AI_COMMANDER_ROLE").unwrap_or_default();
-    let mut board = BoardStore::open_redb(&Kanban::path()).expect("open kanban store");
+    let mut board = match BoardStore::open_redb(&Kanban::path()) {
+        Ok(b) => b,
+        Err(e) => {
+            // redb takes an exclusive lock: the TUI or daemon owns the DB
+            // (review v2 Б1). Print a clear message and exit — no panic.
+            eprintln!("board-mcp: cannot open the kanban store: {e:#}");
+            eprintln!("hint: the board is likely open in ai-commander (TUI or daemon).");
+            eprintln!(
+                "       stop the owner process or set AI_COMMANDER_KANBAN_DB to a separate copy."
+            );
+            std::process::exit(1);
+        }
+    };
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
     for line in stdin.lock().lines() {
@@ -151,7 +163,8 @@ fn call_tool(
                 "cancel" => TaskAction::Cancel,
                 other => return Err(format!("unknown action {other}")),
             };
-            // ownership: start/finish only by the assignee
+            // ownership: start/finish only by the assignee; approve/reject
+            // NEVER by the assignee (review v2: agent can't self-approve)
             let t = board
                 .projection()
                 .tasks
@@ -163,6 +176,13 @@ fn call_tool(
                 && t.role.as_deref().is_some_and(|r| r != role)
             {
                 return Err(format!("task is assigned to {:?}, not to you", t.role));
+            }
+            if matches!(action, TaskAction::Approve | TaskAction::Rework)
+                && t.role.as_deref() == Some(role)
+            {
+                return Err(
+                    "you cannot approve your own work — a different role must review".into(),
+                );
             }
             let t = board.transition(&id, action)?;
             Ok(format!("{} → {:?}", t.id, t.status))

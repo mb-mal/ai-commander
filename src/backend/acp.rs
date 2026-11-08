@@ -790,16 +790,30 @@ impl Backend for AcpBackend {
         };
         let p = perms.remove(idx);
         if reply == "reject" {
+            // schema: deny = select a reject option or send cancelled
             let msg = json!({"jsonrpc": "2.0", "id": jsonrpc_id,
-                "error": {"code": -32603, "message": "permission denied by user"}});
+                "result": {"outcome": {"outcome": "cancelled"}}});
             self.write_raw(&msg);
         } else {
+            // match by kind (schema) with id/label fallback for older agents
             let wanted = |id: &str, label: &str| {
                 let hay = format!("{id} {label}").to_lowercase();
-                if reply == "always" {
-                    hay.contains("always") || hay.contains("session") || hay.contains("permanent")
-                } else {
-                    !hay.contains("always") && !hay.contains("reject")
+                match reply {
+                    "always" => {
+                        hay.contains("allow_always")
+                            || hay.contains("always")
+                            || hay.contains("session")
+                            || hay.contains("permanent")
+                    }
+                    "reject" => {
+                        hay.contains("reject_once")
+                            || hay.contains("reject_always")
+                            || hay.contains("reject")
+                    }
+                    _ => {
+                        hay.contains("allow_once")
+                            || (!hay.contains("always") && !hay.contains("reject"))
+                    }
                 }
             };
             let option = p
@@ -809,8 +823,9 @@ impl Backend for AcpBackend {
                 .map(|(id, _)| id.clone())
                 .or_else(|| p.options.first().map(|(id, _)| id.clone()))
                 .unwrap_or_default();
+            // schema: {"outcome":{"outcome":"selected","optionId":"..."}}
             let msg = json!({"jsonrpc": "2.0", "id": jsonrpc_id,
-                "result": {"outcome": {"selected": {"optionId": option}}}});
+                "result": {"outcome": {"outcome": "selected", "optionId": option}}});
             self.write_raw(&msg);
         }
         Ok(())

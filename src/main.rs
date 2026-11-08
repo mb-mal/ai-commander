@@ -492,9 +492,14 @@ async fn run_daemon(cfg: Config) -> Result<()> {
     }
     let mut board = BoardStore::open_redb(&ai_commander::kanban::Kanban::path())?;
 
-    // A2A gateway: share the daemon's single redb connection
-    if let Ok(g) = ai_commander::kanban::a2a::A2aGateway::spawn(board.gateway_handle()) {
-        println!("a2a gateway: {}", g.agent_card_url());
+    // A2A gateway: disabled by default (review v2 security #1); opt-in AI_COMMANDER_A2A=1
+    if std::env::var("AI_COMMANDER_A2A")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        if let Ok(g) = ai_commander::kanban::a2a::A2aGateway::spawn(board.gateway_handle()) {
+            println!("a2a gateway: {}", g.agent_card_url());
+        }
     }
 
     let mut otel_last_seq: u64 = 0;

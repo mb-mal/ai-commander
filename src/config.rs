@@ -130,6 +130,12 @@ impl Config {
         let path = config_path();
         let raw = toml::to_string_pretty(self).context("serialize config")?;
         fs::write(&path, raw).context("write config.toml")?;
+        // owner-only permissions (review v2: password in plaintext, 0644 default)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+        }
         Ok(())
     }
 
