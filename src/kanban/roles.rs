@@ -8,10 +8,10 @@
 //! (`~/.ai-commander`) and project level (`.<cwd>/.ai-commander`) are merged,
 //! project wins on id conflicts.
 
+use anyhow::{Result, anyhow, bail};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -147,6 +147,55 @@ impl RoleSet {
     }
 }
 
+/// Role templates for the "new role" wizard (F-key board UI).
+pub fn template_body(kind: &str) -> &'static str {
+    match kind {
+        "coder" => {
+            "You write clean, idiomatic code. Prefer small diffs, run the tests before DONE."
+        }
+        "reviewer" => {
+            "You review code for correctness and safety. Focus on unsafe blocks, error handling and tests; approve only what you would ship."
+        }
+        "planner" => {
+            "You break work into small tasks with acceptance criteria. Never implement yourself — create board tasks with depends_on."
+        }
+        "tester" => {
+            "You write tests that fail before the fix and pass after. Cover edge cases and error paths."
+        }
+        _ => "You are a helpful project agent.",
+    }
+}
+
+/// Create `.ai-commander/agents/<kind>.md` from a template (project level).
+pub fn create_from_template(kind: &str) -> Result<PathBuf> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let dir = cwd.join(".ai-commander").join("agents");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{kind}.md"));
+    if path.exists() {
+        bail!("role file already exists: {}", path.display());
+    }
+    let name = match kind {
+        "coder" => "Coder",
+        "reviewer" => "Code Reviewer",
+        "planner" => "Planner",
+        "tester" => "Tester",
+        other => other,
+    };
+    let body = format!(
+        "---
+name: {name}
+harness: oc
+autonomy: ask_first
+---
+{}
+",
+        template_body(kind)
+    );
+    std::fs::write(&path, body)?;
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +232,27 @@ mod tests {
         assert!(p.contains("Check unsafe blocks."));
         assert!(p.contains("Autonomy"));
         assert!(rs.role_prompt("nope").is_none());
+    }
+
+    #[test]
+    fn template_creates_loadable_role() {
+        let dir = std::env::temp_dir().join(format!("aic-role-tpl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+        let path = create_from_template("reviewer").unwrap();
+        assert!(path.exists());
+        assert!(
+            create_from_template("reviewer").is_err(),
+            "second create must fail"
+        );
+        let mut rs = RoleSet::default();
+        load_roles_dir(&dir.join(".ai-commander").join("agents"), &mut rs);
+        assert_eq!(rs.roles["reviewer"].name, "Code Reviewer");
+        assert!(rs.roles["reviewer"].instructions.contains("unsafe"));
+        std::env::set_current_dir(prev).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

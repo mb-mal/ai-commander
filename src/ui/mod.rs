@@ -144,6 +144,7 @@ pub enum ListAction {
     },
     AssignHarness,
     AssignRole,
+    CreateRole,
 }
 
 #[derive(Clone)]
@@ -156,6 +157,7 @@ pub enum ModelCtx {
 pub enum Modal {
     Help,
     About,
+    AgentsPanel,
     Settings {
         sel: usize,
     },
@@ -249,6 +251,10 @@ pub struct App {
     pub mode: UiMode,
     /// allow/ask/deny rules for harness permission requests
     pub policy: crate::policy::Policy,
+    /// Ctrl+L collapsible activity feed (bottom panel)
+    pub show_activity: bool,
+    /// approvals queue length shown in the header (permission requests)
+    pub approvals_pending: usize,
     pub board: Arc<std::sync::Mutex<kanban::store::BoardStore>>,
     pub board_col: usize,
     pub board_row: usize,
@@ -299,6 +305,8 @@ impl App {
             quit: false,
             mode: UiMode::Chat,
             policy: crate::policy::Policy::load(&std::env::current_dir().unwrap_or_default()),
+            show_activity: false,
+            approvals_pending: 0,
             board: Arc::new(std::sync::Mutex::new(
                 kanban::store::BoardStore::open_redb(&kanban::Kanban::path())
                     .unwrap_or_else(|_| kanban::store::BoardStore::open_memory()),
@@ -820,9 +828,11 @@ impl App {
                 action,
                 resource,
             } => {
+                self.approvals_pending += 1;
                 // policy engine: deny wins over ask over allow; no rule -> ask
                 match self.policy.check(&action, &resource) {
                     crate::policy::Effect::Allow => {
+                        self.approvals_pending = self.approvals_pending.saturating_sub(1);
                         let (s, r) = (session_id.clone(), request_id.clone());
                         if let Some(b) = self.backends.get(&harness).cloned() {
                             tokio::spawn(async move {
@@ -833,6 +843,7 @@ impl App {
                         return;
                     }
                     crate::policy::Effect::Deny => {
+                        self.approvals_pending = self.approvals_pending.saturating_sub(1);
                         let (s, r) = (session_id.clone(), request_id.clone());
                         if let Some(b) = self.backends.get(&harness).cloned() {
                             tokio::spawn(async move {
@@ -1809,6 +1820,24 @@ impl App {
                 _ => {}
             },
             // About: "press any key to close", like it always was
+            Modal::AgentsPanel => match k.code {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('u' | 'U') => self.modal = None,
+                // role master: create a role from a template
+                KeyCode::Char('t' | 'T') => {
+                    self.modal = Some(Modal::List {
+                        title: "New role from template".into(),
+                        items: vec![
+                            ("coder".into(), "Coder — writes code".into()),
+                            ("reviewer".into(), "Reviewer — reviews code".into()),
+                            ("planner".into(), "Planner — breaks down work".into()),
+                            ("tester".into(), "Tester — writes tests".into()),
+                        ],
+                        sel: 0,
+                        action: ListAction::CreateRole,
+                    });
+                }
+                _ => {}
+            },
             Modal::About => {
                 self.modal = None;
             }
@@ -2325,6 +2354,10 @@ impl App {
                     let _ = b.assign(&t.id, Some(id));
                 }
             }
+            ListAction::CreateRole => match crate::kanban::roles::create_from_template(&id) {
+                Ok(path) => self.toast(format!("role '{id}' created: {}", path.display()), false),
+                Err(e) => self.toast(format!("{e:#}"), true),
+            },
             ListAction::AssignRole => {
                 if let Some(t) = self.selected_board_task() {
                     let mut b = self.board.lock().unwrap();

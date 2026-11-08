@@ -314,14 +314,14 @@ pub fn open_projection(store: &dyn EventStore) -> Result<Kanban> {
 /// The facade the app talks to: mutation methods append events and keep the
 /// in-memory projection; persistence and atomicity live in the store.
 pub struct BoardStore {
-    store: Box<dyn EventStore>,
+    store: std::sync::Arc<dyn EventStore>,
     proj: Kanban,
 }
 
 impl BoardStore {
     pub fn open_memory() -> BoardStore {
         BoardStore {
-            store: Box::new(MemoryStore::default()),
+            store: std::sync::Arc::new(MemoryStore::default()),
             proj: Kanban::default(),
         }
     }
@@ -330,13 +330,23 @@ impl BoardStore {
         let store = RedbStore::open(path)?;
         let proj = open_projection(&store)?;
         Ok(BoardStore {
-            store: Box::new(store),
+            store: std::sync::Arc::new(store),
             proj,
         })
     }
 
     pub fn projection(&self) -> &Kanban {
         &self.proj
+    }
+
+    /// The A2A gateway talks to the store directly (same redb connection),
+    /// wrapped so incoming tasks land as regular board events.
+    pub fn gateway_handle(&self) -> std::sync::Arc<std::sync::Mutex<BoardStore>> {
+        // a second BoardStore over the SAME Arc<EventStore> keeps one connection
+        std::sync::Arc::new(std::sync::Mutex::new(BoardStore {
+            store: std::sync::Arc::clone(&self.store),
+            proj: Kanban::default(),
+        }))
     }
 
     pub fn last_events(&self, n: usize) -> Vec<StoredEvent> {

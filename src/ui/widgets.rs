@@ -23,13 +23,25 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     app.hit.targets.clear();
     app.hit.modal_rect = None;
 
-    let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(5),
-        Constraint::Length(1),
-    ])
-    .split(size);
-    let (header, body, status) = (rows[0], rows[1], rows[2]);
+    let rows = if app.show_activity {
+        Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(5),
+            Constraint::Length(6), // activity feed
+            Constraint::Length(1),
+        ])
+        .split(size)
+    } else {
+        Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(5),
+            Constraint::Length(1),
+            Constraint::Length(0),
+        ])
+        .split(size)
+    };
+    let (header, body, status) = (rows[0], rows[1], rows[3]);
+    let feed = rows[2];
 
     draw_header(app, f, header);
 
@@ -51,6 +63,9 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     draw_composer(app, f, chat_rows[1]);
 
     draw_statusbar(app, f, status);
+    if app.show_activity {
+        draw_activity_feed(app, f, feed);
+    }
 
     if app.modal.is_some() {
         super::modals::draw_modal(app, f, size);
@@ -132,6 +147,19 @@ fn draw_header(app: &App, f: &mut Frame, area: Rect) {
     let w_l = left.width() as u16;
     let w_r = right.width() as u16;
     let mut spans = left.spans.clone();
+    if app.approvals_pending > 0 {
+        spans.push(Span::styled(
+            format!(
+                "  ⚠ {}:{}",
+                t(app.lang(), Str::Approvals),
+                app.approvals_pending
+            ),
+            Style::new()
+                .fg(th.err)
+                .bg(th.header_bg)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     if w_l + w_r <= area.width {
         spans.push(Span::styled(
             " ".repeat((area.width - w_l - w_r) as usize),
@@ -728,4 +756,43 @@ fn draw_statusbar(app: &mut App, f: &mut Frame, area: Rect) {
         Paragraph::new(Line::from(spans)).style(Style::new().bg(th.header_bg)),
         area,
     );
+}
+
+/// Ctrl+L collapsible activity feed: the board's event log tail.
+fn draw_activity_feed(app: &App, f: &mut Frame, area: Rect) {
+    let th = &THEME;
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(Style::new().fg(th.border_dim).bg(th.bg))
+        .title(Span::styled(
+            format!(" {} ", t(app.lang(), Str::Activity)),
+            th.bold(th.accent),
+        ))
+        .style(Style::new().bg(th.bg));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let board = app.board.lock().unwrap();
+    let events = board.last_events(inner.height as usize + 2);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for ev in events.iter().rev().take(inner.height as usize) {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{} ", ev.task_id),
+                Style::new().fg(th.accent).bg(th.bg),
+            ),
+            Span::styled(format!("{:<22}", ev.action), th.dim_style()),
+            Span::styled(
+                ev.task
+                    .as_ref()
+                    .map(|t2| format!("{:?}", t2.status))
+                    .unwrap_or_default(),
+                Style::new().fg(th.fg).bg(th.bg),
+            ),
+        ]));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(" (no events yet)", th.dim_style())));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
 }

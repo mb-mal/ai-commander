@@ -118,6 +118,8 @@ pub enum Str {
     PermAlways,
     PermReject,
     SettingsAutoApprove,
+    Approvals,
+    Activity,
     // check mode
     CheckOk,
     CheckModels,
@@ -206,6 +208,8 @@ pub fn t(lang: Lang, key: Str) -> &'static str {
             Str::PermAlways => "Always allow this session",
             Str::PermReject => "Deny",
             Str::SettingsAutoApprove => "Auto-approve tools (--yolo)",
+            Str::Approvals => "approvals",
+            Str::Activity => "Activity",
 
             Str::CheckOk => "OK",
             Str::CheckModels => "models",
@@ -291,6 +295,8 @@ pub fn t(lang: Lang, key: Str) -> &'static str {
             Str::PermAlways => "Всегда разрешать в этой сессии",
             Str::PermReject => "Отклонить",
             Str::SettingsAutoApprove => "Авто-подтверждение инструментов (--yolo)",
+            Str::Approvals => "одобрения",
+            Str::Activity => "Активность",
 
             Str::CheckOk => "ОК",
             Str::CheckModels => "модели",
