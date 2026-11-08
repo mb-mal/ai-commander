@@ -122,12 +122,32 @@ agent (build/plan/…), default model. Everything persists in `config.toml`.
 cargo test   # 25: event mapping (SSE/NDJSON/ACP), App regression tests (busy rebind, rollback, permissions), markdown, i18n, config, wrap, grapheme editor, mime, atomic store
 ```
 
+## Kanban board (Ctrl+B) — agent task execution
+
+Tasks live in an embedded **redb** database (pure-Rust, ACID, crash-safe — no
+C toolchain needed) behind the `EventStore` trait: an append-only event log
+plus a projection snapshot written in the **same transaction**, with schema
+versioning and a one-time migration from the old JSON file. A hard-kill
+crash test (`tests/kanban_crash.rs`) verifies reopen consistency: no holes in
+the log, snapshot == fold(log).
+
+- F7 new task · F4 edit · F6 advance status (auto-runs the task) · `a` assign
+  harness · Enter opens the task's chat session · `d` approve · `r` rework ·
+  F8 cancel · arrows/mouse navigate
+- Moving a task to In Progress creates a harness session and sends a task
+  prompt (title, description, acceptance criteria); the agent's reply is
+  classified (`DONE:` → Review, `BLOCKED:` → Blocked, `ASK:` → Needs human)
+  and drives the FSM automatically
+- Headless: `ai-commander --task "do something" --harness oc`
+
 ## Limitations & roadmap
 
 - dsh headless does not replay session context on `--session-id`, so the
   backend folds stored history into the task text; `Esc` for opencode only
   detaches (no server abort); reasoning/tool history is not persisted for
   CLI harnesses (text only).
+- Kanban v1 has leases/watchdog and multi-agent teams on the roadmap; the
+  event-sourced core (EventStore + FSM + auto-execution) is in place.
 - The `opencode-acp` harness (Agent Client Protocol) is the newest connection:
   it uses the `agent-client-protocol` schema crate, real `session/cancel` and
   real permission requests; the older HTTP backend stays as the battle-tested

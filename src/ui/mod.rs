@@ -1,5 +1,6 @@
 //! Application state, event loop, key/mouse handling.
 
+pub mod board;
 pub mod editor;
 pub mod markdown;
 pub mod modals;
@@ -19,6 +20,7 @@ use crate::backend::{
 };
 use crate::config::{Config, ModelRef};
 use crate::i18n::{Lang, Str, t};
+use crate::kanban;
 
 use editor::Editor;
 
@@ -26,6 +28,14 @@ use editor::Editor;
 pub enum Focus {
     Sidebar,
     Composer,
+}
+
+/// Which screen occupies the chat area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UiMode {
+    #[default]
+    Chat,
+    Board,
 }
 
 /// Clickable zones registered during rendering; the mouse handler matches
@@ -46,6 +56,7 @@ pub enum HitTarget {
     ModalHarnessRow(usize),
     ModalFileRow(usize),
     ModalListRow(usize),
+    TaskCard(String),
 }
 
 #[derive(Default)]
@@ -111,6 +122,8 @@ pub enum InputAction {
     ProfileName,
     ServerUrl { harness: String },
     ServerPassword { harness: String },
+    NewTaskTitle,
+    BoardTitle { task_id: String },
 }
 
 #[derive(Clone)]
@@ -129,6 +142,7 @@ pub enum ListAction {
         session_id: String,
         request_id: String,
     },
+    AssignHarness,
 }
 
 #[derive(Clone)]
@@ -230,6 +244,14 @@ pub struct App {
     pub quit: bool,
     /// clickable zones, refreshed on every draw
     pub hit: HitAreas,
+    /// kanban screen state
+    pub mode: UiMode,
+    pub board: Arc<std::sync::Mutex<kanban::store::BoardStore>>,
+    pub board_col: usize,
+    pub board_row: usize,
+    pub board_sel: Option<String>,
+    /// (harness, session) -> accumulated agent reply for a task turn
+    pub task_replies: std::collections::HashMap<(String, String), String>,
     /// render cache: (msg_id, part_id) -> (width, text_len, rendered lines)
     pub render_cache: std::collections::HashMap<
         (String, String),
@@ -272,6 +294,15 @@ impl App {
             modal: None,
             toast: None,
             quit: false,
+            mode: UiMode::Chat,
+            board: Arc::new(std::sync::Mutex::new(
+                kanban::store::BoardStore::open_redb(&kanban::Kanban::path())
+                    .unwrap_or_else(|_| kanban::store::BoardStore::open_memory()),
+            )),
+            board_col: 0,
+            board_row: 0,
+            board_sel: None,
+            task_replies: std::collections::HashMap::new(),
             hit: HitAreas::default(),
             render_cache: std::collections::HashMap::new(),
             events_tx,
@@ -681,6 +712,19 @@ impl App {
                 native_id,
                 title,
             } => {
+                {
+                    let mut b = self.board.lock().unwrap();
+                    let pendings: Vec<String> = b
+                        .projection()
+                        .tasks
+                        .iter()
+                        .filter_map(|t| t.session_id.clone())
+                        .filter(|sid| sid.starts_with("pending-"))
+                        .collect();
+                    for p in pendings {
+                        b.rebind_session(&p, &native_id);
+                    }
+                }
                 let old = if self.cur.harness == harness {
                     if self.cur.native_id.is_empty() || self.cur.native_id.starts_with("pending-") {
                         self.cur.prev_native_id = Some(self.cur.native_id.clone());
@@ -712,6 +756,15 @@ impl App {
                     self.cur.msgs = msgs;
                     self.cur.loading = false;
                 }
+            }
+            BackendEvent::TaskLinked {
+                harness,
+                task_id,
+                session_id,
+            } => {
+                let mut b = self.board.lock().unwrap();
+                b.link_session(&task_id, &session_id);
+                self.busy.insert((harness.clone(), session_id.clone()));
             }
             BackendEvent::PartDelta {
                 harness,
@@ -797,6 +850,27 @@ impl App {
                 }
             }
             BackendEvent::StreamDone { harness, native_id } => {
+                // a task turn finished: classify DONE/BLOCKED/ASK -> FSM
+                let task = {
+                    let b = self.board.lock().unwrap();
+                    b.find_by_session(&harness, &native_id)
+                };
+                if let Some(task) = task {
+                    let reply = self
+                        .task_replies
+                        .remove(&(harness.clone(), native_id.clone()))
+                        .unwrap_or_default();
+                    let action = match kanban::classify_reply(&reply) {
+                        kanban::TurnOutcome::Finished => kanban::TaskAction::Finish,
+                        kanban::TurnOutcome::Blocked => kanban::TaskAction::Block,
+                        kanban::TurnOutcome::NeedsHuman => kanban::TaskAction::Ask,
+                    };
+                    let mut b = self.board.lock().unwrap();
+                    if let Ok(t) = b.transition(&task.id, action) {
+                        drop(b);
+                        self.toast(format!("{} → {:?}", t.id, t.status), false);
+                    }
+                }
                 // busy is per (harness, session) — clear regardless of the open chat
                 self.busy.remove(&(harness.clone(), native_id.clone()));
                 // the turn finished under the pre-rebind (pending) id: finish
@@ -1150,7 +1224,20 @@ impl App {
             (KeyCode::Char('a'), true, _) => {
                 return self.open_modal(Modal::About);
             }
+            (KeyCode::Char('b'), true, _) => {
+                self.mode = if self.mode == UiMode::Board {
+                    UiMode::Chat
+                } else {
+                    UiMode::Board
+                };
+                return;
+            }
             _ => {}
+        }
+
+        if self.mode == UiMode::Board {
+            self.board_key(k);
+            return;
         }
 
         match self.focus {
@@ -1434,6 +1521,206 @@ impl App {
             self.attachments.push(meta);
         }
         self.modal = None;
+    }
+
+    // ---------------- kanban board ----------------
+
+    fn selected_board_task(&self) -> Option<kanban::Task> {
+        let b = self.board.lock().unwrap();
+        let cols = kanban::TaskStatus::COLUMN_ORDER;
+        let status = *cols.get(self.board_col)?;
+        let mut list = b.projection().by_status(status);
+        if status == kanban::TaskStatus::Ready {
+            list.extend(b.projection().by_status(kanban::TaskStatus::Blocked));
+            list.extend(b.projection().by_status(kanban::TaskStatus::NeedsHuman));
+        }
+        list.into_iter().nth(self.board_row)
+    }
+
+    fn board_key(&mut self, k: crossterm::event::KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        if k.kind != crossterm::event::KeyEventKind::Press {
+            return;
+        }
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        match (k.code, ctrl) {
+            (KeyCode::Char('b'), true) => self.mode = UiMode::Chat,
+            (KeyCode::Left, _) => {
+                self.board_col = self.board_col.saturating_sub(1);
+                self.board_row = 0;
+            }
+            (KeyCode::Right, _) => {
+                self.board_col =
+                    (self.board_col + 1).min(kanban::TaskStatus::COLUMN_ORDER.len() - 1);
+                self.board_row = 0;
+            }
+            (KeyCode::Up, _) => self.board_row = self.board_row.saturating_sub(1),
+            (KeyCode::Down, _) => self.board_row = self.board_row.saturating_add(1),
+            (KeyCode::F(7), _) | (KeyCode::Char('n' | 'N'), false) => {
+                self.modal = Some(Modal::Input {
+                    title: "New task".into(),
+                    editor: Editor::new(),
+                    action: InputAction::NewTaskTitle,
+                });
+            }
+            (KeyCode::F(4), _) | (KeyCode::Char('e' | 'E'), false) => {
+                if let Some(t) = self.selected_board_task() {
+                    self.modal = Some(Modal::Input {
+                        title: "Edit task".into(),
+                        editor: Editor::with_text(&t.title),
+                        action: InputAction::BoardTitle { task_id: t.id },
+                    });
+                }
+            }
+            // status advance: the natural next action for the current status
+            (KeyCode::F(6), _)
+            | (KeyCode::Char('m' | 'M'), false)
+            | (KeyCode::Char('p' | 'P'), false) => {
+                self.board_advance();
+            }
+            (KeyCode::Char('a' | 'A'), false) => {
+                // assign a harness from the enabled list
+                let items: Vec<(String, String)> = self
+                    .cfg
+                    .harnesses
+                    .iter()
+                    .filter(|h| h.enabled && backend::supported_kind(&h.kind))
+                    .map(|h| (h.id.clone(), h.name.clone()))
+                    .collect();
+                self.modal = Some(Modal::List {
+                    title: "Assign harness".into(),
+                    items,
+                    sel: 0,
+                    action: ListAction::AssignHarness,
+                });
+            }
+            (KeyCode::Char('d' | 'D'), false) => {
+                self.board_act(kanban::TaskAction::Approve);
+            }
+            (KeyCode::Char('r' | 'R'), false) => {
+                self.board_act(kanban::TaskAction::Rework);
+            }
+            (KeyCode::F(8), _) | (KeyCode::Delete, _) => {
+                self.board_act(kanban::TaskAction::Cancel);
+            }
+            (KeyCode::Enter, _) => {
+                if let Some(t) = self.selected_board_task() {
+                    if let (Some(h), Some(sid)) = (t.harness.clone(), t.session_id.clone()) {
+                        self.mode = UiMode::Chat;
+                        self.open_session(&h, &sid);
+                    } else {
+                        self.toast("assign a harness first (a)", true);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn board_act(&mut self, action: kanban::TaskAction) {
+        let Some(t) = self.selected_board_task() else {
+            return;
+        };
+        let outcome = {
+            let mut b = self.board.lock().unwrap();
+            b.transition(&t.id, action)
+        };
+        match outcome {
+            Ok(updated) => self.toast(format!("{} → {:?}", updated.id, updated.status), false),
+            Err(e) => self.toast(e, true),
+        }
+    }
+
+    /// Promote/Start/Approve with auto-execution: entering Ready runs the
+    /// task on its harness (if assigned) and the turn's outcome drives the
+    /// next transition automatically.
+    fn board_advance(&mut self) {
+        use kanban::TaskAction as A;
+        use kanban::TaskStatus as S;
+        let Some(t) = self.selected_board_task() else {
+            return;
+        };
+        let action = match t.status {
+            S::Backlog | S::Blocked | S::NeedsHuman => A::Promote,
+            S::Ready => A::Start,
+            S::InProgress => A::Finish,
+            S::Review => A::Approve,
+            S::Done | S::Cancelled => return,
+        };
+        // Start immediately launches the agent turn
+        if action == A::Start {
+            self.run_task(&t);
+            return;
+        }
+        self.board_act(action);
+    }
+
+    /// Execute a task: create a harness session and send the task prompt.
+    fn run_task(&mut self, task: &kanban::Task) {
+        let Some(harness) = task.harness.clone() else {
+            self.toast("assign a harness first (a)", true);
+            return;
+        };
+        let Some(b) = self.ensure_backend(&harness) else {
+            self.toast("harness unavailable", true);
+            return;
+        };
+        {
+            let started = {
+                let mut board = self.board.lock().unwrap();
+                board.transition(&task.id, kanban::TaskAction::Start).ok()
+            };
+            if let Some(t) = started {
+                self.toast(format!("{} ▶ running on {harness}", t.id), false);
+            }
+        }
+        let prompt = kanban::task_prompt(task);
+        let tx = self.events_tx.clone();
+        let harness_clone = harness.clone();
+        let task_id = task.id.clone();
+        let model = self
+            .cfg
+            .harness(&harness)
+            .and_then(|h| h.default_model.clone());
+        let agent = self
+            .cfg
+            .harness(&harness)
+            .map(|h| h.agent.clone())
+            .filter(|a| !a.is_empty());
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("rt");
+            rt.block_on(async move {
+                match b.create_session(&format!("task {task_id}")).await {
+                    Ok(session) => {
+                        let _ = tx.send(BackendEvent::TaskLinked {
+                            harness: harness_clone,
+                            task_id,
+                            session_id: session.native_id.clone(),
+                        });
+                        let _ = b
+                            .send(
+                                &session.native_id,
+                                &prompt,
+                                &[],
+                                SendOpts {
+                                    model: model.as_ref(),
+                                    agent: agent.as_deref(),
+                                },
+                            )
+                            .await;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(BackendEvent::Error {
+                            harness: harness_clone,
+                            error: format!("task {task_id}: {e:#}"),
+                        });
+                    }
+                }
+            });
+        });
     }
 
     // ---------------- modal key handling ----------------
@@ -1906,6 +2193,23 @@ impl App {
                 self.ensure_backend(&harness);
                 self.toast(self.tr(Str::SettingsRestartNote), false);
             }
+            InputAction::NewTaskTitle => {
+                let title = value.trim().to_string();
+                if !title.is_empty() {
+                    let t = {
+                        let mut b = self.board.lock().unwrap();
+                        b.add_task(&title)
+                    };
+                    self.toast(format!("{} added to Backlog", t.id), false);
+                }
+            }
+            InputAction::BoardTitle { task_id } => {
+                let title = value.trim().to_string();
+                if !title.is_empty() {
+                    let mut b = self.board.lock().unwrap();
+                    let _ = b.edit_task(&task_id, &title);
+                }
+            }
             InputAction::ServerPassword { harness } => {
                 if let Some(h) = self.cfg.harness_mut(&harness) {
                     h.server_password = value.trim().to_string();
@@ -1948,6 +2252,12 @@ impl App {
                     h.agent = id;
                 }
                 let _ = self.cfg.save();
+            }
+            ListAction::AssignHarness => {
+                if let Some(t) = self.selected_board_task() {
+                    let mut b = self.board.lock().unwrap();
+                    let _ = b.assign(&t.id, Some(id));
+                }
             }
             ListAction::PermissionReply {
                 harness,

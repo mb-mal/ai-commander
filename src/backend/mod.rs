@@ -160,6 +160,12 @@ pub enum BackendEvent {
         native_id: String,
         title: String,
     },
+    /// A kanban task got its harness session (spawned by the board runner)
+    TaskLinked {
+        harness: String,
+        task_id: String,
+        session_id: String,
+    },
     /// The agent asks the user to approve an action (opencode permission flow)
     PermissionRequest {
         harness: String,

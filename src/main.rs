@@ -7,10 +7,7 @@
 //!   ai-commander --lang ru|en    UI language override
 //!   ai-commander --workdir PATH  working directory for the harness
 
-mod backend;
-mod config;
-mod i18n;
-mod ui;
+use ai_commander::{backend, config, i18n, ui};
 
 use std::io::stdout;
 
@@ -44,6 +41,7 @@ Developer: Mikhail Malyshev — Telegram & YouTube: @tsingular",
 struct Args {
     check: bool,
     send: String,
+    task: String,
     wait_secs: u64,
     server: String,
     lang: String,
@@ -58,6 +56,7 @@ fn parse_args() -> Args {
         match a.as_str() {
             "--check" => args.check = true,
             "--send" => args.send = it.next().unwrap_or_default(),
+            "--task" => args.task = it.next().unwrap_or_default(),
             "--wait" => args.wait_secs = it.next().and_then(|s| s.parse().ok()).unwrap_or(60),
             "--server" => args.server = it.next().unwrap_or_default(),
             "--lang" => args.lang = it.next().unwrap_or_default(),
@@ -101,6 +100,9 @@ async fn main() -> Result<()> {
 
     if args.check {
         return run_check(cfg, &args.harness).await;
+    }
+    if !args.task.is_empty() {
+        return run_task(cfg, &args.task, args.wait_secs.max(5), &args.harness).await;
     }
     if !args.send.is_empty() {
         return run_send(cfg, &args.send, args.wait_secs.max(5), &args.harness).await;
@@ -297,6 +299,124 @@ async fn run_check(cfg: Config, harness_id: &str) -> Result<()> {
     while rx.try_recv().is_ok() {}
     b.shutdown();
     println!("\ncheck OK");
+    Ok(())
+}
+
+// ---------------- headless kanban task ----------------
+
+/// Create a board task, run it on a harness, report the FSM outcome.
+async fn run_task(cfg: Config, title: &str, wait_secs: u64, harness_id: &str) -> Result<()> {
+    use ai_commander::kanban::{TaskAction, classify_reply, store::BoardStore};
+    use backend::{BackendEvent, PartKind, SendOpts, create_backend};
+    use std::time::Instant;
+
+    let harness_cfg = cfg
+        .harnesses
+        .iter()
+        .find(|h| {
+            h.enabled
+                && backend::supported_kind(&h.kind)
+                && (harness_id.is_empty() || h.id == harness_id)
+        })
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("no enabled harness '{harness_id}' in config"))?;
+
+    let mut board = BoardStore::open_redb(&ai_commander::kanban::Kanban::path())?;
+    let task = board.add_task(title);
+    board
+        .assign(&task.id, Some(harness_cfg.id.clone()))
+        .map_err(anyhow::Error::msg)?;
+    let task = board
+        .transition(&task.id, TaskAction::Promote)
+        .map_err(anyhow::Error::msg)?;
+    println!("task {} '{}' → {:?}", task.id, task.title, task.status);
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let b = create_backend(&harness_cfg, tx.clone())?;
+    let _version = b.connect().await?;
+
+    let session = b.create_session(title).await?;
+    board.link_session(&task.id, &session.native_id);
+    let task = board
+        .transition(&task.id, TaskAction::Start)
+        .map_err(anyhow::Error::msg)?;
+    println!(
+        "running on {} [{}] attempt {}",
+        harness_cfg.id, session.native_id, task.attempts
+    );
+
+    let prompt = ai_commander::kanban::task_prompt(&task);
+    let model = harness_cfg.default_model.clone();
+    let agent = if harness_cfg.agent.is_empty() {
+        None
+    } else {
+        Some(harness_cfg.agent.clone())
+    };
+    b.send(
+        &session.native_id,
+        &prompt,
+        &[],
+        SendOpts {
+            model: model.as_ref(),
+            agent: agent.as_deref(),
+        },
+    )
+    .await?;
+
+    let mut reply = String::new();
+    let deadline = Instant::now() + std::time::Duration::from_secs(wait_secs);
+    loop {
+        let remain = deadline.saturating_duration_since(Instant::now());
+        if remain.is_zero() {
+            break;
+        }
+        let ev = match tokio::time::timeout(remain, rx.recv()).await {
+            Ok(Some(ev)) => ev,
+            Ok(None) | Err(_) => break,
+        };
+        match ev {
+            BackendEvent::PartDelta {
+                native_id,
+                kind,
+                delta,
+                ..
+            } if native_id == session.native_id && kind == PartKind::Text => {
+                print!("{delta}");
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+                reply.push_str(&delta);
+            }
+            BackendEvent::StreamDone { native_id, .. } if native_id == session.native_id => {
+                println!();
+                break;
+            }
+            BackendEvent::StreamError {
+                native_id, error, ..
+            } if native_id == session.native_id => {
+                println!(
+                    "
+[error] {error}"
+                );
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let action = match classify_reply(&reply) {
+        ai_commander::kanban::TurnOutcome::Finished => TaskAction::Finish,
+        ai_commander::kanban::TurnOutcome::Blocked => TaskAction::Block,
+        ai_commander::kanban::TurnOutcome::NeedsHuman => TaskAction::Ask,
+    };
+    let final_task = board
+        .transition(&task.id, action)
+        .map_err(anyhow::Error::msg)?;
+    println!(
+        "
+{} final status: {:?}",
+        final_task.id, final_task.status
+    );
+    b.shutdown();
     Ok(())
 }
 

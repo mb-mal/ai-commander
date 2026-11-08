@@ -33,6 +33,7 @@ getrandom = "0.3"
 which = "8"
 agent-client-protocol = "1.0.1"
 unicode-segmentation = "1.13.3"
+redb = "2.6.4"
 
 [profile.release]
 lto = true
