@@ -394,13 +394,14 @@ impl BoardStore {
             attempts: 0,
             started_ms: None,
             lease_until_ms: None,
+            not_before_ms: None,
             max_attempts: crate::kanban::default_max_attempts(),
+            max_turns: crate::kanban::default_max_turns(),
             schedule: String::new(),
             budget_usd: 0.0,
             unit_cost_usd: 0.0,
             run_budget_secs: 0,
             parent_id: None,
-            max_turns: 0,
             created_ms: crate::kanban::now_ms(),
             updated_ms: crate::kanban::now_ms(),
         };
@@ -755,6 +756,7 @@ Open questions: {open_questions}"
     /// DAG scheduler: Ready tasks whose dependencies are all settled
     /// (Done or Cancelled) — the daemon launches only these.
     pub fn launchable(&self) -> Vec<Task> {
+        let now = crate::kanban::now_ms();
         let settled = |id: &str| {
             self.proj
                 .tasks
@@ -766,7 +768,11 @@ Open questions: {open_questions}"
         self.proj
             .tasks
             .iter()
-            .filter(|t| t.status == TaskStatus::Ready && t.depends_on.iter().all(|d| settled(d)))
+            .filter(|t| {
+                let deps_ok = t.depends_on.iter().all(|d| settled(d));
+                let backoff_ok = t.not_before_ms.map(|nb| now >= nb).unwrap_or(true);
+                t.status == TaskStatus::Ready && deps_ok && backoff_ok
+            })
             .cloned()
             .collect()
     }
@@ -775,6 +781,13 @@ Open questions: {open_questions}"
     /// The watchdog won't touch a task whose lease is still valid.
     pub fn renew_lease(&mut self, task_id: &str) {
         self.renew_lease_at(task_id, crate::kanban::now_ms());
+    }
+
+    /// Н1: exponential backoff — set the earliest next-launch timestamp.
+    pub fn set_not_before(&mut self, task_id: &str, not_before_ms: i64) {
+        if let Some(t) = self.proj.tasks.iter_mut().find(|t| t.id == task_id) {
+            t.not_before_ms = Some(not_before_ms);
+        }
     }
 
     /// Clock-aware variant for tests.

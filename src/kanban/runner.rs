@@ -73,14 +73,47 @@ pub fn on_progress_no_reply(board: &mut BoardStore, task_id: &str, delta: &str) 
 
 /// Classify the accumulated reply and transition the task (Б8: StreamDone
 /// must finish the task, not just clear a busy flag).
+/// Н1: Failed retries are capped by max_attempts and delayed exponentially.
 pub fn on_stream_done(board: &mut BoardStore, task_id: &str, reply: &str) -> Result<Task, String> {
-    let action = match classify_reply(reply) {
+    let outcome = classify_reply(reply);
+    let action = match outcome {
         TurnOutcome::Finished => TaskAction::Finish,
         TurnOutcome::Blocked => TaskAction::Block,
         TurnOutcome::NeedsHuman => TaskAction::Ask,
-        TurnOutcome::Failed => TaskAction::Interrupt,
+        TurnOutcome::Failed => {
+            // Н1: cap retries — after max_attempts the task escalates
+            let t = board
+                .projection()
+                .tasks
+                .iter()
+                .find(|t| t.id == task_id)
+                .cloned();
+            if let Some(t) = t {
+                if t.attempts >= t.max_attempts {
+                    TaskAction::Ask // escalate: exhausted retries
+                } else {
+                    // Н1: exponential backoff before the next launch
+                    let delay_secs = backoff_secs(t.attempts);
+                    let not_before = crate::kanban::now_ms() + delay_secs * 1000;
+                    board.set_not_before(task_id, not_before);
+                    TaskAction::Interrupt
+                }
+            } else {
+                TaskAction::Interrupt
+            }
+        }
     };
     board.transition(task_id, action)
+}
+
+/// Exponential backoff: 30s, 2min, 8min… capped at 15min.
+fn backoff_secs(attempts: u32) -> i64 {
+    match attempts {
+        0..=1 => 30,
+        2 => 120,
+        3 => 480,
+        _ => 900,
+    }
 }
 
 /// Send a task to its harness backend (shared by TUI and daemon).

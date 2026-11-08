@@ -19,13 +19,17 @@ pub fn default_max_attempts() -> u32 {
     3
 }
 
+pub fn default_max_turns() -> u32 {
+    10
+}
+
 /// A turn is considered stuck after this long without a StreamDone.
 pub const STUCK_AFTER_MS: i64 = 10 * 60 * 1000;
 
 /// Max delegation chain depth (review §8: ограничить глубину делегирования).
 pub const MAX_DELEGATION_DEPTH: usize = 3;
 
-fn now_ms() -> i64 {
+pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -159,6 +163,9 @@ pub struct Task {
     /// watchdog only intervenes when this has passed (review v2 Б6)
     #[serde(default)]
     pub lease_until_ms: Option<i64>,
+    /// Н1: don't launch this task before this timestamp (exponential backoff)
+    #[serde(default)]
+    pub not_before_ms: Option<i64>,
     /// max attempts before the task escalates to NeedsHuman
     #[serde(default = "default_max_attempts")]
     pub max_attempts: u32,
@@ -277,8 +284,9 @@ pub fn classify_reply(reply: &str) -> TurnOutcome {
     } else if head.starts_with("DONE") {
         TurnOutcome::Finished
     } else {
-        // a substantive reply without an explicit marker: treat as a summary
-        TurnOutcome::Finished
+        // Н2: no explicit DONE: marker → not a completion (error text,
+        // timeouts, partial replies all land here)
+        TurnOutcome::Failed
     }
 }
 
@@ -420,6 +428,7 @@ mod tests {
             attempts: 0,
             started_ms: None,
             lease_until_ms: None,
+            not_before_ms: None,
             max_attempts: default_max_attempts(),
             schedule: String::new(),
             budget_usd: 0.0,
@@ -490,7 +499,8 @@ mod tests {
         );
         assert_eq!(
             classify_reply("всё сделано, тесты прошли успешно"),
-            TurnOutcome::Finished
+            TurnOutcome::Failed,
+            "no DONE: marker → not a completion (Н2)"
         );
         // review v2 Б5: short/empty replies are failures
         assert_eq!(classify_reply(""), TurnOutcome::Failed);
