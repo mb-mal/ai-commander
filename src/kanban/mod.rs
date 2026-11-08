@@ -19,6 +19,9 @@ pub fn default_max_attempts() -> u32 {
 /// A turn is considered stuck after this long without a StreamDone.
 pub const STUCK_AFTER_MS: i64 = 10 * 60 * 1000;
 
+/// Max delegation chain depth (review §8: ограничить глубину делегирования).
+pub const MAX_DELEGATION_DEPTH: usize = 3;
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -146,6 +149,26 @@ pub struct Task {
     /// max attempts before the task escalates to NeedsHuman
     #[serde(default = "default_max_attempts")]
     pub max_attempts: u32,
+    /// cron schedule (5-field) for recurring tasks; empty = one-off
+    #[serde(default)]
+    pub schedule: String,
+    /// cost budget in USD for this task's subtree; 0 = unlimited
+    #[serde(default)]
+    pub budget_usd: f64,
+    /// approximate cost of one attempt (from the role); attempts × this is
+    /// checked against budget_usd at Start
+    #[serde(default)]
+    pub unit_cost_usd: f64,
+    /// wall-clock budget for one turn in seconds; 0 = unlimited (watchdog
+    /// escalates instead of waiting the full stuck window)
+    #[serde(default)]
+    pub run_budget_secs: i64,
+    /// parent task (delegation chain; depth capped by MAX_DELEGATION_DEPTH)
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    /// max turns in the task thread (limiter); 0 = unlimited
+    #[serde(default)]
+    pub max_turns: u32,
     pub created_ms: i64,
     pub updated_ms: i64,
 }
@@ -182,6 +205,7 @@ impl Kanban {
 
 pub mod roles;
 pub mod store;
+pub mod worktree;
 pub use store::{BoardStore, EventStore, RedbStore, SCHEMA_VERSION, StoredEvent};
 
 /// The instruction sent to the agent when a task starts.
@@ -255,6 +279,12 @@ mod tests {
             attempts: 0,
             started_ms: None,
             max_attempts: default_max_attempts(),
+            schedule: String::new(),
+            budget_usd: 0.0,
+            unit_cost_usd: 0.0,
+            run_budget_secs: 0,
+            parent_id: None,
+            max_turns: 0,
             created_ms: 1,
             updated_ms: 1,
         }

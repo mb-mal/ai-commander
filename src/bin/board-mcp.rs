@@ -70,10 +70,11 @@ fn main() {
 fn tools() -> Value {
     json!([
         {"name": "board.create_task",
-         "description": "Create a kanban task (Backlog). Optional depends_on: task ids that must finish first.",
+         "description": "Create a kanban task (Backlog). Optional depends_on: task ids that must finish first; parent_id: delegate from your task (depth is capped).",
          "inputSchema": {"type": "object", "properties": {
              "title": {"type": "string"},
-             "depends_on": {"type": "array", "items": {"type": "string"}}},
+             "depends_on": {"type": "array", "items": {"type": "string"}},
+             "parent_id": {"type": "string"}},
              "required": ["title"]}},
         {"name": "board.update_task",
          "description": "Advance a task: action = promote|start|finish|approve|rework|cancel. You may only start/finish a task assigned to your role.",
@@ -126,7 +127,10 @@ fn call_tool(
             if title.trim().is_empty() {
                 return Err("title is required".into());
             }
-            let t = board.add_task(&title);
+            let t = match args.get("parent_id").and_then(Value::as_str) {
+                Some(parent) if !parent.is_empty() => board.add_subtask(parent, &title)?,
+                _ => board.add_task(&title),
+            };
             if let Some(deps) = args.get("depends_on").and_then(Value::as_array) {
                 let ids: Vec<String> = deps
                     .iter()

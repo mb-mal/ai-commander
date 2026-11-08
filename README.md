@@ -167,6 +167,22 @@ new owner.
 - any harness: `ai-commander --print-mcp-config` prints the snippet for
   its own MCP config
 
+### Worktree isolation, triggers, budgets
+
+- **Git worktree per code task**: Start creates `ai-commander/t-XXXX` in
+  `.aic-worktrees/t-XXXX` (base = current branch); Review→Done merges the
+  branch back (`--no-ff`) and removes the worktree; a conflict aborts the
+  merge and keeps the task in Review; Cancel drops the worktree unmerged.
+  Engages via `transition_in` in the TUI runner and the daemon (plain
+  `transition` never touches git)
+- **Triggers**: `Task.schedule` (5-field cron string) — the daemon spawns a
+  fresh one-shot child task per due window (`spawn_due_scheduled`)
+- **Budgets & limits**: `budget_usd` × `unit_cost_usd` blocks Starts beyond
+  the budget; `run_budget_secs` escalates a silent turn straight to
+  NeedsHuman (instead of the retry path); `max_turns` caps thread turns;
+  delegation chains (`parent_id`, MCP `board.create_task parent_id`) are
+  capped at depth 3
+
 ### Task DAG & policy engine
 
 - Tasks may declare `depends_on` (task ids; forward refs allowed): the
