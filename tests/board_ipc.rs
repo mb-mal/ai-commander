@@ -78,7 +78,7 @@ fn board_mcp_uses_owner_store_over_ipc() {
         &mut child,
         2,
         "tools/call",
-        serde_json::json!({"name": "board.create_task",
+        serde_json::json!({"name": "board_create_task",
                            "arguments": {"title": "created via the ipc owner"}}),
     );
     let text = created["result"]["content"][0]["text"]
@@ -94,7 +94,7 @@ fn board_mcp_uses_owner_store_over_ipc() {
         &mut child,
         3,
         "tools/call",
-        serde_json::json!({"name": "board.artifact",
+        serde_json::json!({"name": "board_artifact",
                            "arguments": {"task_id": "t-0001", "kind": "file", "value": "src/x.rs"}}),
     );
     let atext = listed["result"]["content"][0]["text"]

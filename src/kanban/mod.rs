@@ -337,7 +337,7 @@ pub fn board_tool_call(
             .to_string()
     };
     match name {
-        "board.create_task" => {
+        "board_create_task" => {
             let title = str_arg("title");
             if title.trim().is_empty() {
                 return Err("title is required".into());
@@ -355,7 +355,7 @@ pub fn board_tool_call(
             }
             Ok(format!("created {} '{}' in Backlog", t.id, t.title))
         }
-        "board.update_task" => {
+        "board_update_task" => {
             let id = str_arg("task_id");
             let action = match str_arg("action").as_str() {
                 "promote" => TaskAction::Promote,
@@ -388,7 +388,7 @@ pub fn board_tool_call(
             let t = board.transition(&id, action)?;
             Ok(format!("{} → {:?}", t.id, t.status))
         }
-        "board.comment" => {
+        "board_comment" => {
             let id = str_arg("task_id");
             let text = str_arg("text");
             if text.trim().is_empty() {
@@ -397,7 +397,7 @@ pub fn board_tool_call(
             board.comment(&id, role, "comment", &text)?;
             Ok("comment posted".into())
         }
-        "board.handoff" => {
+        "board_handoff" => {
             let t = board.handoff(
                 &str_arg("task_id"),
                 role,
@@ -407,7 +407,7 @@ pub fn board_tool_call(
             )?;
             Ok(format!("handed off to {:?}; status {:?}", t.role, t.status))
         }
-        "board.artifact" => {
+        "board_artifact" => {
             let t = board.add_artifact(
                 &str_arg("task_id"),
                 &str_arg("kind"),
@@ -420,7 +420,7 @@ pub fn board_tool_call(
                 t.artifacts.len()
             ))
         }
-        "board.read_inbox" => {
+        "board_read_inbox" => {
             let id = str_arg("task_id");
             let since = args.get("since_ms").and_then(Value::as_i64).unwrap_or(0);
             let inbox = board
@@ -438,7 +438,7 @@ pub fn board_tool_call(
 ",
                 ))
         }
-        "board.ask_human" => {
+        "board_ask_human" => {
             let id = str_arg("task_id");
             board.comment(&id, role, "system", &str_arg("text"))?;
             board.transition(&id, TaskAction::Ask)?;

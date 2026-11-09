@@ -144,7 +144,8 @@ the log, snapshot == fold(log).
 - **Roles**: `~/.ai-commander/agents/<id>.md` (YAML frontmatter: name/harness/
   model/autonomy + markdown instructions) and `.ai-commander/agents/…` at
   project level (project wins). Assign with `o` on the board; the role's
-  instructions prefix the task prompt. Teams: `.ai-commander/teams/<id>.yaml`
+  instructions prefix the task prompt. Teams (`.ai-commander/teams/<id>.yaml`)
+  are NOT implemented yet — planned; the files are ignored by the loader
   (name/lead/members).
 - **Daemon**: `ai-commander --daemon` runs the board without a UI — launches
   Ready tasks, retries stuck ones via the watchdog, exits when the board
@@ -154,9 +155,9 @@ the log, snapshot == fold(log).
 ### Agent-to-agent board (MCP)
 
 The board is exposed to agents as MCP tools by the `board-mcp` binary
-(newline JSON-RPC over stdio, MCP 2024-11-05): `board.create_task`,
-`board.update_task`, `board.comment`, `board.handoff`, `board.artifact`,
-`board.read_inbox`, `board.ask_human`. The role identity is the per-session
+(newline JSON-RPC over stdio, MCP 2024-11-05): `board_create_task`,
+`board_update_task`, `board_comment`, `board_handoff`, `board_artifact`,
+`board_read_inbox`, `board_ask_human`. The role identity is the per-session
 token (`AI_COMMANDER_ROLE` env): every mutation is authored by that role,
 and start/finish are ownership-checked. Handoffs carry a validated contract
 (summary ≥ 10 chars + open questions) and return the task to Ready for the
@@ -185,7 +186,7 @@ store. Only when nobody owns the board does it open the store directly.
 
 - **Ctrl+L** — collapsible activity feed (bottom): the board's event log tail,
   task ids + actions + statuses
-- **Ctrl+U** — agents & teams panel: roles (name/harness/status), harness
+- **Ctrl+U** — agents panel: roles (name/harness/status), harness
   backends (ready/busy/off); `T` opens the role wizard (coder/reviewer/
   planner/tester → `.ai-commander/agents/<id>.md`)
 - **Approvals counter** in the header (`⚠ approvals:N`) while permission
@@ -206,7 +207,7 @@ store. Only when nobody owns the board does it open the store directly.
 - **Budgets & limits**: `budget_usd` × `unit_cost_usd` blocks Starts beyond
   the budget; `run_budget_secs` escalates a silent turn straight to
   NeedsHuman (instead of the retry path); `max_turns` caps thread turns;
-  delegation chains (`parent_id`, MCP `board.create_task parent_id`) are
+  delegation chains (`parent_id`, MCP `board_create_task parent_id`) are
   capped at depth 3
 
 ### Task DAG & policy engine
@@ -280,7 +281,7 @@ Security fixes:
 - **Д5** a failed send still ends the turn (empty reply → retry cap)
 - **Д7** role files are cached by fingerprint (path, mtime, len) and
   re-read only on change
-- **Д8** artifacts: first-class task outputs, `board.artifact` MCP tool,
+- **Д8** artifacts: first-class task outputs, `board_artifact` MCP tool,
   survive handoffs
 
 ## Limitations & roadmap

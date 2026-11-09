@@ -259,7 +259,7 @@ mod tests {
         let port = serve_at(&pf, handle).expect("serve");
 
         // what a web page sends: fetch(url, {method: 'POST', mode: 'no-cors', body})
-        let body = "{\"tool\":\"board.create_task\",\"args\":{\"title\":\"injected from a web page\"},\"role\":\"anyone\"}\n";
+        let body = "{\"tool\":\"board_create_task\",\"args\":{\"title\":\"injected from a web page\"},\"role\":\"anyone\"}\n";
         let req = format!(
             "POST / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: https://evil.example\r\n\
              Content-Type: text/plain\r\nContent-Length: {}\r\n\r\n{body}",
@@ -296,11 +296,11 @@ mod tests {
         for body in [
             // no token at all
             format!(
-                "{{\"tool\":\"board.create_task\",\"args\":{{\"title\":\"x\"}},\"role_token\":\"{role_tok}\"}}\n"
+                "{{\"tool\":\"board_create_task\",\"args\":{{\"title\":\"x\"}},\"role_token\":\"{role_tok}\"}}\n"
             ),
             // wrong token
             format!(
-                "{{\"token\":\"deadbeef\",\"tool\":\"board.create_task\",\"args\":{{\"title\":\"x\"}},\"role_token\":\"{role_tok}\"}}\n"
+                "{{\"token\":\"deadbeef\",\"tool\":\"board_create_task\",\"args\":{{\"title\":\"x\"}},\"role_token\":\"{role_tok}\"}}\n"
             ),
         ] {
             let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
@@ -335,7 +335,7 @@ mod tests {
         // coder builds an ASSIGNED task into Review (handoff assigns the role)
         let r = call_owner_at(
             &pf,
-            "board.create_task",
+            "board_create_task",
             &json!({"title": "spoof probe"}),
             &coder_tok,
         )
@@ -344,7 +344,7 @@ mod tests {
         let id = r.split(' ').nth(1).unwrap().to_string();
         call_owner_at(
             &pf,
-            "board.handoff",
+            "board_handoff",
             &json!({"task_id": id, "to_role": "coder", "summary": "assigned to coder for the probe"}),
             &coder_tok,
         )
@@ -352,7 +352,7 @@ mod tests {
         .unwrap();
         call_owner_at(
             &pf,
-            "board.update_task",
+            "board_update_task",
             &json!({"task_id": id, "action": "promote"}),
             &coder_tok,
         )
@@ -360,7 +360,7 @@ mod tests {
         .unwrap();
         call_owner_at(
             &pf,
-            "board.update_task",
+            "board_update_task",
             &json!({"task_id": id, "action": "start"}),
             &coder_tok,
         )
@@ -368,7 +368,7 @@ mod tests {
         .unwrap();
         call_owner_at(
             &pf,
-            "board.update_task",
+            "board_update_task",
             &json!({"task_id": id, "action": "finish"}),
             &coder_tok,
         )
@@ -379,7 +379,7 @@ mod tests {
         // the server must act as the token's role (coder) and refuse
         let (msg, ok) = match call_owner_at(
             &pf,
-            "board.update_task",
+            "board_update_task",
             &json!({"task_id": id, "action": "approve", "role": "reviewer"}),
             &coder_tok,
         )
@@ -396,7 +396,7 @@ mod tests {
         // the real reviewer token still approves
         call_owner_at(
             &pf,
-            "board.update_task",
+            "board_update_task",
             &json!({"task_id": id, "action": "approve"}),
             &reviewer_tok,
         )
@@ -426,7 +426,7 @@ mod tests {
 
         let res = call_owner_at(
             &pf,
-            "board.create_task",
+            "board_create_task",
             &json!({"title": "x"}),
             "not-a-real-token",
         )

@@ -1,8 +1,10 @@
-//! Agent roles and teams, declared as files (git-friendly, Claude-Code-style):
+//! Agent roles, declared as files (git-friendly, Claude-Code-style):
 //!
 //!   .ai-commander/agents/<id>.md   — YAML frontmatter + markdown instructions
-//!   .ai-commander/teams/<id>.yaml  — a squad of roles
 //!
+//! Teams (.ai-commander/teams) are NOT implemented yet — the loader ignores
+//! them (README marks them as planned; no dead surface).
+
 //! A role binds a harness + model + system instructions to a task; the task
 //! prompt is prefixed with the role's instruction body. User level
 //! (`~/.ai-commander`) and project level (`.<cwd>/.ai-commander`) are merged,
@@ -30,18 +32,9 @@ pub struct Role {
     pub instructions: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Team {
-    pub name: String,
-    pub lead: String,
-    pub members: Vec<String>,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct RoleSet {
     pub roles: BTreeMap<String, Role>,
-    pub teams: BTreeMap<String, Team>,
     /// paths that contributed (for UI/debug)
     pub sources: Vec<PathBuf>,
     /// v5 #6: files that failed to load (bad YAML, unknown fields) — shown
@@ -141,27 +134,6 @@ pub fn load_roles_dir_into(dir: &Path, into: &mut RoleSet) {
     }
 }
 
-fn load_teams_dir(dir: &Path, into: &mut RoleSet) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.extension().and_then(|x| x.to_str()) != Some("yaml") {
-            continue;
-        }
-        let Some(id) = p.file_stem().and_then(|s| s.to_str()).map(str::to_owned) else {
-            continue;
-        };
-        let Ok(raw) = std::fs::read_to_string(&p) else {
-            continue;
-        };
-        if let Ok(team) = serde_norway::from_str::<Team>(&raw) {
-            into.teams.insert(id, team);
-        }
-    }
-}
-
 impl RoleSet {
     pub fn load(cwd: &Path) -> RoleSet {
         let mut rs = RoleSet::default();
@@ -169,13 +141,11 @@ impl RoleSet {
         if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
             let base = PathBuf::from(&home).join(".ai-commander");
             load_roles_dir_into(&base.join("agents"), &mut rs);
-            load_teams_dir(&base.join("teams"), &mut rs);
             rs.sources.push(base);
         }
         // project level (wins)
         let proj = cwd.join(".ai-commander");
         load_roles_dir_into(&proj.join("agents"), &mut rs);
-        load_teams_dir(&proj.join("teams"), &mut rs);
         rs.sources.push(proj);
         rs
     }
@@ -225,7 +195,7 @@ fn fingerprint(cwd: &Path) -> Fingerprint {
     roots.push(cwd.join(".ai-commander"));
     let mut out = Vec::new();
     for base in roots {
-        for sub in ["agents", "teams"] {
+        for sub in ["agents"] {
             let dir = base.join(sub);
             let Ok(rd) = std::fs::read_dir(&dir) else {
                 continue;
