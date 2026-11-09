@@ -303,6 +303,11 @@ impl App {
             }
             arc
         };
+        // v5: policy warnings surface in the log (trust model, dropped rules)
+        let policy = crate::policy::Policy::load(&std::env::current_dir().unwrap_or_default());
+        for w in &policy.warnings {
+            crate::log_warn!("policy", "{w}");
+        }
         let mut app = App {
             cur: CurrentChat::draft(&active),
             active_harness: active.clone(),
@@ -328,7 +333,7 @@ impl App {
             toast: None,
             quit: false,
             mode: UiMode::Chat,
-            policy: crate::policy::Policy::load(&std::env::current_dir().unwrap_or_default()),
+            policy,
             show_activity: false,
             approvals_pending: 0,
             board,
@@ -2653,6 +2658,7 @@ mod tests {
         let cfg = crate::config::Config {
             lang: crate::i18n::Lang::En,
             profile_name: "tester".into(),
+            trusted_projects: Vec::new(),
             harnesses: vec![crate::config::HarnessCfg {
                 id: kind.into(),
                 name: "Scripted".into(),

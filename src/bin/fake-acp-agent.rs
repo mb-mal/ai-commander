@@ -32,6 +32,7 @@ use agent_client_protocol::schema::v1::{
     NewSessionRequest, PermissionOption, PermissionOptionKind, PromptRequest,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SessionNotification, SessionUpdate, TextContent, ToolCallUpdate, ToolCallUpdateFields,
+    ToolKind,
 };
 use serde_json::{Value, json};
 
@@ -252,6 +253,10 @@ fn main() {
                 // the turn completes when the client replies (see above)
                 let mut fields = ToolCallUpdateFields::default();
                 fields.title = Some("rm -rf probe".into());
+                // v5 issues #1: real kind + raw command so the client's
+                // policy engine sees what the agent wants to do
+                fields.kind = Some(ToolKind::Execute);
+                fields.raw_input = Some(serde_json::json!({"command": "rm -rf probe"}));
                 let req = RequestPermissionRequest::new(
                     sid.clone(),
                     ToolCallUpdate::new("tc_probe_1", fields),

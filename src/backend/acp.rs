@@ -36,7 +36,7 @@ use agent_client_protocol::schema::v1::{
     LoadSessionRequest, McpServer, McpServerStdio, NewSessionRequest, PermissionOption,
     PermissionOptionKind, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
-    TextContent, ToolCallStatus,
+    TextContent, ToolCallStatus, ToolKind,
 };
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -390,13 +390,34 @@ impl Backend for AcpBackend {
                                 continue;
                             }
                             let sid = req.session_id.to_string();
-                            // v4 Б2: the human label is `name` (schema), not `label`
-                            let title = req
-                                .options
-                                .iter()
-                                .map(|o| o.name.clone())
-                                .collect::<Vec<_>>()
-                                .join(" / ");
+                            // v5 issues #1: the policy engine must see WHAT
+                            // the agent wants — action from the tool kind,
+                            // resource from locations / the raw command, and
+                            // a human-readable title from the tool call
+                            let f = &req.tool_call.fields;
+                            let kind = f.kind.unwrap_or_default();
+                            let action = tool_kind_name(kind).to_string();
+                            let resource = if action == "execute" {
+                                raw_input_text(f.raw_input.as_ref())
+                            } else {
+                                f.locations
+                                    .as_ref()
+                                    .and_then(|l| l.first())
+                                    .map(|l| l.path.to_string_lossy().into_owned())
+                                    .unwrap_or_default()
+                            };
+                            let title = f
+                                .title
+                                .clone()
+                                .filter(|t| !t.trim().is_empty())
+                                .unwrap_or_else(|| {
+                                    // v4 Б2: fall back to option names
+                                    req.options
+                                        .iter()
+                                        .map(|o| o.name.clone())
+                                        .collect::<Vec<_>>()
+                                        .join(" / ")
+                                });
                             // register BEFORE notifying — the UI's reply must
                             // always find the pending entry (no lost race)
                             permissions.lock().unwrap().push(PendingPermission {
@@ -412,8 +433,8 @@ impl Backend for AcpBackend {
                                     serde_json::to_string(&raw_id).unwrap_or_default()
                                 ),
                                 title,
-                                action: "session".into(),
-                                resource: String::new(),
+                                action,
+                                resource,
                             });
                         }
                         _ => {
@@ -906,6 +927,38 @@ fn board_mcp_entry(role: &str) -> Option<McpServer> {
         .ok()
         .and_then(|e| e.parent().map(|p| p.to_path_buf()))?;
     board_mcp_at(&dir, role)
+}
+
+/// Policy action name for a tool kind (v5 issues #1): matches the ACP
+/// snake_case kinds; an absent kind is `other`, to which `allow` rules
+/// never apply (the policy engine decides ask/deny only).
+fn tool_kind_name(kind: ToolKind) -> &'static str {
+    match kind {
+        ToolKind::Read => "read",
+        ToolKind::Edit => "edit",
+        ToolKind::Delete => "delete",
+        ToolKind::Move => "move",
+        ToolKind::Search => "search",
+        ToolKind::Execute => "execute",
+        ToolKind::Think => "think",
+        ToolKind::Fetch => "fetch",
+        ToolKind::SwitchMode => "switch_mode",
+        _ => "other",
+    }
+}
+
+/// Human-readable command for an `execute` permission from the tool's
+/// raw input: {"command": "..."} / {"cmd": "..."} / bare string.
+fn raw_input_text(raw: Option<&Value>) -> String {
+    match raw {
+        Some(Value::String(s)) => s.clone(),
+        Some(obj @ Value::Object(_)) => ["command", "cmd", "script", "input"]
+            .iter()
+            .find_map(|k| obj.get(*k).and_then(Value::as_str))
+            .unwrap_or_default()
+            .to_string(),
+        _ => String::new(),
+    }
 }
 
 fn board_mcp_at(dir: &std::path::Path, role: &str) -> Option<McpServer> {

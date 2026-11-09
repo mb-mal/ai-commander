@@ -1,0 +1,36 @@
+lang = "en"
+profile_name = "Macron"
+trusted_projects = []
+
+[[harness]]
+id = "oc"
+name = "OpenCode"
+kind = "opencode"
+enabled = true
+server_url = ""
+server_password = ""
+workdir = ""
+agent = "build"
+auto_approve = false
+
+[[harness]]
+id = "hermes"
+name = "Hermes Agent"
+kind = "hermes"
+enabled = false
+server_url = ""
+server_password = ""
+workdir = ""
+agent = ""
+auto_approve = false
+
+[[harness]]
+id = "dsh"
+name = "DeepSeek Harness"
+kind = "deepseek-harness"
+enabled = false
+server_url = ""
+server_password = ""
+workdir = ""
+agent = ""
+auto_approve = false
