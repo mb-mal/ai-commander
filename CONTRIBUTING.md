@@ -11,6 +11,18 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
+## Pre-push hook (do this once per clone)
+
+`master` only accepts green pushes — enable the bundled hook so fmt, clippy
+and tests run BEFORE the push instead of failing in CI:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+If a CI run still fails, read the failed STEP and the exact log line before
+explaining it (a rustup-install script line in the log is not a failure).
+
 Windows without MSVC Build Tools: run `bash scripts/fetch-tools.sh` once, then
 prefix cargo commands with `source scripts/gnu-env.sh`.
 
