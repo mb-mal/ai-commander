@@ -255,7 +255,7 @@ pub struct App {
     pub show_activity: bool,
     /// approvals queue length shown in the header (permission requests)
     pub approvals_pending: usize,
-    pub board: Arc<std::sync::Mutex<kanban::store::BoardStore>>,
+    pub board: Arc<parking_lot::Mutex<kanban::store::BoardStore>>,
     pub board_col: usize,
     pub board_row: usize,
     pub board_sel: Option<String>,
@@ -290,7 +290,7 @@ impl App {
         let board = {
             let opened = kanban::store::BoardStore::open_redb(&kanban::Kanban::path());
             let owns = opened.is_ok();
-            let arc = Arc::new(std::sync::Mutex::new(
+            let arc = Arc::new(parking_lot::Mutex::new(
                 opened.unwrap_or_else(|_| kanban::store::BoardStore::open_memory()),
             ));
             if owns {
@@ -301,7 +301,6 @@ impl App {
                 // v5 #3: drop worktrees of tasks that no longer exist
                 let ids: Vec<String> = arc
                     .lock()
-                    .unwrap()
                     .projection()
                     .tasks
                     .iter()
@@ -730,7 +729,7 @@ impl App {
                         .map(|d| d.as_millis() as i64)
                         .unwrap_or(0);
                     let stuck = {
-                        let b = self.board.lock().unwrap();
+                        let b = self.board.lock();
                         b.watchdog_scan(now)
                     };
                     if !stuck.is_empty() {
@@ -740,7 +739,7 @@ impl App {
                         kanban::runner::abort_stuck(&self.backends, &stuck).await;
                         // then apply the transitions
                         let acted = {
-                            let mut b = self.board.lock().unwrap();
+                            let mut b = self.board.lock();
                             b.watchdog_apply(&stuck)
                         };
                         for (id, label) in acted {
@@ -793,7 +792,7 @@ impl App {
                 title,
             } => {
                 {
-                    let mut b = self.board.lock().unwrap();
+                    let mut b = self.board.lock();
                     let pendings: Vec<String> = b
                         .projection()
                         .tasks
@@ -842,7 +841,7 @@ impl App {
                 task_id,
                 session_id,
             } => {
-                let mut b = self.board.lock().unwrap();
+                let mut b = self.board.lock();
                 b.link_session(&task_id, &session_id);
                 self.busy.insert((harness.clone(), session_id.clone()));
             }
@@ -858,11 +857,11 @@ impl App {
                 // Reasoning, tool calls all indicate the agent is alive
                 {
                     let task_id = {
-                        let b = self.board.lock().unwrap();
+                        let b = self.board.lock();
                         b.find_by_session(&harness, &native_id).map(|t| t.id)
                     };
                     if let Some(id) = task_id {
-                        let mut b = self.board.lock().unwrap();
+                        let mut b = self.board.lock();
                         kanban::runner::on_progress_no_reply(&mut b, &id, &delta);
                     }
                 }
@@ -881,11 +880,11 @@ impl App {
                 // inside one turn is not watchdog-interrupted
                 {
                     let task_id = {
-                        let b = self.board.lock().unwrap();
+                        let b = self.board.lock();
                         b.find_by_session(&harness, &native_id).map(|t| t.id)
                     };
                     if let Some(id) = task_id {
-                        let mut b = self.board.lock().unwrap();
+                        let mut b = self.board.lock();
                         kanban::runner::on_activity(&mut b, &id);
                     }
                 }
@@ -986,7 +985,7 @@ impl App {
             BackendEvent::StreamDone { harness, native_id } => {
                 // a task turn finished: classify DONE/BLOCKED/ASK -> FSM
                 let task = {
-                    let b = self.board.lock().unwrap();
+                    let b = self.board.lock();
                     b.find_by_session(&harness, &native_id)
                 };
                 if let Some(task) = task {
@@ -1001,7 +1000,7 @@ impl App {
                         .remove(&(harness.clone(), native_id.clone()));
                     // Д3: use runner::on_stream_done — same path as the daemon
                     // (includes Н1 backoff, Н2 strict DONE: marker, max_attempts)
-                    let mut b = self.board.lock().unwrap();
+                    let mut b = self.board.lock();
                     if let Ok(t) =
                         kanban::runner::on_stream_done_ex(&mut b, &task.id, &reply, errored)
                     {
@@ -1041,7 +1040,7 @@ impl App {
                 // classifies as Failed regardless of any DONE: marker
                 {
                     let is_task = {
-                        let b = self.board.lock().unwrap();
+                        let b = self.board.lock();
                         b.find_by_session(&harness, &native_id).is_some()
                     };
                     if is_task {
@@ -1676,7 +1675,7 @@ impl App {
     // ---------------- kanban board ----------------
 
     fn selected_board_task(&self) -> Option<kanban::Task> {
-        let b = self.board.lock().unwrap();
+        let b = self.board.lock();
         let cols = kanban::TaskStatus::COLUMN_ORDER;
         let status = *cols.get(self.board_col)?;
         let mut list = b.projection().by_status(status);
@@ -1792,7 +1791,7 @@ impl App {
             return;
         };
         let outcome = {
-            let mut b = self.board.lock().unwrap();
+            let mut b = self.board.lock();
             b.transition(&t.id, action)
         };
         match outcome {
@@ -1843,7 +1842,7 @@ impl App {
         let roles = kanban::roles::RoleSet::cached(&std::env::current_dir().unwrap_or_default());
         let repo = std::env::current_dir().unwrap_or_default();
         let ctx = {
-            let mut board = self.board.lock().unwrap();
+            let mut board = self.board.lock();
             kanban::runner::prepare_launch(&mut board, task, &self.cfg, &roles, &repo)
         };
         let ctx = match ctx {
@@ -1855,7 +1854,7 @@ impl App {
                 self.toast(format!("start {}: {e:#}", task.id), true);
                 // v5: escalate with the reason in the task thread, same as
                 // the daemon — not just a silent toast
-                let mut board = self.board.lock().unwrap();
+                let mut board = self.board.lock();
                 kanban::runner::launch_failed(&mut board, &task.id, &format!("{e:#}"));
                 return;
             }
@@ -1883,7 +1882,7 @@ impl App {
                 // Д5: a failed send must still end the turn — empty reply →
                 // Failed → the Н1 retry cap/backoff applies
                 {
-                    let mut board = board.lock().unwrap();
+                    let mut board = board.lock();
                     let _ = kanban::runner::on_stream_done(&mut board, &task_id, "");
                 }
                 let _ = tx.send(BackendEvent::Error {
@@ -2386,7 +2385,7 @@ impl App {
                 let title = value.trim().to_string();
                 if !title.is_empty() {
                     let t = {
-                        let mut b = self.board.lock().unwrap();
+                        let mut b = self.board.lock();
                         b.add_task(&title)
                     };
                     self.toast(format!("{} added to Backlog", t.id), false);
@@ -2395,7 +2394,7 @@ impl App {
             InputAction::BoardTitle { task_id } => {
                 let title = value.trim().to_string();
                 if !title.is_empty() {
-                    let mut b = self.board.lock().unwrap();
+                    let mut b = self.board.lock();
                     let _ = b.edit_task(&task_id, &title);
                 }
             }
@@ -2444,7 +2443,7 @@ impl App {
             }
             ListAction::AssignHarness => {
                 if let Some(t) = self.selected_board_task() {
-                    let mut b = self.board.lock().unwrap();
+                    let mut b = self.board.lock();
                     let _ = b.assign(&t.id, Some(id));
                 }
             }
@@ -2454,7 +2453,7 @@ impl App {
             },
             ListAction::AssignRole => {
                 if let Some(t) = self.selected_board_task() {
-                    let mut b = self.board.lock().unwrap();
+                    let mut b = self.board.lock();
                     // role carries its harness; keep the current one if unset
                     let harness = b
                         .projection()
@@ -2605,12 +2604,11 @@ mod tests {
         SendOpts, SessionInfo,
     };
     use async_trait::async_trait;
-    use std::sync::Mutex as StdMutex;
 
     /// Scenario-driven fake harness backend: no IO, just the event contract.
     struct ScriptedBackend {
         harness: String,
-        last_permission: StdMutex<Option<(String, String)>>, // (session, request id)
+        last_permission: parking_lot::Mutex<Option<(String, String)>>, // (session, request id)
     }
 
     #[async_trait]
@@ -2653,7 +2651,7 @@ mod tests {
             Ok(())
         }
         async fn permission_reply(&self, sid: &str, rid: &str, _reply: &str) -> anyhow::Result<()> {
-            *self.last_permission.lock().unwrap() = Some((sid.into(), rid.into()));
+            *self.last_permission.lock() = Some((sid.into(), rid.into()));
             Ok(())
         }
         async fn list_models(&self) -> anyhow::Result<Vec<ModelInfo>> {
@@ -2702,7 +2700,7 @@ mod tests {
             "hermes".into(),
             std::sync::Arc::new(ScriptedBackend {
                 harness: "hermes".into(),
-                last_permission: StdMutex::new(None),
+                last_permission: parking_lot::Mutex::new(None),
             }),
         );
         app.cur.harness = "hermes".into();
@@ -2742,7 +2740,7 @@ mod tests {
             "hermes".into(),
             std::sync::Arc::new(ScriptedBackend {
                 harness: "hermes".into(),
-                last_permission: StdMutex::new(None),
+                last_permission: parking_lot::Mutex::new(None),
             }),
         );
         app.cur.harness = "hermes".into();
@@ -2775,7 +2773,7 @@ mod tests {
         let mut app = app_with("opencode");
         let backend = std::sync::Arc::new(ScriptedBackend {
             harness: "opencode".into(),
-            last_permission: StdMutex::new(None),
+            last_permission: parking_lot::Mutex::new(None),
         });
         app.backends.insert("opencode".into(), backend.clone());
         app.cur.harness = "opencode".into();
@@ -2811,7 +2809,7 @@ mod tests {
         app.apply_list(id, action);
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         assert_eq!(
-            backend.last_permission.lock().unwrap().clone(),
+            backend.last_permission.lock().clone(),
             Some(("ses_1".into(), "jsonrpc:7".into())),
             "reply reached the backend"
         );
@@ -2826,7 +2824,7 @@ mod tests {
             "hermes".into(),
             std::sync::Arc::new(ScriptedBackend {
                 harness: "hermes".into(),
-                last_permission: StdMutex::new(None),
+                last_permission: parking_lot::Mutex::new(None),
             }),
         );
         app.cur.harness = "hermes".into();

@@ -125,7 +125,6 @@ fn draw_agents_panel(app: &mut App, f: &mut Frame, size: Rect) {
         let busy = app
             .board
             .lock()
-            .unwrap()
             .projection()
             .tasks
             .iter()

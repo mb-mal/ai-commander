@@ -4,10 +4,11 @@
 //! must never open the redb file itself (exclusive lock, and the old
 //! failure mode — a second store with duplicated task ids).
 
+use parking_lot::Mutex;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use ai_commander::kanban::store::BoardStore;
 
@@ -112,7 +113,7 @@ fn board_mcp_uses_owner_store_over_ipc() {
     // 3) the task and artifact live in the OWNER's store — one store,
     //    no duplicates, no second projection
     {
-        let b = owner.lock().unwrap();
+        let b = owner.lock();
         let t = b
             .projection()
             .tasks

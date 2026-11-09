@@ -519,7 +519,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
     // Б1: the daemon owns the board exclusively and serves board tool calls
     // over IPC so secondary processes (board-mcp per agent) don't need the
     // redb lock and never open a second store.
-    let board = std::sync::Arc::new(std::sync::Mutex::new(BoardStore::open_redb(
+    let board = std::sync::Arc::new(parking_lot::Mutex::new(BoardStore::open_redb(
         &ai_commander::kanban::Kanban::path(),
     )?));
     match ai_commander::kanban::ipc::serve_board(board.clone()) {
@@ -530,7 +530,6 @@ async fn run_daemon(cfg: Config) -> Result<()> {
     {
         let ids: Vec<String> = board
             .lock()
-            .unwrap()
             .projection()
             .tasks
             .iter()
@@ -565,13 +564,13 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                 } => {
                     if *kind == PartKind::Text {
                         let task_id = {
-                            let b = board.lock().unwrap();
+                            let b = board.lock();
                             b.find_by_session(harness, native_id).map(|t| t.id)
                         };
                         if let Some(id) = task_id {
                             let mut reply = task_replies.remove(&id).unwrap_or_default();
                             {
-                                let mut b = board.lock().unwrap();
+                                let mut b = board.lock();
                                 ai_commander::kanban::runner::on_progress(
                                     &mut b, &id, delta, &mut reply,
                                 );
@@ -586,17 +585,17 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                     // v4 Д1: tool-call progress (PartUpdated, no delta text)
                     // is a liveness signal — renew the task lease
                     let task_id = {
-                        let b = board.lock().unwrap();
+                        let b = board.lock();
                         b.find_by_session(harness, native_id).map(|t| t.id)
                     };
                     if let Some(id) = task_id {
-                        let mut b = board.lock().unwrap();
+                        let mut b = board.lock();
                         ai_commander::kanban::runner::on_activity(&mut b, &id);
                     }
                 }
                 backend::BackendEvent::StreamDone { native_id, harness } => {
                     let task_id = {
-                        let b = board.lock().unwrap();
+                        let b = board.lock();
                         b.find_by_session(harness, native_id).map(|t| t.id)
                     };
                     if let Some(id) = task_id {
@@ -606,7 +605,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                         // a permission ASK may already have moved it to
                         // NeedsHuman mid-turn
                         let outcome = {
-                            let mut b = board.lock().unwrap();
+                            let mut b = board.lock();
                             let in_progress = b
                                 .projection()
                                 .tasks
@@ -658,7 +657,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                         }
                         ai_commander::policy::Effect::Ask => {
                             let task_id = {
-                                let bb = board.lock().unwrap();
+                                let bb = board.lock();
                                 bb.find_by_session(harness, session_id).map(|t| t.id)
                             };
                             if let Some(id) = task_id {
@@ -666,7 +665,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                                     "agent asks permission: {title} ({action}: {resource})"
                                 );
                                 let outcome = {
-                                    let mut bb = board.lock().unwrap();
+                                    let mut bb = board.lock();
                                     ai_commander::kanban::runner::on_permission_ask(
                                         &mut bb, &id, &question,
                                     )
@@ -690,7 +689,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                     // v4 Н2: remember the broken stream; the following
                     // StreamDone must not honor a printed DONE: marker
                     let task_id = {
-                        let b = board.lock().unwrap();
+                        let b = board.lock();
                         b.find_by_session(harness, native_id).map(|t| t.id)
                     };
                     if let Some(id) = task_id {
@@ -706,7 +705,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        for id in board.lock().unwrap().spawn_due_scheduled(now_secs) {
+        for id in board.lock().spawn_due_scheduled(now_secs) {
             println!("[trigger] spawned {id} from schedule");
             ai_commander::log_info!("daemon", "trigger spawned {id}");
         }
@@ -718,7 +717,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
-        let stuck = board.lock().unwrap().watchdog_scan(now);
+        let stuck = board.lock().watchdog_scan(now);
         if !stuck.is_empty() {
             for st in &stuck {
                 println!(
@@ -727,7 +726,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                 );
             }
             ai_commander::kanban::runner::abort_stuck(&backends, &stuck).await;
-            for (id, label) in board.lock().unwrap().watchdog_apply(&stuck) {
+            for (id, label) in board.lock().watchdog_apply(&stuck) {
                 println!("[watchdog] {id}: {label}");
                 ai_commander::log_info!("daemon", "watchdog {id}: {label}");
                 busy.remove(&id);
@@ -735,7 +734,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
         }
 
         // 3) launch one launchable task per idle harness (B9: DAG-aware)
-        let ready: Vec<ai_commander::kanban::Task> = board.lock().unwrap().launchable();
+        let ready: Vec<ai_commander::kanban::Task> = board.lock().launchable();
         let roles_snapshot = ai_commander::kanban::roles::RoleSet::cached(
             &std::env::current_dir().unwrap_or_default(),
         );
@@ -761,7 +760,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                         None => format!("role '{role_id}' is not defined"),
                     };
                     println!("[escalate] {} launch blocked: {reason}", task.id);
-                    let mut b = board.lock().unwrap();
+                    let mut b = board.lock();
                     ai_commander::kanban::runner::launch_failed(&mut b, &task.id, &reason);
                     busy.remove(&task.id);
                     continue;
@@ -789,13 +788,13 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                     // Д5: a failure AFTER Start (session/send) still ends the
                     // turn via the Н1 retry cap.
                     let still_ready = {
-                        let b = board.lock().unwrap();
+                        let b = board.lock();
                         b.projection()
                             .tasks
                             .iter()
                             .any(|t| t.id == task.id && t.status == TaskStatus::Ready)
                     };
-                    let mut b = board.lock().unwrap();
+                    let mut b = board.lock();
                     if still_ready {
                         ai_commander::kanban::runner::launch_failed(
                             &mut b,
@@ -813,7 +812,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
 
         // 4) stop when everything is terminal
         let all_done = {
-            let b = board.lock().unwrap();
+            let b = board.lock();
             !b.projection().tasks.is_empty()
                 && b.projection().tasks.iter().all(|t| {
                     matches!(
@@ -835,7 +834,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
         }
         // OTel export: new events since the last pass -> spans.jsonl
         {
-            let last = board.lock().unwrap().last_events(usize::MAX);
+            let last = board.lock().last_events(usize::MAX);
             if let Some(newest) = last.last() {
                 if newest.seq > otel_last_seq {
                     let fresh: Vec<_> = last

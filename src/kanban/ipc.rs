@@ -18,10 +18,11 @@
 //!   launch ([`issue_role_token`]) — the `role` field of a request body is
 //!   ignored, so a client cannot impersonate another role.
 
+use parking_lot::Mutex;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -51,7 +52,7 @@ fn new_token() -> String {
 static ROLE_TOKENS: Mutex<Option<std::collections::HashMap<String, String>>> = Mutex::new(None);
 
 fn role_tokens_mut<R>(f: impl FnOnce(&mut std::collections::HashMap<String, String>) -> R) -> R {
-    let mut g = ROLE_TOKENS.lock().unwrap();
+    let mut g = ROLE_TOKENS.lock();
     let map = g.get_or_insert_with(Default::default);
     f(map)
 }
@@ -115,7 +116,7 @@ fn restrict_to_owner(path: &std::path::Path) {
 /// Convenience: serve directly from a shared BoardStore (TUI shape).
 pub fn serve_board(board: Arc<Mutex<BoardStore>>) -> std::io::Result<u16> {
     let handle: ToolHandler = Arc::new(move |tool, args, role| {
-        let mut b = board.lock().unwrap();
+        let mut b = board.lock();
         super::board_tool_call(tool, args, role, &mut b)
     });
     serve(handle)
@@ -241,7 +242,7 @@ mod tests {
     fn handler_for(board: Arc<Mutex<BoardStore>>) -> (ToolHandler, Arc<Mutex<BoardStore>>) {
         let b2 = board.clone();
         let h: ToolHandler = Arc::new(move |tool, args, role| {
-            let mut b = b2.lock().unwrap();
+            let mut b = b2.lock();
             super::super::board_tool_call(tool, args, role, &mut b)
         });
         (h, board)
@@ -276,7 +277,7 @@ mod tests {
             "HTTP must be cut off without a reply, got: {out}"
         );
         assert!(
-            board.lock().unwrap().projection().tasks.is_empty(),
+            board.lock().projection().tasks.is_empty(),
             "the HTTP body must not create a task"
         );
         let _ = std::fs::remove_file(&pf);
@@ -314,7 +315,7 @@ mod tests {
             );
         }
         assert!(
-            board.lock().unwrap().projection().tasks.is_empty(),
+            board.lock().projection().tasks.is_empty(),
             "no task may be created without a valid token"
         );
         let _ = std::fs::remove_file(&pf);
@@ -405,7 +406,6 @@ mod tests {
         assert!(
             board
                 .lock()
-                .unwrap()
                 .projection()
                 .tasks
                 .iter()
@@ -433,7 +433,7 @@ mod tests {
         .unwrap();
         assert!(res.is_err(), "unknown role token must be rejected");
         assert!(
-            board.lock().unwrap().projection().tasks.is_empty(),
+            board.lock().projection().tasks.is_empty(),
             "nothing executed for an unknown role token"
         );
         let _ = std::fs::remove_file(&pf);

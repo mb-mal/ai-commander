@@ -11,12 +11,13 @@
 //! notifications stream agent_message_chunk / agent_thought_chunk / tool_call
 //! → the prompt response (stopReason) finishes the turn.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, anyhow, bail};
@@ -170,9 +171,9 @@ impl AcpBackend {
     fn call(&self, method: &str, params: Value) -> mpsc::Receiver<Value> {
         let (tx, rx) = mpsc::sync_channel(1);
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.pending.lock().unwrap().insert(id, tx);
+        self.pending.lock().insert(id, tx);
         let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-        if let Some(w) = self.writer.lock().unwrap().as_mut() {
+        if let Some(w) = self.writer.lock().as_mut() {
             let _ = writeln!(w, "{msg}");
             let _ = w.flush();
         }
@@ -181,14 +182,14 @@ impl AcpBackend {
 
     fn notify(&self, method: &str, params: Value) {
         let msg = json!({"jsonrpc": "2.0", "method": method, "params": params});
-        if let Some(w) = self.writer.lock().unwrap().as_mut() {
+        if let Some(w) = self.writer.lock().as_mut() {
             let _ = writeln!(w, "{msg}");
             let _ = w.flush();
         }
     }
 
     fn write_raw(&self, v: &Value) {
-        if let Some(w) = self.writer.lock().unwrap().as_mut() {
+        if let Some(w) = self.writer.lock().as_mut() {
             let _ = writeln!(w, "{v}");
             let _ = w.flush();
         }
@@ -208,7 +209,6 @@ impl AcpBackend {
                 if let ContentBlock::Text(t) = c.content {
                     if !t.text.is_empty() {
                         acc.lock()
-                            .unwrap()
                             .entry(sent_id.to_string())
                             .or_default()
                             .push_str(&t.text);
@@ -312,9 +312,9 @@ impl Backend for AcpBackend {
         let mut child = cmd
             .spawn()
             .map_err(|e| anyhow!("spawn opencode acp: {e}"))?;
-        *self.writer.lock().unwrap() = child.stdin.take();
+        *self.writer.lock() = child.stdin.take();
         let stdout = child.stdout.take();
-        *self.child.lock().unwrap() = Some(child);
+        *self.child.lock() = Some(child);
 
         // initialize; the response flips `connected` from the reader thread
         // (Б2: params built from the schema types, not hand-rolled json!)
@@ -352,12 +352,7 @@ impl Backend for AcpBackend {
                             if let Ok(note) = serde_json::from_value::<SessionNotification>(params)
                             {
                                 let real = note.session_id.to_string();
-                                let sent = route
-                                    .lock()
-                                    .unwrap()
-                                    .get(&real)
-                                    .cloned()
-                                    .unwrap_or(real.clone());
+                                let sent = route.lock().get(&real).cloned().unwrap_or(real.clone());
                                 Self::handle_update(&events, &acc, &harness, &sent, note);
                             }
                         }
@@ -373,7 +368,7 @@ impl Backend for AcpBackend {
                                     let reply = json!({"jsonrpc": "2.0", "id": id,
                                         "error": {"code": -32602,
                                                   "message": "invalid params for session/request_permission"}});
-                                    if let Some(w) = writer.lock().unwrap().as_mut() {
+                                    if let Some(w) = writer.lock().as_mut() {
                                         let _ = writeln!(w, "{reply}");
                                         let _ = w.flush();
                                     }
@@ -415,7 +410,7 @@ impl Backend for AcpBackend {
                                 });
                             // register BEFORE notifying — the UI's reply must
                             // always find the pending entry (no lost race)
-                            permissions.lock().unwrap().push(PendingPermission {
+                            permissions.lock().push(PendingPermission {
                                 jsonrpc_id: raw_id.clone(),
                                 session_id: sid.clone(),
                                 options: req.options,
@@ -437,7 +432,7 @@ impl Backend for AcpBackend {
                             if let Some(id) = v.get("id").and_then(Value::as_u64) {
                                 let reply = json!({"jsonrpc": "2.0", "id": id,
                                     "error": {"code": -32601, "message": "method not supported by ai-commander"}});
-                                if let Some(w) = writer.lock().unwrap().as_mut() {
+                                if let Some(w) = writer.lock().as_mut() {
                                     let _ = writeln!(w, "{reply}");
                                     let _ = w.flush();
                                 }
@@ -455,7 +450,7 @@ impl Backend for AcpBackend {
                     if is_init {
                         connected.store(true, Ordering::Relaxed);
                     }
-                    if let Some(tx) = pending.lock().unwrap().remove(&id) {
+                    if let Some(tx) = pending.lock().remove(&id) {
                         let _ = tx.send(v.get("result").cloned().unwrap_or(Value::Null));
                     }
                 }
@@ -484,7 +479,6 @@ impl Backend for AcpBackend {
         Ok(self
             .store
             .lock()
-            .unwrap()
             .sessions
             .iter()
             .map(|s| SessionInfo {
@@ -507,14 +501,14 @@ impl Backend for AcpBackend {
             title: s.title.clone(),
             updated_ms: s.updated_ms,
         };
-        let mut g = self.store.lock().unwrap();
+        let mut g = self.store.lock();
         g.sessions.push(s);
         persist_atomic(&self.store_path, &g);
         Ok(info)
     }
 
     async fn rename_session(&self, native_id: &str, title: &str) -> Result<()> {
-        let mut g = self.store.lock().unwrap();
+        let mut g = self.store.lock();
         if let Some(s) = g.sessions.iter_mut().find(|s| s.native_id == native_id) {
             s.title = title.to_string();
         }
@@ -523,14 +517,14 @@ impl Backend for AcpBackend {
     }
 
     async fn delete_session(&self, native_id: &str) -> Result<()> {
-        let mut g = self.store.lock().unwrap();
+        let mut g = self.store.lock();
         g.sessions.retain(|s| s.native_id != native_id);
         persist_atomic(&self.store_path, &g);
         Ok(())
     }
 
     async fn load_history(&self, native_id: &str) -> Result<Vec<ChatMsg>> {
-        let g = self.store.lock().unwrap();
+        let g = self.store.lock();
         let Some(s) = g.sessions.iter().find(|s| s.native_id == native_id) else {
             return Ok(Vec::new());
         };
@@ -613,9 +607,9 @@ impl Backend for AcpBackend {
             let rpc = |method: &str, params: Value| -> mpsc::Receiver<Value> {
                 let (tx, rx) = mpsc::sync_channel(1);
                 let id = next_id.fetch_add(1, Ordering::Relaxed);
-                pending.lock().unwrap().insert(id, tx);
+                pending.lock().insert(id, tx);
                 let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-                if let Some(w) = writer.lock().unwrap().as_mut() {
+                if let Some(w) = writer.lock().as_mut() {
                     let _ = writeln!(w, "{msg}");
                     let _ = w.flush();
                 }
@@ -676,7 +670,7 @@ impl Backend for AcpBackend {
                                     }
                                 }
                             }
-                            *models.lock().unwrap() = ms;
+                            *models.lock() = ms;
                         }
                         v.get("sessionId")
                             .and_then(Value::as_str)
@@ -698,10 +692,7 @@ impl Backend for AcpBackend {
                 });
                 return;
             }
-            route
-                .lock()
-                .unwrap()
-                .insert(real_id.clone(), sent_id.clone());
+            route.lock().insert(real_id.clone(), sent_id.clone());
             if real_id != sent_id {
                 let _ = events.send(BackendEvent::SessionCreated {
                     harness: harness.clone(),
@@ -729,9 +720,9 @@ impl Backend for AcpBackend {
                     } else {
                         None
                     };
-                    let assistant = acc.lock().unwrap().remove(&sent_id).unwrap_or_default();
+                    let assistant = acc.lock().remove(&sent_id).unwrap_or_default();
                     {
-                        let mut g = store.lock().unwrap();
+                        let mut g = store.lock();
                         match g.sessions.iter_mut().find(|s| s.native_id == sent_id) {
                             Some(s) => {
                                 if real_id != sent_id {
@@ -798,7 +789,7 @@ impl Backend for AcpBackend {
     /// client-side sent id (pending-* draft); both resolve to the real id.
     async fn abort(&self, native_id: &str) -> Result<()> {
         let real = {
-            let route = self.route.lock().unwrap();
+            let route = self.route.lock();
             if route.contains_key(native_id) {
                 Some(native_id.to_string())
             } else {
@@ -821,11 +812,11 @@ impl Backend for AcpBackend {
         // with `cancelled` when their turn is cancelled — but ONLY the ones
         // of THIS session; another session's open questions stay alive
         let (mine, others): (Vec<PendingPermission>, Vec<PendingPermission>) = {
-            let all = std::mem::take(&mut *self.permissions.lock().unwrap());
+            let all = std::mem::take(&mut *self.permissions.lock());
             all.into_iter()
                 .partition(|p| Some(&p.session_id) == real.as_ref())
         };
-        *self.permissions.lock().unwrap() = others;
+        *self.permissions.lock() = others;
         for p in mine {
             let resp = RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled);
             let msg = json!({"jsonrpc": "2.0", "id": p.jsonrpc_id,
@@ -849,7 +840,7 @@ impl Backend for AcpBackend {
             .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
             .filter(|v| !v.is_null())
             .ok_or_else(|| anyhow!("bad permission request id"))?;
-        let mut perms = self.permissions.lock().unwrap();
+        let mut perms = self.permissions.lock();
         let Some(idx) = perms.iter().position(|p| p.jsonrpc_id == jsonrpc_id) else {
             bail!("permission request not found");
         };
@@ -894,7 +885,7 @@ impl Backend for AcpBackend {
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
         // captured from the session/new configOptions (empty until a session exists)
-        Ok(self.models.lock().unwrap().clone())
+        Ok(self.models.lock().clone())
     }
 
     async fn list_agents(&self) -> Result<Vec<AgentInfo>> {
@@ -903,8 +894,8 @@ impl Backend for AcpBackend {
 
     fn shutdown(&self) {
         self.connected.store(false, Ordering::Relaxed);
-        self.writer.lock().unwrap().take();
-        if let Some(mut ch) = self.child.lock().unwrap().take() {
+        self.writer.lock().take();
+        if let Some(mut ch) = self.child.lock().take() {
             kill_tree(&mut ch);
         }
     }

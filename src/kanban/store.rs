@@ -9,9 +9,9 @@
 //! migrations exist from day one.
 
 use anyhow::{Result, anyhow, bail};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use super::{Kanban, Task, TaskAction, TaskStatus};
 
@@ -61,7 +61,7 @@ struct MemInner {
 
 impl EventStore for MemoryStore {
     fn append(&self, event: StoredEvent, snapshot: &Kanban) -> Result<()> {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock();
         if event.seq != g.events.len() as u64 + 1 {
             bail!("non-monotonic seq {}", event.seq);
         }
@@ -73,7 +73,6 @@ impl EventStore for MemoryStore {
         Ok(self
             .inner
             .lock()
-            .unwrap()
             .events
             .iter()
             .skip(since as usize)
@@ -82,26 +81,19 @@ impl EventStore for MemoryStore {
             .collect())
     }
     fn last_seq(&self) -> Result<u64> {
-        Ok(self.inner.lock().unwrap().events.len() as u64)
+        Ok(self.inner.lock().events.len() as u64)
     }
     fn snapshot_seq(&self) -> Result<u64> {
         Ok(self
             .inner
             .lock()
-            .unwrap()
             .snapshot
             .as_ref()
             .map(|(s, _)| *s)
             .unwrap_or(0))
     }
     fn load_snapshot(&self) -> Result<Option<Kanban>> {
-        Ok(self
-            .inner
-            .lock()
-            .unwrap()
-            .snapshot
-            .as_ref()
-            .map(|(_, k)| k.clone()))
+        Ok(self.inner.lock().snapshot.as_ref().map(|(_, k)| k.clone()))
     }
     fn schema_version(&self) -> Result<u32> {
         Ok(SCHEMA_VERSION)
