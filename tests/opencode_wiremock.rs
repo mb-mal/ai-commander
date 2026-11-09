@@ -19,6 +19,7 @@ fn cfg_for(port: u16) -> HarnessCfg {
         workdir: String::new(),
         agent: String::new(),
         auto_approve: false,
+        reuse_opencode_key: false,
         default_model: None,
     }
 }
