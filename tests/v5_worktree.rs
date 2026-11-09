@@ -159,6 +159,7 @@ fn worktrees_stay_outside_and_orphans_pruned() {
     // one survives
     let orphan = Task {
         id: "t-9999".into(),
+        worktree_path: String::new(), // a fresh task has no stored path
         ..task.clone()
     };
     worktree::start(&repo, &orphan).expect("orphan worktree");
@@ -196,15 +197,25 @@ fn approve_on_clean_base_shows_work_in_the_checkout() {
         !status.contains('D'),
         "the agent's file must not look deleted: {status}"
     );
-    assert!(repo.join("g").exists(), "the file is present in the checkout");
+    assert!(
+        repo.join("g").exists(),
+        "the file is present in the checkout"
+    );
 
     // and a commit -am afterwards keeps the agent's file
-    std::fs::write(repo.join("user.txt"), "u
-").unwrap();
+    std::fs::write(
+        repo.join("user.txt"),
+        "u
+",
+    )
+    .unwrap();
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-qm", "user follow-up"]);
     let show = git(&repo, &["show", "HEAD:g"]);
-    assert!(show.contains("agent file"), "commit -am kept the agent's file");
+    assert!(
+        show.contains("agent file"),
+        "commit -am kept the agent's file"
+    );
     assert!(!git(&repo, &["status", "--porcelain"]).contains('D'));
     let _ = std::fs::remove_dir_all(&repo);
 }

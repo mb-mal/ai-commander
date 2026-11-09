@@ -101,9 +101,7 @@ pub fn serve_at(path: &std::path::Path, handle: ToolHandler) -> std::io::Result<
             let handle = handle.clone();
             let token = token.clone();
             let human_token = human_token.clone();
-            std::thread::spawn(move || {
-                serve_conn(stream, handle, token, human_token)
-            });
+            std::thread::spawn(move || serve_conn(stream, handle, token, human_token));
         }
     });
     Ok(port)

@@ -26,10 +26,7 @@ fn agent_cannot_unpark_needs_human() {
         &mut b,
     )
     .expect_err("agents must not un-park NeedsHuman tasks");
-    assert!(
-        err.contains("human"),
-        "the error must say who may: {err}"
-    );
+    assert!(err.contains("human"), "the error must say who may: {err}");
     assert_eq!(
         b.projection().tasks[0].status,
         TaskStatus::NeedsHuman,
@@ -111,9 +108,6 @@ fn ipc_human_token_authorizes_unpark() {
     call(&human)
         .expect("reachable")
         .expect("human token un-parks");
-    assert_eq!(
-        board.lock().projection().tasks[0].status,
-        TaskStatus::Ready
-    );
+    assert_eq!(board.lock().projection().tasks[0].status, TaskStatus::Ready);
     let _ = std::fs::remove_file(&pf);
 }

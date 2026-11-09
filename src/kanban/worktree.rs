@@ -225,9 +225,7 @@ pub fn finish(repo: &Path, task: &Task) -> Result<()> {
         git(repo, &["worktree", "add", "--detach", &tmp_s, &base])
             .context("open a temporary worktree on the base branch")?;
         // what we believe the base is — if it moved meanwhile, refuse
-        let expected_old = git(&tmp, &["rev-parse", "HEAD"])?
-            .trim()
-            .to_string();
+        let expected_old = git(&tmp, &["rev-parse", "HEAD"])?.trim().to_string();
         let merge = git(&tmp, &["merge", "--no-ff", "--no-edit", &branch]);
         if let Err(e) = merge {
             let _ = git(&tmp, &["merge", "--abort"]);
@@ -237,9 +235,7 @@ pub fn finish(repo: &Path, task: &Task) -> Result<()> {
                 task.id
             ));
         }
-        let new_head = git(&tmp, &["rev-parse", "HEAD"])?
-            .trim()
-            .to_string();
+        let new_head = git(&tmp, &["rev-parse", "HEAD"])?.trim().to_string();
         git(
             &tmp,
             &[
