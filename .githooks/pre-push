@@ -1,0 +1,11 @@
+#!/bin/sh
+# Blocks a push that would break CI: fmt, clippy and tests must pass first.
+# Enable once per clone:  git config core.hooksPath .githooks
+set -e
+echo "pre-push: cargo fmt --check"
+cargo fmt --all --check
+echo "pre-push: cargo clippy"
+cargo clippy --lib --bins --tests -- -D warnings
+echo "pre-push: cargo test"
+cargo test --quiet
+echo "pre-push: green"
