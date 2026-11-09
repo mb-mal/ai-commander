@@ -57,9 +57,14 @@ async fn acp_usage_and_compaction_stream_through() {
 
     let mut usages: Vec<(u64, u64)> = Vec::new();
     let mut compactions: Vec<(String, CompactionStatus, Option<String>)> = Vec::new();
-    let mut done = false;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    while tokio::time::Instant::now() < deadline && !done {
+    // the compaction stream follows the turn result; wait for the FULL
+    // sequence (post-compaction usage + 6 events), not the StreamDone
+    let complete = |usages: &[(u64, u64)],
+                    compactions: &[(String, CompactionStatus, Option<String>)]| {
+        usages.contains(&(41_000, 200_000)) && compactions.len() >= 6
+    };
+    while tokio::time::Instant::now() < deadline && !complete(&usages, &compactions) {
         match tokio::time::timeout(Duration::from_millis(300), rx.recv()).await {
             Ok(Some(ev)) => match ev {
                 BackendEvent::PermissionRequest {
@@ -91,13 +96,7 @@ async fn acp_usage_and_compaction_stream_through() {
                     assert_eq!(source, CompactionSource::Reported);
                     compactions.push((compaction_id, status, summary_delta));
                 }
-                BackendEvent::StreamDone { .. } => {
-                    // the compaction stream follows the turn; keep draining
-                    // a little longer
-                    if !compactions.is_empty() {
-                        done = true;
-                    }
-                }
+                BackendEvent::StreamDone { .. } => {}
                 BackendEvent::StreamError { error, .. } => panic!("StreamError: {error}"),
                 _ => {}
             },
