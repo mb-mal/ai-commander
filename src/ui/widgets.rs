@@ -70,6 +70,22 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     if app.modal.is_some() {
         super::modals::draw_modal(app, f, size);
     }
+
+    // К10: the DEFRAG compaction overlay over everything; Esc collapses
+    // it into the mini-map (the animation keeps running in the status bar)
+    if app.modal.is_none() {
+        if let Some(an) = app.defrag.as_ref() {
+            if app.compaction_view == crate::ui::defrag::CompactionView::Defrag {
+                crate::ui::defrag::render(
+                    f.buffer_mut(),
+                    size,
+                    &an.frame,
+                    crate::ui::defrag::ascii_mode(),
+                    &crate::ui::defrag::DefragPalette::cga(crate::ui::defrag::mono_mode()),
+                );
+            }
+        }
+    }
 }
 
 fn composer_height(app: &App, area: Rect) -> u16 {
@@ -702,6 +718,40 @@ fn draw_statusbar(app: &mut App, f: &mut Frame, area: Rect) {
     let th = &THEME;
     let lang = app.lang();
     let mut spans = vec![];
+
+    // К10: context mini-map — window fill of the CURRENT chat; animated
+    // while a compaction runs
+    {
+        let key = (app.cur.harness.clone(), app.cur.native_id.clone());
+        let fill = app.ctx_usage.get(&key);
+        let running = app.defrag.is_some();
+        let mut mini = String::from(" ctx ");
+        if running {
+            mini.push_str("<compacting> ");
+        } else if let Some((used, size)) = fill {
+            if *size > 0 {
+                let cells = 10usize;
+                let filled = ((*used as f64 / *size as f64) * cells as f64).round() as usize;
+                let filled = filled.min(cells);
+                for _ in 0..filled {
+                    mini.push('█');
+                }
+                for _ in 0..(cells - filled) {
+                    mini.push('░');
+                }
+                mini.push_str(&format!(" {}% ", used * 100 / size));
+            } else if *used > 0 {
+                mini.push_str(&format!(" {}k ", used / 1000));
+            }
+        }
+        spans.push(Span::styled(
+            mini,
+            Style::new()
+                .fg(if running { th.accent } else { th.fg })
+                .bg(th.bg),
+        ));
+    }
+
     let keys: Vec<(&str, &str)> = vec![
         ("F1", t(lang, Str::Help)),
         ("F2", t(lang, Str::Settings)),

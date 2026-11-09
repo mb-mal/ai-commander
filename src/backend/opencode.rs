@@ -723,6 +723,21 @@ impl Backend for OpenCodeBackend {
 
     /// This server build exposes no abort endpoint; the next prompt "steers"
     /// (interrupts) the current turn. The UI detaches locally on Esc.
+    /// К11: opencode has a real compact endpoint (verified live)
+    fn supports_compact(&self) -> bool {
+        true
+    }
+
+    async fn compact(&self, native_id: &str) -> Result<()> {
+        self.send_json(
+            reqwest::Method::POST,
+            &format!("/api/session/{native_id}/compact"),
+            Some(serde_json::json!({})),
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn abort(&self, _native_id: &str) -> Result<()> {
         Ok(())
     }
@@ -826,6 +841,13 @@ fn tool_label(name: &str, status: &str, error: Option<&str>) -> String {
 }
 
 /// SSE dispatch — payload lives in the `data` field of each line's JSON.
+/// Per-session compaction ids (opencode sends none; STARTED defines one).
+fn compaction_ids() -> &'static Mutex<std::collections::HashMap<String, String>> {
+    static IDS: std::sync::OnceLock<Mutex<std::collections::HashMap<String, String>>> =
+        std::sync::OnceLock::new();
+    IDS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
 fn handle_sse_event(
     events: &UnboundedSender<BackendEvent>,
     known: &Mutex<HashSet<String>>,
@@ -836,6 +858,7 @@ fn handle_sse_event(
         return;
     };
     let ty = v.get("type").and_then(Value::as_str).unwrap_or("");
+    let created = v.get("created").and_then(Value::as_f64).unwrap_or(0.0) as u64;
     // payload is in `data` for live events; some events use `properties`
     let props = v
         .get("data")
@@ -908,6 +931,108 @@ fn handle_sse_event(
                     resources: vec![resource.to_string()],
                 });
             }
+        }
+        // К1: context window fill (verified live: session.usage.updated
+        // carries {sessionID, cost, tokens:{input,output,reasoning,cache}});
+        // the WINDOW SIZE is not part of the event — size=0 means unknown
+        "session.usage.updated" => {
+            let t = props.get("tokens").cloned().unwrap_or(Value::Null);
+            let num = |k: &str| t.get(k).and_then(Value::as_f64).unwrap_or(0.0);
+            let cache_read = t
+                .get("cache")
+                .and_then(|c| c.get("read"))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let used = (num("input") + num("output") + num("reasoning") + cache_read) as u64;
+            let cost_usd = props
+                .get("cost")
+                .and_then(|c| c.get("amount"))
+                .and_then(Value::as_f64)
+                .filter(|_| {
+                    props
+                        .get("cost")
+                        .and_then(|c| c.get("currency"))
+                        .and_then(Value::as_str)
+                        .map(|cur| cur == "USD")
+                        .unwrap_or(false)
+                });
+            send(BackendEvent::Usage {
+                harness: h,
+                native_id: sid.clone(),
+                used,
+                size: 0, // the event does not carry the window size
+                cost_usd,
+                estimated: false,
+            });
+        }
+        // К4 (verified live): the compaction lifecycle + STREAMED summary.
+        // opencode sends no compaction id — the STARTED event defines one
+        // per session; delta/ended reuse it (one history line per run)
+        "session.compaction.started" => {
+            let reason = props.get("reason").and_then(Value::as_str).unwrap_or("");
+            compaction_ids()
+                .lock()
+                .insert(sid.clone(), format!("{sid}-c{created}"));
+            send(BackendEvent::Compaction {
+                harness: h,
+                native_id: sid.clone(),
+                compaction_id: format!("{sid}-c{created}"),
+                status: crate::backend::CompactionStatus::InProgress,
+                method: crate::backend::CompactionMethod::Summarize,
+                summary_delta: None,
+                error: None,
+                source: crate::backend::CompactionSource::Reported,
+            });
+            let _ = reason;
+        }
+        "session.compaction.delta" => {
+            let text = props.get("text").and_then(Value::as_str).unwrap_or("");
+            send(BackendEvent::Compaction {
+                harness: h,
+                native_id: sid.clone(),
+                compaction_id: compaction_ids()
+                    .lock()
+                    .get(&sid)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{sid}-c{created}")),
+                status: crate::backend::CompactionStatus::InProgress,
+                method: crate::backend::CompactionMethod::Summarize,
+                summary_delta: Some(text.to_string()),
+                error: None,
+                source: crate::backend::CompactionSource::Reported,
+            });
+        }
+        "session.compaction.ended" => {
+            send(BackendEvent::Compaction {
+                harness: h,
+                native_id: sid.clone(),
+                compaction_id: compaction_ids()
+                    .lock()
+                    .get(&sid)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{sid}-c{created}")),
+                status: crate::backend::CompactionStatus::Completed,
+                method: crate::backend::CompactionMethod::Summarize,
+                summary_delta: None,
+                error: None,
+                source: crate::backend::CompactionSource::Reported,
+            });
+        }
+        "session.compaction.failed" => {
+            send(BackendEvent::Compaction {
+                harness: h,
+                native_id: sid.clone(),
+                compaction_id: compaction_ids()
+                    .lock()
+                    .get(&sid)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{sid}-c{created}")),
+                status: crate::backend::CompactionStatus::Failed,
+                method: crate::backend::CompactionMethod::Summarize,
+                summary_delta: None,
+                error: Some("compaction failed".into()),
+                source: crate::backend::CompactionSource::Reported,
+            });
         }
         "session.text.started" => {
             let ordinal = props.get("ordinal").and_then(Value::as_i64).unwrap_or(0);
@@ -1178,6 +1303,93 @@ mod tests {
                 assert_eq!(delta, "thinking...");
             }
             other => panic!("unexpected {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod usage_compaction_tests {
+    use super::*;
+    use tokio::sync::mpsc;
+
+    /// К1/К4: live-recorded opencode SSE payloads map to Usage/Compaction.
+    /// The event names were verified against a running server
+    /// (session.usage.updated, session.compaction.started/delta/ended).
+    #[tokio::test]
+    async fn opencode_usage_and_compaction_events_map_through() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<BackendEvent>();
+        let known: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
+        known.lock().insert("ses_u".into());
+
+        let events = [
+            r#"{"id":"e1","created":1000,"type":"session.usage.updated","data":{"sessionID":"ses_u","cost":{"amount":0.42,"currency":"USD"},"tokens":{"input":50000,"output":3000,"reasoning":0,"cache":{"read":2000,"write":100}}}}"#,
+            r#"{"id":"e2","created":2000,"type":"session.compaction.started","data":{"sessionID":"ses_u","reason":"auto"}}"#,
+            r#"{"id":"e3","created":2001,"type":"session.compaction.delta","data":{"sessionID":"ses_u","text":"Summary chunk one."}}"#,
+            r#"{"id":"e4","created":2002,"type":"session.compaction.ended","data":{"sessionID":"ses_u","reason":"auto"}}"#,
+        ];
+        for e in events {
+            handle_sse_event(&tx, &known, "oc", e);
+        }
+
+        let usage = rx.recv().await.unwrap();
+        match usage {
+            BackendEvent::Usage {
+                used,
+                size,
+                cost_usd,
+                estimated,
+                native_id,
+                ..
+            } => {
+                assert_eq!(native_id, "ses_u");
+                assert!(!estimated);
+                // input+output+reasoning+cache.read, as the agent counts them
+                assert_eq!(used, 55_000);
+                assert_eq!(size, 0, "the event carries no window size");
+                assert_eq!(cost_usd, Some(0.42));
+            }
+            other => panic!("expected Usage, got {other:?}"),
+        }
+        let started = rx.recv().await.unwrap();
+        assert!(matches!(
+            started,
+            BackendEvent::Compaction {
+                status: crate::backend::CompactionStatus::InProgress,
+                source: crate::backend::CompactionSource::Reported,
+                ..
+            }
+        ));
+        let delta = rx.recv().await.unwrap();
+        match delta {
+            BackendEvent::Compaction {
+                summary_delta: Some(t),
+                compaction_id,
+                ..
+            } => {
+                assert_eq!(t, "Summary chunk one.");
+                assert!(!compaction_id.is_empty());
+            }
+            other => panic!("expected a summary chunk, got {other:?}"),
+        }
+        let ended = rx.recv().await.unwrap();
+        assert!(matches!(
+            ended,
+            BackendEvent::Compaction {
+                status: crate::backend::CompactionStatus::Completed,
+                ..
+            }
+        ));
+        // one stable compaction id across the lifecycle
+        if let BackendEvent::Compaction {
+            compaction_id: a, ..
+        } = started
+        {
+            if let BackendEvent::Compaction {
+                compaction_id: c, ..
+            } = ended
+            {
+                assert_eq!(a, c, "started and ended share the id");
+            }
         }
     }
 }
