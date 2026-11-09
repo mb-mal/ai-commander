@@ -44,12 +44,43 @@ pub struct RoleSet {
     pub teams: BTreeMap<String, Team>,
     /// paths that contributed (for UI/debug)
     pub sources: Vec<PathBuf>,
+    /// v5 #6: files that failed to load (bad YAML, unknown fields) — shown
+    /// in the agents panel and the daemon log instead of vanishing silently
+    pub errors: Vec<LoadError>,
+}
+
+/// A role/team file that could not be loaded.
+#[derive(Debug, Clone)]
+pub struct LoadError {
+    pub path: PathBuf,
+    pub message: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct Frontmatter {
     #[serde(flatten)]
     role: Role,
+}
+// Role itself: deny_unknown_fields via a strict mirror (flatten + deny
+// conflict, so the strictness lives here)
+impl Frontmatter {
+    fn parse(fm: &str) -> std::result::Result<Role, String> {
+        #[derive(Deserialize, Default)]
+        #[serde(deny_unknown_fields, default)]
+        struct StrictRole {
+            name: String,
+            harness: String,
+            model: Option<String>,
+            autonomy: Option<String>,
+        }
+        // strict pass first: catches typos like `modle:` with the field name
+        let strict: std::result::Result<StrictRole, _> = serde_norway::from_str(fm);
+        if let Err(e) = strict {
+            return Err(format!("{e}"));
+        }
+        let parsed: std::result::Result<Frontmatter, _> = serde_norway::from_str(fm);
+        parsed.map(|f| f.role).map_err(|e| format!("{e}"))
+    }
 }
 
 /// Split a `.md` file into (yaml frontmatter, markdown body).
@@ -65,7 +96,7 @@ fn split_frontmatter(raw: &str) -> Result<(String, String)> {
     Err(anyhow!("no YAML frontmatter (--- … ---) found"))
 }
 
-fn load_roles_dir(dir: &Path, into: &mut RoleSet) {
+pub fn load_roles_dir_into(dir: &Path, into: &mut RoleSet) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -77,18 +108,36 @@ fn load_roles_dir(dir: &Path, into: &mut RoleSet) {
         let Some(id) = p.file_stem().and_then(|s| s.to_str()).map(str::to_owned) else {
             continue;
         };
-        let Ok(raw) = std::fs::read_to_string(&p) else {
-            continue;
+        let raw = match std::fs::read_to_string(&p) {
+            Ok(r) => r,
+            Err(e) => {
+                into.errors.push(LoadError {
+                    path: p,
+                    message: format!("read: {e}"),
+                });
+                continue;
+            }
         };
-        let Ok((fm, body)) = split_frontmatter(&raw) else {
-            continue;
+        let (fm, body) = match split_frontmatter(&raw) {
+            Ok(v) => v,
+            Err(e) => {
+                into.errors.push(LoadError {
+                    path: p,
+                    message: format!("{e:#}"),
+                });
+                continue;
+            }
         };
-        let Ok(parsed) = serde_yaml::from_str::<Frontmatter>(&fm) else {
-            continue;
-        };
-        let mut role = parsed.role;
-        role.instructions = body;
-        into.roles.insert(id, role); // project level overwrites user level
+        match Frontmatter::parse(&fm) {
+            Ok(mut role) => {
+                role.instructions = body;
+                into.roles.insert(id, role); // project level overwrites user level
+            }
+            Err(e) => into.errors.push(LoadError {
+                path: p,
+                message: e,
+            }),
+        }
     }
 }
 
@@ -107,7 +156,7 @@ fn load_teams_dir(dir: &Path, into: &mut RoleSet) {
         let Ok(raw) = std::fs::read_to_string(&p) else {
             continue;
         };
-        if let Ok(team) = serde_yaml::from_str::<Team>(&raw) {
+        if let Ok(team) = serde_norway::from_str::<Team>(&raw) {
             into.teams.insert(id, team);
         }
     }
@@ -119,13 +168,13 @@ impl RoleSet {
         // user level
         if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
             let base = PathBuf::from(&home).join(".ai-commander");
-            load_roles_dir(&base.join("agents"), &mut rs);
+            load_roles_dir_into(&base.join("agents"), &mut rs);
             load_teams_dir(&base.join("teams"), &mut rs);
             rs.sources.push(base);
         }
         // project level (wins)
         let proj = cwd.join(".ai-commander");
-        load_roles_dir(&proj.join("agents"), &mut rs);
+        load_roles_dir_into(&proj.join("agents"), &mut rs);
         load_teams_dir(&proj.join("teams"), &mut rs);
         rs.sources.push(proj);
         rs
@@ -272,7 +321,7 @@ mod tests {
     fn frontmatter_split_and_parse() {
         let raw = "---\nname: Code Reviewer\nharness: oc\nmodel: deepseek/deepseek-flash\nautonomy: ask_first\n---\nYou review Rust code.\nFocus on unsafe.";
         let (fm, body) = split_frontmatter(raw).unwrap();
-        let parsed: Frontmatter = serde_yaml::from_str(&fm).unwrap();
+        let parsed: Frontmatter = serde_norway::from_str(&fm).unwrap();
         assert_eq!(parsed.role.name, "Code Reviewer");
         assert_eq!(parsed.role.harness, "oc");
         assert_eq!(
@@ -316,7 +365,7 @@ mod tests {
             "second create must fail"
         );
         let mut rs = RoleSet::default();
-        load_roles_dir(&dir.join(".ai-commander").join("agents"), &mut rs);
+        load_roles_dir_into(&dir.join(".ai-commander").join("agents"), &mut rs);
         assert_eq!(rs.roles["reviewer"].name, "Code Reviewer");
         assert!(rs.roles["reviewer"].instructions.contains("unsafe"));
         std::env::set_current_dir(prev).unwrap();
@@ -334,7 +383,7 @@ mod tests {
         )
         .unwrap();
         let mut rs = RoleSet::default();
-        load_roles_dir(&agents, &mut rs);
+        load_roles_dir_into(&agents, &mut rs);
         assert_eq!(rs.roles.len(), 1);
         assert_eq!(rs.roles["coder"].instructions, "Write code fast.");
         let _ = std::fs::remove_dir_all(&dir);
