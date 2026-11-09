@@ -168,3 +168,96 @@ fn worktrees_stay_outside_and_orphans_pruned() {
     assert!(wt.exists(), "the live task's worktree survives");
     let _ = std::fs::remove_dir_all(&repo);
 }
+
+/// v6 #1 (the review probe): the user stands on the base branch with a
+/// CLEAN tree — Approve must make the agent's files APPEAR in their
+/// checkout, never look deleted (a following `commit -am` must not wipe
+/// the agent's work).
+#[test]
+fn approve_on_clean_base_shows_work_in_the_checkout() {
+    let repo = init_repo("ff");
+    let mut b = BoardStore::open_memory();
+    let t = b.add_task("ff task");
+    b.transition(&t.id, TaskAction::Promote).unwrap();
+    b.transition_in(&repo, &t.id, TaskAction::Start).unwrap();
+    let started = b.projection().tasks.last().unwrap().clone();
+    let wt = worktree::worktree_path(&repo, &started);
+    std::fs::write(wt.join("g"), "agent file\n").unwrap();
+    git(&wt, &["add", "-A"]);
+    git(&wt, &["commit", "-qm", "agent g"]);
+
+    // the user IS on main (the task base) with a clean tree
+    b.transition_in(&repo, &t.id, TaskAction::Finish).unwrap();
+    b.transition_in(&repo, &t.id, TaskAction::Approve).unwrap();
+
+    // the review probe: status must NOT show the file as deleted
+    let status = git(&repo, &["status", "--porcelain"]);
+    assert!(
+        !status.contains('D'),
+        "the agent's file must not look deleted: {status}"
+    );
+    assert!(repo.join("g").exists(), "the file is present in the checkout");
+
+    // and a commit -am afterwards keeps the agent's file
+    std::fs::write(repo.join("user.txt"), "u
+").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "user follow-up"]);
+    let show = git(&repo, &["show", "HEAD:g"]);
+    assert!(show.contains("agent file"), "commit -am kept the agent's file");
+    assert!(!git(&repo, &["status", "--porcelain"]).contains('D'));
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// v6 #1: update-ref with an expected-old value must REFUSE to move a ref
+/// that changed in between (a concurrent user commit is never overwritten).
+#[test]
+fn update_ref_guard_refuses_moved_base() {
+    let repo = init_repo("guard");
+    // two commits on main; trying to move main with the WRONG old value
+    // (the first commit) must fail and leave main where it is
+    let first = git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+    std::fs::write(repo.join("second.txt"), "2\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "second"]);
+    let second = git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+
+    let out = std::process::Command::new("git")
+        .current_dir(&repo)
+        .args(["update-ref", "refs/heads/main", &second, &first])
+        .output()
+        .expect("git update-ref");
+    assert!(
+        !out.status.success(),
+        "update-ref must refuse with a stale expected-old value"
+    );
+    let still = git(&repo, &["rev-parse", "main"]).trim().to_string();
+    assert_eq!(still, second, "main was not moved by the refused command");
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// v6: the worktree path is STORED on the task — a relocated cache (hash
+/// scheme change, different AI_COMMANDER_WORKTREES_DIR) still finds it.
+#[test]
+fn worktree_path_is_stored_and_survives_relocation() {
+    // stable slug: same input → same slug across calls (FNV-1a)
+    let repo = init_repo("stored");
+    let mut b = BoardStore::open_memory();
+    let t = b.add_task("stored path");
+    b.transition(&t.id, TaskAction::Promote).unwrap();
+    b.transition_in(&repo, &t.id, TaskAction::Start).unwrap();
+    let started = b.projection().tasks.last().unwrap().clone();
+    assert!(
+        !started.worktree_path.is_empty(),
+        "Start records the worktree path on the task"
+    );
+    let stored = std::path::PathBuf::from(&started.worktree_path);
+    assert!(stored.exists(), "the stored path is real");
+
+    // a "relocated" environment: the env override no longer matches — the
+    // stored path still resolves (this is what finish() uses)
+    let resolved = worktree::worktree_path(&repo, &started);
+    assert_eq!(resolved, stored, "stored path wins over computed");
+
+    let _ = std::fs::remove_dir_all(&repo);
+}

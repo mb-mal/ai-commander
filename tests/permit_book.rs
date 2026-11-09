@@ -1,8 +1,9 @@
-//! v5 #10: a permission ask parked in NeedsHuman becomes a one-time permit
-//! when the human un-parks the task — the relaunched turn does not hit the
-//! same question again (and the permit is consumed after one use).
+//! v5 #10 + v6 #3: a permission ask parked in NeedsHuman becomes a
+//! one-time permit ONLY through an explicit human grant (the `permit`
+//! journal comment from human-only board_unpark). Observing a
+//! NeedsHuman-to-Ready transition grants nothing — agents used to trigger
+//! it themselves with `promote`.
 
-use ai_commander::kanban::TaskStatus;
 use ai_commander::kanban::runner::PermitBook;
 
 #[test]
@@ -16,17 +17,12 @@ fn human_approval_grants_the_ask_once() {
         "no permit before the human acts"
     );
 
-    // unrelated transitions do nothing
-    pb.observe_transition("t-0001", TaskStatus::Backlog, TaskStatus::Ready);
-    assert!(!pb.take_permit("t-0001", "execute", "git push origin main"));
-
-    // the human un-parks the task: NeedsHuman → Ready grants it
-    pb.observe_transition("t-0001", TaskStatus::NeedsHuman, TaskStatus::Ready);
+    // v6 #3: the explicit human grant is the ONLY path
+    assert!(pb.grant("t-0001"), "the human grant works");
     assert!(
         pb.take_permit("t-0001", "execute", "git push origin main"),
         "the exact approved ask passes once"
     );
-    // …and only once, and nothing else passes
     assert!(
         !pb.take_permit("t-0001", "execute", "git push origin main"),
         "the permit is consumed"
@@ -38,9 +34,8 @@ fn human_approval_grants_the_ask_once() {
 }
 
 #[test]
-fn permit_requires_the_parked_ask() {
+fn grant_requires_the_parked_ask() {
     let mut pb = PermitBook::new();
-    // a task that never asked gets nothing even after the same transition
-    pb.observe_transition("t-0002", TaskStatus::NeedsHuman, TaskStatus::Ready);
+    assert!(!pb.grant("t-0002"));
     assert!(!pb.take_permit("t-0002", "edit", "src/lib.rs"));
 }

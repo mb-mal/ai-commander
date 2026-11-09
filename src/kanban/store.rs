@@ -383,6 +383,7 @@ impl BoardStore {
             comments: Vec::new(),
             artifacts: Vec::new(),
             base_branch: String::new(),
+            worktree_path: String::new(),
             depends_on: Vec::new(),
             session_id: None,
             attempts: 0,
@@ -428,13 +429,18 @@ impl BoardStore {
                 match super::worktree::on_transition(repo, &task, next, action) {
                     Err(e) => return Err(format!("{e:#}")),
                     Ok(hook) => {
-                        if let Some(base) = hook.base_branch {
+                        if let Some(t) = self.proj.tasks.iter_mut().find(|t| t.id == task.id) {
                             // v5 #2: remember where the task branch was cut
                             // from, so Approve merges into the right place
-                            if let Some(t) = self.proj.tasks.iter_mut().find(|t| t.id == task.id) {
+                            if let Some(base) = &hook.base_branch {
                                 if t.base_branch.is_empty() {
-                                    t.base_branch = base;
+                                    t.base_branch = base.clone();
                                 }
+                            }
+                            // v6: remember WHERE the worktree lives — survives
+                            // hash-scheme and cache-location changes
+                            if let Some(wt) = &hook.worktree_path {
+                                t.worktree_path = wt.clone();
                             }
                         }
                     }

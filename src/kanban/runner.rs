@@ -443,10 +443,11 @@ mod tests {
     }
 }
 
-/// v5 #10: one-time permits for permission asks. The daemon parks an ask in
-/// NeedsHuman; when the HUMAN moves the task on (NeedsHuman → Ready), the
-/// recorded ask is granted once, so the relaunched task does not hit the
-/// same question (and does not pay for the turn twice without need).
+/// v5 #10 + v6 #3: one-time permits for permission asks. The daemon parks
+/// an ask in NeedsHuman; the permit is granted ONLY by an explicit human
+/// action (the `permit` journal comment written by the human-only
+/// board_unpark tool) — never by merely observing a NeedsHuman→Ready
+/// transition, which agents used to trigger themselves via `promote`.
 #[derive(Debug, Default)]
 pub struct PermitBook {
     /// asks parked in NeedsHuman: task → (action, resource)
@@ -468,19 +469,14 @@ impl PermitBook {
         );
     }
 
-    /// Status transitions observed each loop: a human moving a parked task
-    /// back to Ready grants its ask once.
-    pub fn observe_transition(
-        &mut self,
-        task_id: &str,
-        from: crate::kanban::TaskStatus,
-        to: crate::kanban::TaskStatus,
-    ) {
-        use crate::kanban::TaskStatus::*;
-        if let (NeedsHuman, Ready) = (from, to) {
-            if let Some((a, r)) = self.asks.remove(task_id) {
-                self.granted.insert((task_id.to_string(), a, r));
-            }
+    /// v6 #3: a HUMAN un-parked the task (the `permit` journal comment).
+    /// Grants the parked ask once — this is the only grant path.
+    pub fn grant(&mut self, task_id: &str) -> bool {
+        if let Some((a, r)) = self.asks.remove(task_id) {
+            self.granted.insert((task_id.to_string(), a, r));
+            true
+        } else {
+            false
         }
     }
 

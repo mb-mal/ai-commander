@@ -176,6 +176,9 @@ pub enum BackendEvent {
         action: String,
         /// primary resource (path/command) for pattern rules
         resource: String,
+        /// v6 #2: ALL resources of the request (every touched location);
+        /// the policy engine resolves the strictest across them
+        resources: Vec<String>,
     },
     /// SSE stream reconnected after a drop — UI should reload current history
     Reconnected { harness: String },

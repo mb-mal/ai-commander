@@ -256,6 +256,9 @@ pub struct App {
     /// approvals queue length shown in the header (permission requests)
     pub approvals_pending: usize,
     pub board: Arc<parking_lot::Mutex<kanban::store::BoardStore>>,
+    /// v6 #3: true when another process owns the store — human board
+    /// actions are forwarded to the owner over IPC
+    pub board_is_view: bool,
     pub board_col: usize,
     pub board_row: usize,
     pub board_sel: Option<String>,
@@ -287,13 +290,15 @@ impl App {
         // and then serves board IPC for secondary processes (board-mcp).
         // If another process owns the store, degrade to a local view and
         // do NOT serve IPC.
-        let board = {
+        let (board, board_is_view) = {
+            let mut board_is_view = true;
             let opened = kanban::store::BoardStore::open_redb(&kanban::Kanban::path());
             let owns = opened.is_ok();
             let arc = Arc::new(parking_lot::Mutex::new(
                 opened.unwrap_or_else(|_| kanban::store::BoardStore::open_memory()),
             ));
             if owns {
+                board_is_view = false;
                 match kanban::ipc::serve_board(arc.clone()) {
                     Ok(port) => crate::log_info!("board", "IPC owner on port {port}"),
                     Err(e) => crate::log_warn!("board", "IPC server failed: {e}"),
@@ -315,7 +320,7 @@ impl App {
             } else {
                 crate::log_warn!("board", "store is owned by another process — view only");
             }
-            arc
+            (arc, board_is_view)
         };
         // v5: policy warnings surface in the log (trust model, dropped rules)
         let policy = crate::policy::Policy::load(&std::env::current_dir().unwrap_or_default());
@@ -351,6 +356,7 @@ impl App {
             show_activity: false,
             approvals_pending: 0,
             board,
+            board_is_view,
             board_col: 0,
             board_row: 0,
             board_sel: None,
@@ -907,10 +913,12 @@ impl App {
                 title,
                 action,
                 resource,
+                resources,
             } => {
                 self.approvals_pending += 1;
                 // policy engine: deny wins over ask over allow; no rule -> ask
-                match self.policy.check(&action, &resource) {
+                // v6 #2: strictest across every touched location
+                match self.policy.check_all(&action, &resources) {
                     crate::policy::Effect::Allow => {
                         self.approvals_pending = self.approvals_pending.saturating_sub(1);
                         let (s, r) = (session_id.clone(), request_id.clone());
@@ -1809,6 +1817,30 @@ impl App {
         let Some(t) = self.selected_board_task() else {
             return;
         };
+        // v6 #3: un-parking a NeedsHuman task is a HUMAN action — in
+        // view-only mode it goes to the owner via the human IPC token
+        if t.status == S::NeedsHuman && self.board_is_view {
+            if let Some(tok) = kanban::ipc::human_token() {
+                match kanban::ipc::call_owner(
+                    "board_unpark",
+                    &serde_json::json!({"task_id": t.id}),
+                    &tok,
+                ) {
+                    Some(Ok(msg)) => {
+                        self.toast(format!("{} (on the owner)", msg), false);
+                        return;
+                    }
+                    Some(Err(e)) => {
+                        self.toast(format!("un-park failed: {e}"), true);
+                        return;
+                    }
+                    None => {
+                        self.toast("board owner is not reachable", true);
+                        return;
+                    }
+                }
+            }
+        }
         let action = match t.status {
             S::Backlog | S::Blocked | S::NeedsHuman => A::Promote,
             S::Ready => A::Start,
@@ -2786,6 +2818,7 @@ mod tests {
             title: "bash: rm -rf".into(),
             action: "bash".into(),
             resource: "rm -rf /".into(),
+            resources: vec!["rm -rf /".into()],
         });
         assert!(
             matches!(

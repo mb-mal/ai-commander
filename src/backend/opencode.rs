@@ -905,6 +905,7 @@ fn handle_sse_event(
                     title,
                     action: action.to_string(),
                     resource: resource.to_string(),
+                    resources: vec![resource.to_string()],
                 });
             }
         }
