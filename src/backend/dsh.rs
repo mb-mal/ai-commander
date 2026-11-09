@@ -178,7 +178,15 @@ impl DshBackend {
                 return Some(k);
             }
         }
-        // reuse the key stored by opencode (~/.local/share/opencode/auth.json → deepseek.key)
+        // v5 #7: another app's credential store is read ONLY with explicit
+        // consent (reuse_opencode_key) — and the source is logged
+        if !self.cfg.reuse_opencode_key {
+            return None;
+        }
+        crate::log_info!(
+            "dsh",
+            "using the DeepSeek key from the opencode auth store (reuse_opencode_key = true)"
+        );
         let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
         let auth = PathBuf::from(&home)
             .join(".local")
@@ -256,7 +264,7 @@ impl Backend for DshBackend {
     async fn connect(&self) -> Result<String> {
         if self.api_key().is_none() {
             bail!(
-                "DEEPSEEK_API_KEY not set and no deepseek key found in the opencode auth store; set the key in the environment or configure opencode"
+                "no DeepSeek API key: set DEEPSEEK_API_KEY, or enable                  reuse_opencode_key = true for the dsh harness to reuse the                  opencode auth store"
             );
         }
         self.connected.store(true, Ordering::Relaxed);

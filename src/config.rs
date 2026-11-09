@@ -39,6 +39,10 @@ pub struct HarnessCfg {
     /// Run the harness with unattended tool execution (hermes --yolo).
     /// Off by default: the agent asks before running tools that need it.
     pub auto_approve: bool,
+    /// v5 #7: let the dsh backend reuse the DeepSeek key stored by opencode
+    /// (~/.local/share/opencode/auth.json). Off by default — another app's
+    /// credential store must not be read in secret.
+    pub reuse_opencode_key: bool,
     pub default_model: Option<ModelRef>,
 }
 
@@ -54,6 +58,7 @@ impl HarnessCfg {
             workdir: String::new(),
             agent: "build".into(),
             auto_approve: false,
+            reuse_opencode_key: false,
             default_model: None, // picked live from GET /api/model on first Ctrl+K
         }
     }
@@ -69,6 +74,7 @@ impl HarnessCfg {
             workdir: String::new(),
             agent: String::new(),
             auto_approve: false,
+            reuse_opencode_key: false,
             default_model: None,
         }
     }
@@ -197,6 +203,8 @@ struct HarnessToml {
     agent: String,
     #[serde(default)]
     auto_approve: bool,
+    #[serde(default)]
+    reuse_opencode_key: bool,
     default_model: Option<ModelToml>,
 }
 
@@ -229,6 +237,7 @@ impl serde::Serialize for Config {
                     workdir: h.workdir.clone(),
                     agent: h.agent.clone(),
                     auto_approve: h.auto_approve,
+                    reuse_opencode_key: h.reuse_opencode_key,
                     default_model: h.default_model.as_ref().map(|m| ModelToml {
                         provider: m.provider_id.clone(),
                         model: m.model_id.clone(),
@@ -260,6 +269,7 @@ impl<'de> serde::Deserialize<'de> for Config {
                     workdir: h.workdir,
                     agent: h.agent,
                     auto_approve: h.auto_approve,
+                    reuse_opencode_key: h.reuse_opencode_key,
                     default_model: h.default_model.map(|m| ModelRef {
                         provider_id: m.provider,
                         model_id: m.model,
