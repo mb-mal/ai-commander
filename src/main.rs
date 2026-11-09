@@ -550,6 +550,10 @@ async fn run_daemon(cfg: Config) -> Result<()> {
     // v4 Н2: task ids whose turn stream errored — their StreamDone is
     // Failed even if a DONE: marker was printed before the break
     let mut task_errors: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // v5 #10: permission asks parked in NeedsHuman + their one-time permits
+    let mut permits = ai_commander::kanban::runner::PermitBook::new();
+    let mut prev_statuses: std::collections::HashMap<String, TaskStatus> =
+        std::collections::HashMap::new();
     loop {
         // 1) drain finished turns via TaskRunner (Б8: classify + transition)
         use backend::PartKind;
@@ -646,6 +650,19 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                     let Some(b) = backends.get(harness).cloned() else {
                         continue;
                     };
+                    // v5 #10: the human already approved this exact ask when
+                    // un-parking the task — honor it once
+                    let task_for_permit = {
+                        let bb = board.lock();
+                        bb.find_by_session(harness, session_id).map(|t| t.id)
+                    };
+                    if let Some(tid) = &task_for_permit {
+                        if permits.take_permit(tid, action, resource) {
+                            println!("[policy] one-time permit for {tid}: {action} {resource}");
+                            let _ = b.permission_reply(session_id, request_id, "once").await;
+                            continue;
+                        }
+                    }
                     match policy.check(action, resource) {
                         ai_commander::policy::Effect::Allow => {
                             println!("[policy] auto-allow {action}: {resource}");
@@ -661,6 +678,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                                 bb.find_by_session(harness, session_id).map(|t| t.id)
                             };
                             if let Some(id) = task_id {
+                                permits.record_ask(&id, action, resource);
                                 let question = format!(
                                     "agent asks permission: {title} ({action}: {resource})"
                                 );
@@ -730,6 +748,20 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                 println!("[watchdog] {id}: {label}");
                 ai_commander::log_info!("daemon", "watchdog {id}: {label}");
                 busy.remove(&id);
+            }
+        }
+
+        // v5 #10: notice the human un-parking asked tasks (NeedsHuman→Ready
+        // grants the parked ask once) and refresh the status snapshot
+        {
+            let b = board.lock();
+            for t in b.projection().tasks.iter() {
+                if let Some(prev) = prev_statuses.get(&t.id) {
+                    if *prev != t.status {
+                        permits.observe_transition(&t.id, *prev, t.status);
+                    }
+                }
+                prev_statuses.insert(t.id.clone(), t.status);
             }
         }
 
