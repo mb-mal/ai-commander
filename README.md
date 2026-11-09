@@ -377,3 +377,29 @@ this environment for a live check; if it translates `compact_boundary`
 into `compaction_update`, the ACP path above lights up automatically,
 otherwise the usage-drop inference covers it. Re-check on a live adapter
 before relying on streamed progress there.
+
+## Try the DEFRAG view in 30 seconds
+
+A demo harness (fake ACP agent) reports usage 53k→41k and streams a
+compaction, so the full animation plays without any model or API key:
+
+```sh
+cargo build --release --bins
+mkdir -p "$TMPDIR/aic-demo" && cat > "$TMPDIR/aic-demo/config.toml" <<'CFG'
+lang = "en"
+profile_name = "demo"
+[[harness]]
+id = "demo"
+name = "Defrag Demo"
+kind = "opencode-acp"
+enabled = true
+server_url = "<repo>/target/release/fake-acp-agent.exe"
+CFG
+AI_COMMANDER_CONFIG_DIR="$TMPDIR/aic-demo" \
+FAKE_ACP_COMPACTION=1 ./target/release/ai-commander
+```
+
+Type a message, Enter → approve the permission dialog → the reply arrives,
+then `usage_update` 53k fills the mini-map and the streamed compaction
+opens the full DEFRAG screen (Esc collapses it). On a real harness:
+OpenCode — type `/compact`; DSH — let the history pass 80% of the window.
