@@ -4,6 +4,7 @@
 
 pub mod acp;
 pub mod dsh;
+pub mod dsh_compact;
 pub mod hermes;
 pub mod opencode;
 
@@ -143,6 +144,32 @@ pub struct ChatMsg {
     pub attachments: Vec<AttachmentMeta>,
 }
 
+/// К1: how full the model context window is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionStatus {
+    InProgress,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionMethod {
+    /// cheap prune: old tool outputs dropped without a model call
+    Prune,
+    /// full compaction: the middle of the dialogue is summarized
+    Summarize,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionSource {
+    /// the harness reported it (ACP RFD, opencode events, hermes marker)
+    Reported,
+    /// inferred from a sharp usage drop (universal fallback, К6)
+    Inferred,
+}
+
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
     /// Connected and healthy; carries server version
@@ -219,6 +246,29 @@ pub enum BackendEvent {
         harness: String,
         agents: Vec<AgentInfo>,
     },
+    /// К1: context window fill (ACP usage_update; opencode usage events;
+    /// chars/4 estimate for hermes/dsh). `size` is the window in tokens.
+    Usage {
+        harness: String,
+        native_id: String,
+        used: u64,
+        size: u64,
+        cost_usd: Option<f64>,
+        estimated: bool,
+    },
+    /// К2/К6: one compaction lifecycle event; `compaction_id` is stable
+    /// within the session (one history line per id).
+    Compaction {
+        harness: String,
+        native_id: String,
+        compaction_id: String,
+        status: CompactionStatus,
+        method: CompactionMethod,
+        /// streaming summary chunk, when the harness streams it
+        summary_delta: Option<String>,
+        error: Option<String>,
+        source: CompactionSource,
+    },
     /// Global backend error (connection etc.)
     Error { harness: String, error: String },
 }
@@ -268,6 +318,16 @@ pub trait Backend: Send + Sync {
     async fn list_models(&self) -> Result<Vec<ModelInfo>>;
     async fn list_agents(&self) -> Result<Vec<AgentInfo>>;
 
+    /// К11: does this harness support manual context compaction?
+    fn supports_compact(&self) -> bool {
+        false
+    }
+
+    /// К11: ask the harness to compact the session context now.
+    async fn compact(&self, _native_id: &str) -> Result<()> {
+        anyhow::bail!("this harness does not support manual compaction")
+    }
+
     /// Kill spawned server (if any). Called on app exit.
     fn shutdown(&self);
 
@@ -307,6 +367,10 @@ pub fn supported_kind(kind: &str) -> bool {
         "opencode" | "opencode-acp" | "hermes" | "deepseek-harness"
     )
 }
+
+/// К1: assumed window for chars/4 estimates (harnesses that report
+/// nothing). Marked `estimated: true` in the Usage event.
+pub const ESTIMATED_WINDOW: u64 = 128_000;
 
 /// Hard cap for a single attachment — protects RAM from multi-GB files
 /// (base64 inflates by ~4/3).

@@ -333,3 +333,47 @@ In-app About: `F1` → `A` (or `Ctrl+A`). © 2026 Mikhail Malyshev
   and cancelling the turn answers every pending request with `cancelled`
   as the spec requires; `fake-acp-agent` drives allow / always / reject /
   cancel-during-request scenarios end to end
+
+## Context compaction: DEFRAG view (v6)
+
+When a harness compacts the conversation (the old middle is replaced by a
+summary), ai-commander shows it as an MS-DOS 6 style **defragmenter**:
+pinned instructions (`X`), the written summary (`●`), pruned tool outputs
+(`B`), the protected recent tail (`▓`) and free window (`░`), with Status
+and Legend windows in the original layout and CGA colors (RGB, so terminal
+themes cannot break them).
+
+Data sources per harness:
+
+| Harness | Usage (window fill) | Compaction events | Manual |
+| --- | --- | --- | --- |
+| any ACP agent (RFD draft) | `usage_update` | `compaction_update` + streamed `compaction_summary_chunk` (intercepted by the `sessionUpdate` tag; the schema crate 1.1.0 does not ship these types yet — unknown types are logged, not dropped) | agent-side |
+| OpenCode | `session.usage.updated` (verified live) | `session.compaction.started/delta/ended/failed` (verified live; names taken from the server's own OpenAPI schema) | `POST /api/session/{id}/compact` — `/compact` in the composer |
+| Hermes | chars/4 estimate (`estimated: true`) | `[CONTEXT COMPACTION]` marker detected in the last history message after a turn | `/compress` — agent-side |
+| DSH | chars/4 estimate | **ai-commander compacts it itself** at 80% of the window: head and tail survive, the middle is summarized by the same model (call/result pairs are never split), the original history is archived next to the store | automatic |
+
+If a harness reports nothing, a >30% and >10k-token usage drop in the same
+session is *inferred* as a compaction (marked "detected by usage" — never
+duplicating a reported one).
+
+Where you see it:
+
+- **Full-screen DEFRAG overlay** during a compaction in the OPEN chat;
+  `Esc` collapses it into the mini-map (typing is never blocked).
+- **Mini-map** in the status bar: `ctx ████████░░ 87%`, animated while a
+  compaction runs.
+- **One history line per compaction**: `defragmented 174k → 41k`.
+
+Settings (К12):
+
+- `AI_COMMANDER_COMPACTION_VIEW=defrag|mini|off` (default `defrag`)
+- `NO_COLOR` — monochrome palette (`/BW`), `AI_COMMANDER_ASCII=1` — ASCII
+  glyphs for old consoles (`/G0`)
+- the numbers before → after are always shown as text, never only as the
+  map
+
+**Claude Code via the ACP adapter (К3):** the adapter was not available in
+this environment for a live check; if it translates `compact_boundary`
+into `compaction_update`, the ACP path above lights up automatically,
+otherwise the usage-drop inference covers it. Re-check on a live adapter
+before relying on streamed progress there.
