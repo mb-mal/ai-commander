@@ -47,11 +47,35 @@ impl McpClient {
         serde_json::from_str(&line).expect("parse response")
     }
 
+    fn init(&mut self) {
+        self.request(
+            "initialize",
+            serde_json::json!({
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "test", "version": "0"}
+            }),
+        );
+        self.notify_initialized();
+    }
+
+    fn notify_initialized(&mut self) {
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0", "method": "notifications/initialized"
+        });
+        writeln!(self.stdin, "{msg}").unwrap();
+        self.stdin.flush().unwrap();
+    }
+
     fn call(&mut self, name: &str, args: serde_json::Value) -> (String, bool) {
         let resp = self.request(
             "tools/call",
             serde_json::json!({"name": name, "arguments": args}),
         );
+        // rmcp surfaces tool errors as JSON-RPC errors; success carries content
+        if let Some(e) = resp.get("error") {
+            let msg = e["message"].as_str().unwrap_or_default().to_string();
+            return (msg, true);
+        }
         let result = resp["result"].clone();
         let text = result["content"][0]["text"]
             .as_str()
@@ -80,15 +104,24 @@ fn mcp_board_full_dialog() {
     let db = tmpdb("dialog");
     let mut c = McpClient::spawn(&db, "coder");
 
-    // initialize + tools/list
+    // initialize + tools/list. v5 #8: the server is on the official rmcp
+    // SDK — a current client must negotiate a CURRENT protocol version
+    // (the hand-rolled one was stuck on 2024-11-05 forever)
     let init = c.request(
         "initialize",
         serde_json::json!({
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": "2025-06-18",
             "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}
         }),
     );
     assert_eq!(init["result"]["serverInfo"]["name"], "ai-commander-board");
+    let negotiated = init["result"]["protocolVersion"].as_str().unwrap_or("");
+    assert!(
+        negotiated >= "2025-06-18",
+        "the SDK must negotiate a current protocol version, got {negotiated}"
+    );
+    // handshake completion notification (rmcp expects it before calls)
+    c.notify_initialized();
     let tools = c.request("tools/list", serde_json::json!({}));
     let names: Vec<&str> = tools["result"]["tools"]
         .as_array()
@@ -96,6 +129,12 @@ fn mcp_board_full_dialog() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
+    for n in &names {
+        assert!(
+            !n.contains('.'),
+            "tool names must fit [a-zA-Z0-9_-] (no dots): {n}"
+        );
+    }
     for expected in [
         "board_create_task",
         "board_update_task",
@@ -171,18 +210,19 @@ fn mcp_requires_role_token_and_ownership() {
     let mut anon = McpClient::spawn(&db, "");
     anon.request(
         "initialize",
-        serde_json::json!({"protocolVersion": "2024-11-05", "capabilities": {}}),
+        serde_json::json!({
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "test", "version": "0"}
+        }),
     );
+    anon.notify_initialized();
     let (text, err) = anon.call("board_create_task", serde_json::json!({"title": "x"}));
     assert!(err && text.contains("role token"), "{text}");
     drop(anon);
 
     // coder creates a task assigned to reviewer; coder cannot start it
     let mut coder = McpClient::spawn(&db, "coder");
-    coder.request(
-        "initialize",
-        serde_json::json!({"protocolVersion": "2024-11-05", "capabilities": {}}),
-    );
+    coder.init();
     let (text, _) = coder.call("board_create_task", serde_json::json!({"title": "owned"}));
     let id = text.split(' ').nth(1).unwrap().to_string();
     let (text, _) = coder.call(
@@ -205,10 +245,7 @@ fn mcp_requires_role_token_and_ownership() {
 
     // reviewer can start it
     let mut reviewer = McpClient::spawn(&db, "reviewer");
-    reviewer.request(
-        "initialize",
-        serde_json::json!({"protocolVersion": "2024-11-05", "capabilities": {}}),
-    );
+    reviewer.init();
     let (text, err) = reviewer.call(
         "board_update_task",
         serde_json::json!({"task_id": id, "action": "start"}),

@@ -36,6 +36,8 @@ unicode-segmentation = "1.13.3"
 redb = "2.6.4"
 serde_norway = "0.9.42"
 parking_lot = "0.12"
+rmcp = { version = "3.9", features = ["server", "transport-io"] }
+schemars = "1.0"
 
 [profile.release]
 lto = true
