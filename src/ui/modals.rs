@@ -145,6 +145,26 @@ fn draw_agents_panel(app: &mut App, f: &mut Frame, size: Rect) {
             Span::styled(status, TH.dlg_accent_style()),
         ]));
     }
+    // v5 #6: files that failed to load are VISIBLE here, not silently gone
+    for e in roles.errors.iter().take(4) {
+        let file = e
+            .path
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let one_line: String = e
+            .message
+            .lines()
+            .next()
+            .unwrap_or("load error")
+            .chars()
+            .take(58)
+            .collect();
+        lines.push(Line::from(Span::styled(
+            format!(" ⚠ {file}: {one_line}"),
+            TH.err_style(),
+        )));
+    }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         if lang == Lang::Ru {
