@@ -153,7 +153,7 @@ impl Policy {
                 .join(".ai-commander")
                 .join("policy.yaml");
             if let Ok(raw) = std::fs::read_to_string(&p) {
-                match serde_yaml::from_str::<PolicyFile>(&raw) {
+                match serde_norway::from_str::<PolicyFile>(&raw) {
                     Ok(f) => {
                         user_rules = f.rules;
                         sources.push(p);
@@ -164,7 +164,7 @@ impl Policy {
         }
         let pp = cwd.join(".ai-commander").join("policy.yaml");
         if let Ok(raw) = std::fs::read_to_string(&pp) {
-            match serde_yaml::from_str::<PolicyFile>(&raw) {
+            match serde_norway::from_str::<PolicyFile>(&raw) {
                 Ok(f) => {
                     proj_rules = f.rules;
                     sources.push(pp);

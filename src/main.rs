@@ -492,6 +492,15 @@ async fn run_daemon(cfg: Config) -> Result<()> {
         println!("[policy] {w}");
         ai_commander::log_warn!("daemon", "policy: {w}");
     }
+    // v5 #6: role files that failed to load are loud — a typo must not
+    // silently drop a role
+    for e in
+        ai_commander::kanban::roles::RoleSet::cached(&std::env::current_dir().unwrap_or_default())
+            .errors
+    {
+        println!("[roles] {}: {}", e.path.display(), e.message);
+        ai_commander::log_warn!("daemon", "role {}: {}", e.path.display(), e.message);
+    }
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BackendEvent>();
     for h in cfg
         .harnesses
@@ -727,6 +736,9 @@ async fn run_daemon(cfg: Config) -> Result<()> {
 
         // 3) launch one launchable task per idle harness (B9: DAG-aware)
         let ready: Vec<ai_commander::kanban::Task> = board.lock().unwrap().launchable();
+        let roles_snapshot = ai_commander::kanban::roles::RoleSet::cached(
+            &std::env::current_dir().unwrap_or_default(),
+        );
         for task in ready {
             let Some(harness) = task.harness.clone() else {
                 continue;
@@ -737,13 +749,30 @@ async fn run_daemon(cfg: Config) -> Result<()> {
             if busy.contains(&task.id) {
                 continue;
             }
+            // v5 #6: a task assigned to a role that failed to load (or does
+            // not exist) must not be launched blind — escalate with the cause
+            if let Some(role_id) = &task.role {
+                if !roles_snapshot.roles.contains_key(role_id) {
+                    let reason = match roles_snapshot.errors.iter().find(|e| {
+                        e.path.file_stem().map(|s| s.to_string_lossy())
+                            == Some(role_id.clone().into())
+                    }) {
+                        Some(e) => format!("role '{role_id}' failed to load: {}", e.message),
+                        None => format!("role '{role_id}' is not defined"),
+                    };
+                    println!("[escalate] {} launch blocked: {reason}", task.id);
+                    let mut b = board.lock().unwrap();
+                    ai_commander::kanban::runner::launch_failed(&mut b, &task.id, &reason);
+                    busy.remove(&task.id);
+                    continue;
+                }
+            }
 
             // B9+Н3: shared TaskRunner — Start creates the worktree, the
             // session is created with cwd=worktree so the agent works there
-            let roles = ai_commander::kanban::roles::RoleSet::cached(
-                &std::env::current_dir().unwrap_or_default(),
-            );
-            match ai_commander::kanban::runner::launch_task(b, &board, &task, &cfg, &roles).await {
+            match ai_commander::kanban::runner::launch_task(b, &board, &task, &cfg, &roles_snapshot)
+                .await
+            {
                 Ok(_session_id) => {
                     busy.insert(task.id.clone());
                     println!("[run] {} '{}' on {harness}", task.id, task.title);
