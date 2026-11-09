@@ -92,16 +92,70 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
     rec(&pv, &tv)
 }
 
+/// Actions whose resource is a shell command.
+fn is_command_action(action: &str) -> bool {
+    matches!(action.to_ascii_lowercase().as_str(), "execute" | "bash")
+}
+
+/// Actions whose resource is a filesystem path.
+fn is_path_action(action: &str) -> bool {
+    matches!(
+        action.to_ascii_lowercase().as_str(),
+        "read" | "edit" | "delete" | "move" | "search" | "write"
+    )
+}
+
+/// v6 #2: shell metacharacters make a command un-matchable by `allow`
+/// rules — `cargo build && curl … | sh` must never inherit an allow for
+/// `cargo *` (the glob would happily match the whole string).
+fn command_has_metachars(cmd: &str) -> bool {
+    cmd.chars()
+        .any(|c| matches!(c, ';' | '|' | '&' | '$' | '`' | '>' | '<' | '\n' | '\r'))
+}
+
+/// v6 #2: lexical normalization of path resources — `src/../../.ssh/x`
+/// must not look like it lives under `src/*`.
+pub fn normalize_path(p: &str) -> String {
+    let p = p.replace(char::from(0x5c), "/");
+    let mut out: Vec<&str> = Vec::new();
+    for c in p.split('/') {
+        match c {
+            "" | "." => {}
+            ".." => {
+                out.pop(); // never below the root of the expression
+            }
+            other => out.push(other),
+        }
+    }
+    out.join("/")
+}
+
 impl Policy {
     pub fn check(&self, action: &str, resource: &str) -> Effect {
         let mut decision: Option<Effect> = None;
+        // v6 #2: allow rules cannot match a command with shell
+        // metacharacters — a second command hidden behind `;`/`&&`/`$()`
+        // must go through ask/deny, whatever the prefix allows
+        let allow_blocked = action == "other"
+            || (is_command_action(action) && command_has_metachars(resource));
+        // v6 #2: path resources are normalized before matching
+        let resource_norm = if is_path_action(action) {
+            normalize_path(resource)
+        } else {
+            resource.to_string()
+        };
         for r in &self.rules {
             let action_ok = r.action == "*" || r.action.eq_ignore_ascii_case(action);
-            let resource_ok = r.pattern.is_empty() || glob_match(&r.pattern, resource);
+            let pattern = if is_path_action(action) {
+                normalize_path(&r.pattern)
+            } else {
+                r.pattern.clone()
+            };
+            let resource_ok = pattern.is_empty() || glob_match(&pattern, &resource_norm);
             if action_ok && resource_ok {
                 // v5: an unidentified action (`other`) is never auto-allowed
                 // — allow rules skip it, ask/deny still apply
-                if action == "other" && r.effect == Effect::Allow {
+                if allow_blocked && r.effect == Effect::Allow {
                     continue;
                 }
                 decision = Some(match decision {
@@ -111,6 +165,21 @@ impl Policy {
             }
         }
         decision.unwrap_or(Effect::Ask)
+    }
+
+    /// v6 #2: strictest result across ALL resources of a request (an edit
+    /// touching `src/a.rs` AND `.ssh/keys` is as strict as its worst path).
+    pub fn check_all(&self, action: &str, resources: &[String]) -> Effect {
+        let mut decision = Effect::Allow;
+        let mut any = false;
+        for r in resources {
+            decision = strictest(decision, self.check(action, r));
+            any = true;
+        }
+        if !any {
+            return self.check(action, "");
+        }
+        decision
     }
 
     /// Project policies may only tighten (deny > ask > allow), never weaken
