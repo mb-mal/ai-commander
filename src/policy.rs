@@ -136,8 +136,8 @@ impl Policy {
         // v6 #2: allow rules cannot match a command with shell
         // metacharacters — a second command hidden behind `;`/`&&`/`$()`
         // must go through ask/deny, whatever the prefix allows
-        let allow_blocked = action == "other"
-            || (is_command_action(action) && command_has_metachars(resource));
+        let allow_blocked =
+            action == "other" || (is_command_action(action) && command_has_metachars(resource));
         // v6 #2: path resources are normalized before matching
         let resource_norm = if is_path_action(action) {
             normalize_path(resource)

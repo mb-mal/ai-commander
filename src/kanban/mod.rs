@@ -382,15 +382,8 @@ pub fn board_tool_call(
             let id = str_arg("task_id");
             // v6 #3: leaving NeedsHuman is a HUMAN decision — an agent
             // promoting the task used to grant itself the parked permit
-            if str_arg("action") == "promote"
-                && !matches!(actor, Actor::Human)
-            {
-                if let Some(t) = board
-                    .projection()
-                    .tasks
-                    .iter()
-                    .find(|t| t.id == id)
-                {
+            if str_arg("action") == "promote" && !matches!(actor, Actor::Human) {
+                if let Some(t) = board.projection().tasks.iter().find(|t| t.id == id) {
                     if t.status == TaskStatus::NeedsHuman {
                         return Err(
                             "NeedsHuman tasks are un-parked by a human —                              answer in ai-commander, not from the agent side"

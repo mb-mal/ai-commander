@@ -391,7 +391,11 @@ impl Backend for AcpBackend {
                             // policy engine takes the strictest across them
                             let resources = if action == "execute" {
                                 let cmd = raw_input_text(f.raw_input.as_ref());
-                                if cmd.is_empty() { Vec::new() } else { vec![cmd] }
+                                if cmd.is_empty() {
+                                    Vec::new()
+                                } else {
+                                    vec![cmd]
+                                }
                             } else {
                                 f.locations
                                     .as_ref()

@@ -1251,7 +1251,12 @@ mod tests {
             "branch merged into the task base ({base})"
         );
         let checkout = std::fs::read_to_string(dir.join("f.txt")).unwrap();
-        assert_eq!(checkout, "base", "the user's working tree is untouched");
+        // v6 #1: the user is ON the base with a clean tree — the ff-merge
+        // makes the agent's work APPEAR in the checkout (never look deleted)
+        assert_eq!(
+            checkout, "task change",
+            "the agent's work is visible in the checkout"
+        );
         assert_eq!(b.projection().tasks[0].status, TaskStatus::Done);
         let _ = std::fs::remove_dir_all(&dir);
     }
