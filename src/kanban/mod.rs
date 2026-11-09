@@ -171,6 +171,10 @@ pub struct Task {
     /// Д8: concrete outputs (files/branches/links) produced by task turns
     #[serde(default)]
     pub artifacts: Vec<Artifact>,
+    /// v5 #2: the branch the task worktree was cut from — Approve merges
+    /// into IT (via a temporary worktree), not the user's current checkout
+    #[serde(default)]
+    pub base_branch: String,
     /// DAG: task ids that must be Done/Cancelled before this one launches
     #[serde(default)]
     pub depends_on: Vec<String>,
@@ -460,6 +464,7 @@ mod tests {
             role: None,
             comments: Vec::new(),
             artifacts: Vec::new(),
+            base_branch: String::new(),
             depends_on: Vec::new(),
             session_id: None,
             attempts: 0,

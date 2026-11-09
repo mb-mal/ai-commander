@@ -298,6 +298,21 @@ impl App {
                     Ok(port) => crate::log_info!("board", "IPC owner on port {port}"),
                     Err(e) => crate::log_warn!("board", "IPC server failed: {e}"),
                 }
+                // v5 #3: drop worktrees of tasks that no longer exist
+                let ids: Vec<String> = arc
+                    .lock()
+                    .unwrap()
+                    .projection()
+                    .tasks
+                    .iter()
+                    .map(|t| t.id.clone())
+                    .collect();
+                for id in kanban::worktree::prune_orphans(
+                    &std::env::current_dir().unwrap_or_default(),
+                    &ids,
+                ) {
+                    crate::log_info!("worktree", "pruned orphan {id}");
+                }
             } else {
                 crate::log_warn!("board", "store is owned by another process — view only");
             }
