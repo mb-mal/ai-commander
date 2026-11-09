@@ -39,3 +39,6 @@ serde_yaml = "0.9.34"
 [profile.release]
 lto = true
 strip = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

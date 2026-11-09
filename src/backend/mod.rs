@@ -309,8 +309,27 @@ pub fn supported_kind(kind: &str) -> bool {
 /// (base64 inflates by ~4/3).
 pub const MAX_ATTACHMENT_BYTES: u64 = 8 * 1024 * 1024;
 
+/// Platform spawn preparation for harness child processes: no console
+/// window on Windows, own process group on Unix (v5 #5 — so `kill_tree`
+/// can take the whole tree down with one signal).
+pub fn spawn_prep(cmd: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+}
+
 /// Kill a child process *tree*: `Child::kill` only hits the direct process,
 /// leaving interpreters/node spawned underneath alive as orphans.
+/// Unix (v5 #5): the child runs in its own process group — SIGTERM the
+/// group, grace period, then SIGKILL.
 pub fn kill_tree(child: &mut std::process::Child) {
     #[cfg(windows)]
     {
@@ -322,6 +341,19 @@ pub fn kill_tree(child: &mut std::process::Child) {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();
+    }
+    #[cfg(unix)]
+    {
+        let pgid = child.id() as i32;
+        unsafe {
+            // TERM the group, give the children a moment, then KILL
+            if libc::kill(-pgid, libc::SIGTERM) != 0 {
+                let _ = libc::kill(pgid, libc::SIGTERM);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let _ = libc::kill(-pgid, libc::SIGKILL);
+            let _ = libc::kill(pgid, libc::SIGKILL);
+        }
     }
     let _ = child.kill();
     let _ = child.wait();
