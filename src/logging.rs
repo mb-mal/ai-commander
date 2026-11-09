@@ -3,8 +3,8 @@
 //! `--log-level` flag. Backends and the app log through `log!` macros; the
 //! daemon also mirrors its println output there.
 
+use parking_lot::Mutex;
 use std::io::Write;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -41,7 +41,7 @@ pub fn init(level: Level) {
         .append(true)
         .open(path)
     {
-        *SINK.lock().unwrap() = Some(f);
+        *SINK.lock() = Some(f);
     }
 }
 
@@ -58,7 +58,7 @@ pub fn write(level: Level, target: &str, msg: &str) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    if let Some(f) = SINK.lock().unwrap().as_mut() {
+    if let Some(f) = SINK.lock().as_mut() {
         let _ = writeln!(f, "{ts} {level:?} [{target}] {msg}");
     }
 }

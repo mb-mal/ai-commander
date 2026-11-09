@@ -79,7 +79,7 @@ fn status_color(s: TaskStatus) -> ratatui::style::Color {
 /// footer hints live in the status bar (draw_statusbar switches on mode).
 pub fn draw_board(app: &mut App, f: &mut Frame, area: Rect) {
     let lang = app.lang();
-    let board = app.board.lock().unwrap();
+    let board = app.board.lock();
     let kanban = board.projection();
     let cols = TaskStatus::COLUMN_ORDER;
     let n = cols.len() as u16;

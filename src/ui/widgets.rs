@@ -782,7 +782,7 @@ fn draw_activity_feed(app: &App, f: &mut Frame, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let board = app.board.lock().unwrap();
+    let board = app.board.lock();
     let events = board.last_events(inner.height as usize + 2);
     let mut lines: Vec<Line<'static>> = Vec::new();
     for ev in events.iter().rev().take(inner.height as usize) {

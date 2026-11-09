@@ -20,11 +20,12 @@
 //! - abort: not exposed by this server build — Esc locally detaches; the next
 //!   prompt "steers" (interrupts) the current turn server-side.
 
+use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -104,7 +105,6 @@ impl OpenCodeBackend {
     async fn base(&self) -> Result<String> {
         self.base_url
             .lock()
-            .unwrap()
             .clone()
             .ok_or_else(|| anyhow!("opencode server is not connected yet"))
     }
@@ -287,7 +287,7 @@ impl OpenCodeBackend {
         let child = cmd
             .spawn()
             .with_context(|| format!("spawn {}", exe.display()))?;
-        *self.child.lock().unwrap() = Some(child);
+        *self.child.lock() = Some(child);
 
         let base = format!("http://127.0.0.1:{port}");
         for _ in 0..200 {
@@ -296,7 +296,7 @@ impl OpenCodeBackend {
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
             {
-                let mut guard = self.child.lock().unwrap();
+                let mut guard = self.child.lock();
                 if let Some(c) = guard.as_mut() {
                     if c.try_wait().map(|s| s.is_some()).unwrap_or(false) {
                         let log_note = std::fs::read_to_string(&log_path).unwrap_or_default();
@@ -433,7 +433,7 @@ impl Backend for OpenCodeBackend {
     }
 
     async fn connect(&self) -> Result<String> {
-        let existing = self.base_url.lock().unwrap().clone();
+        let existing = self.base_url.lock().clone();
         if let Some(base) = existing {
             if let Some(v) = self.healthy(&base).await {
                 let version = health_version(&v);
@@ -455,12 +455,12 @@ impl Backend for OpenCodeBackend {
         let v = self.healthy(&base).await.unwrap_or(Value::Null);
         let version = health_version(&v);
 
-        *self.base_url.lock().unwrap() = Some(base.clone());
+        *self.base_url.lock() = Some(base.clone());
         self.connected.store(true, Ordering::Relaxed);
 
         // seed known sessions so SSE filtering works before the first refresh lands
         if let Ok(sessions) = self.get_json("/api/session").await {
-            let mut ks = self.known_sessions.lock().unwrap();
+            let mut ks = self.known_sessions.lock();
             ks.clear();
             if let Some(arr) = sessions.get("data").and_then(Value::as_array) {
                 for s in arr {
@@ -486,7 +486,7 @@ impl Backend for OpenCodeBackend {
         {
             // union, not replace: a session created between the REST call and
             // this write must not lose its events
-            let mut ks = self.known_sessions.lock().unwrap();
+            let mut ks = self.known_sessions.lock();
             ks.extend(list.iter().map(|s| s.native_id.clone()));
         }
         Ok(list)
@@ -502,10 +502,7 @@ impl Backend for OpenCodeBackend {
             .await?;
         let s = v.get("data").cloned().unwrap_or(v);
         let s = self.map_session(&s);
-        self.known_sessions
-            .lock()
-            .unwrap()
-            .insert(s.native_id.clone());
+        self.known_sessions.lock().insert(s.native_id.clone());
         Ok(s)
     }
 
@@ -526,7 +523,7 @@ impl Backend for OpenCodeBackend {
             None,
         )
         .await?;
-        self.known_sessions.lock().unwrap().remove(native_id);
+        self.known_sessions.lock().remove(native_id);
         Ok(())
     }
 
@@ -714,10 +711,7 @@ impl Backend for OpenCodeBackend {
                 .collect();
             body["files"] = Value::Array(files);
         }
-        self.known_sessions
-            .lock()
-            .unwrap()
-            .insert(native_id.to_string());
+        self.known_sessions.lock().insert(native_id.to_string());
         self.send_json(
             reqwest::Method::POST,
             &format!("/api/session/{native_id}/prompt"),
@@ -812,7 +806,7 @@ impl Backend for OpenCodeBackend {
     fn shutdown(&self) {
         self.connected.store(false, Ordering::Relaxed);
         self.sse_gen.fetch_add(1, Ordering::Relaxed);
-        if let Some(mut child) = self.child.lock().unwrap().take() {
+        if let Some(mut child) = self.child.lock().take() {
             super::kill_tree(&mut child);
         }
     }
@@ -867,7 +861,7 @@ fn handle_sse_event(
         _ => {}
     }
 
-    let watched = sid.is_empty() || known.lock().unwrap().contains(&sid);
+    let watched = sid.is_empty() || known.lock().contains(&sid);
     if !watched {
         return;
     }

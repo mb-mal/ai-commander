@@ -97,14 +97,14 @@ pub fn prepare_launch(
 /// taken per sync segment only, never held across an `.await`.
 pub async fn launch_task(
     backend: &Arc<dyn Backend>,
-    board: &std::sync::Arc<std::sync::Mutex<BoardStore>>,
+    board: &std::sync::Arc<parking_lot::Mutex<BoardStore>>,
     task: &Task,
     cfg: &Config,
     roles: &RoleSet,
 ) -> anyhow::Result<String> {
     let repo = std::env::current_dir().unwrap_or_default();
     let ctx = {
-        let mut b = board.lock().unwrap();
+        let mut b = board.lock();
         prepare_launch(&mut b, task, cfg, roles, &repo)?
     };
 
@@ -113,10 +113,7 @@ pub async fn launch_task(
         .create_session(&task.title)
         .await
         .map_err(|e| anyhow::anyhow!("create_session: {e:#}"))?;
-    board
-        .lock()
-        .unwrap()
-        .link_session(&task.id, &session.native_id);
+    board.lock().link_session(&task.id, &session.native_id);
 
     // Send with the worktree cwd
     send_task(backend, task, &ctx, &session.native_id).await?;
