@@ -517,6 +517,23 @@ async fn run_daemon(cfg: Config) -> Result<()> {
         Ok(port) => println!("board IPC owner on 127.0.0.1:{port}"),
         Err(e) => println!("[warn] board IPC server: {e}"),
     }
+    // v5 #3: drop worktrees of tasks that no longer exist (crash leftovers)
+    {
+        let ids: Vec<String> = board
+            .lock()
+            .unwrap()
+            .projection()
+            .tasks
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
+        for id in ai_commander::kanban::worktree::prune_orphans(
+            &std::env::current_dir().unwrap_or_default(),
+            &ids,
+        ) {
+            println!("[worktree] pruned orphan {id}");
+        }
+    }
 
     let mut otel_last_seq: u64 = 0;
     let mut busy: std::collections::HashSet<String> = std::collections::HashSet::new();

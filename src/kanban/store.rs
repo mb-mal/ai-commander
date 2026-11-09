@@ -390,6 +390,7 @@ impl BoardStore {
             role: None,
             comments: Vec::new(),
             artifacts: Vec::new(),
+            base_branch: String::new(),
             depends_on: Vec::new(),
             session_id: None,
             attempts: 0,
@@ -432,8 +433,19 @@ impl BoardStore {
             if let Some(next) = task.status.next(action) {
                 // side-effects run BEFORE the state flips, so a failed
                 // merge/conflict keeps the task in its current status
-                if let Err(e) = super::worktree::on_transition(repo, &task, next, action) {
-                    return Err(format!("{e:#}"));
+                match super::worktree::on_transition(repo, &task, next, action) {
+                    Err(e) => return Err(format!("{e:#}")),
+                    Ok(hook) => {
+                        if let Some(base) = hook.base_branch {
+                            // v5 #2: remember where the task branch was cut
+                            // from, so Approve merges into the right place
+                            if let Some(t) = self.proj.tasks.iter_mut().find(|t| t.id == task.id) {
+                                if t.base_branch.is_empty() {
+                                    t.base_branch = base;
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1223,12 +1235,25 @@ mod tests {
         assert!(gw(&["add", "."]).status.success());
         assert!(gw(&["commit", "-qm", "task work"]).status.success());
 
-        // Review -> Done merges the branch back and removes the worktree
+        // Review -> Done merges the branch into the task's base branch and
+        // removes the worktree (v5 #2: the user's checkout is untouched —
+        // the branch ref moves, not the working tree)
         b.transition_in(&dir, &t.id, TaskAction::Finish).unwrap();
         b.transition_in(&dir, &t.id, TaskAction::Approve).unwrap();
         assert!(!wt.exists(), "worktree removed after merge");
-        let merged = std::fs::read_to_string(dir.join("f.txt")).unwrap();
-        assert_eq!(merged, "task change", "branch merged into the base");
+        let base = b.projection().tasks[0].base_branch.clone();
+        assert!(!base.is_empty(), "base recorded at Start");
+        let show = Command::new("git")
+            .current_dir(&dir)
+            .args(["show", &format!("{base}:f.txt")])
+            .output()
+            .unwrap();
+        assert!(
+            show.status.success() && String::from_utf8_lossy(&show.stdout).contains("task change"),
+            "branch merged into the task base ({base})"
+        );
+        let checkout = std::fs::read_to_string(dir.join("f.txt")).unwrap();
+        assert_eq!(checkout, "base", "the user's working tree is untouched");
         assert_eq!(b.projection().tasks[0].status, TaskStatus::Done);
         let _ = std::fs::remove_dir_all(&dir);
     }
