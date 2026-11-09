@@ -54,6 +54,19 @@ struct HermesStore {
     sessions: Vec<StoredSession>,
 }
 
+/// К5: hermes signals a compaction with a message whose text starts with
+/// the `[CONTEXT COMPACTION]` marker (verified against hermes docs/streams;
+/// no dedicated NDJSON event exists).
+fn hermes_compacted(store: &HermesStore, native_id: &str) -> bool {
+    store
+        .sessions
+        .iter()
+        .find(|s| s.native_id == native_id)
+        .and_then(|s| s.msgs.last())
+        .map(|m| m.text.starts_with("[CONTEXT COMPACTION]"))
+        .unwrap_or(false)
+}
+
 pub struct HermesBackend {
     cfg: HarnessCfg,
     events: UnboundedSender<BackendEvent>,
@@ -468,6 +481,42 @@ impl Backend for HermesBackend {
                     title: user_text.chars().take(48).collect(),
                 });
             }
+            // К1: chars/4 estimate after every stored turn
+            {
+                let g = store.lock();
+                let chars: usize = g
+                    .sessions
+                    .iter()
+                    .find(|s| s.native_id == *sent_id)
+                    .map(|s| s.msgs.iter().map(|m| m.text.len()).sum::<usize>())
+                    .unwrap_or(0);
+                let _ = events.send(BackendEvent::Usage {
+                    harness: harness.clone(),
+                    native_id: sent_id.clone(),
+                    used: (chars as u64) / 4,
+                    size: crate::backend::ESTIMATED_WINDOW,
+                    cost_usd: None,
+                    estimated: true,
+                });
+            }
+            // К5: hermes leaves a [CONTEXT COMPACTION] message in the
+            // history when it compacted during the turn
+            {
+                let g = store.lock();
+                let compacted = hermes_compacted(&g, &sent_id);
+                if compacted {
+                    let _ = events.send(BackendEvent::Compaction {
+                        harness: harness.clone(),
+                        native_id: sent_id.clone(),
+                        compaction_id: format!("{sent_id}-hermes"),
+                        status: crate::backend::CompactionStatus::Completed,
+                        method: crate::backend::CompactionMethod::Summarize,
+                        summary_delta: None,
+                        error: None,
+                        source: crate::backend::CompactionSource::Reported,
+                    });
+                }
+            }
             let _ = events.send(BackendEvent::StreamDone {
                 harness,
                 native_id: sent_id, // the id the UI tracks
@@ -608,5 +657,49 @@ mod tests {
         let back: HermesStore = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(back.sessions[0].msgs[0].text, "hi");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod compaction_tests {
+    use super::*;
+
+    fn store_with(last_text: &str) -> HermesStore {
+        HermesStore {
+            sessions: vec![StoredSession {
+                native_id: "s1".into(),
+                title: "t".into(),
+                updated_ms: 0,
+                msgs: vec![StoredMsg {
+                    role: "assistant".into(),
+                    text: last_text.into(),
+                }],
+            }],
+        }
+    }
+
+    /// К5: the marker → one Reported Completed event; no marker → nothing;
+    /// a marker NOT in the last message → nothing (old compactions are not
+    /// re-reported on every turn).
+    #[test]
+    fn compaction_marker_detected_in_last_message() {
+        assert!(hermes_compacted(
+            &store_with("[CONTEXT COMPACTION] summary..."),
+            "s1"
+        ));
+        assert!(!hermes_compacted(&store_with("normal reply"), "s1"));
+        let mut old = store_with("normal reply");
+        old.sessions[0].msgs.insert(
+            0,
+            StoredMsg {
+                role: "assistant".into(),
+                text: "[CONTEXT COMPACTION] old".into(),
+            },
+        );
+        assert!(
+            !hermes_compacted(&old, "s1"),
+            "only the LAST message counts — no duplicate events per turn"
+        );
+        assert!(!hermes_compacted(&store_with("x"), "missing"));
     }
 }

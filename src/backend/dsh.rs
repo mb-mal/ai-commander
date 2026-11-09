@@ -203,6 +203,48 @@ impl DshBackend {
             .filter(|k| !k.is_empty())
     }
 
+    /// К7: one blocking dsh call (the self-compaction summarizer). Runs
+    /// on a worker thread so the async send path stays responsive.
+    async fn run_once(
+        &self,
+        prompt: String,
+        cwd: Option<std::path::PathBuf>,
+    ) -> anyhow::Result<String> {
+        let extra: Vec<String> = vec!["-".into()]; // task over stdin
+        let mut cmd = self.build_command(&extra);
+        if let Some(c) = cwd {
+            cmd.current_dir(c);
+        }
+        tokio::task::spawn_blocking(move || {
+            use std::io::{BufRead, BufReader, Write};
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| anyhow!("spawn dsh summarizer: {e}"))?;
+            if let Some(si) = child.stdin.as_mut() {
+                let _ = si.write_all(prompt.as_bytes());
+                let _ = si.flush();
+            }
+            drop(child.stdin.take());
+            let stdout = child.stdout.take().expect("piped stdout");
+            let mut text = String::new();
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if let Ok(v) = serde_json::from_str::<Value>(&line) {
+                    if let Some(t) = v.get("text").and_then(Value::as_str) {
+                        text.push_str(t);
+                    }
+                }
+            }
+            let _ = child.wait();
+            if text.trim().is_empty() {
+                anyhow::bail!("dsh summarizer returned nothing");
+            }
+            Ok(text)
+        })
+        .await
+        .map_err(|e| anyhow!("summarizer task: {e}"))?
+    }
+
     fn build_command(&self, extra: &[String]) -> Command {
         let (exe, prefix) = self.launch();
         let mut cmd = Command::new(&exe);
@@ -348,7 +390,7 @@ impl Backend for DshBackend {
         opts: SendOpts<'_>,
     ) -> Result<()> {
         // headless dsh has no attachment flag yet
-        let history: Vec<StoredMsg> = self
+        let mut history: Vec<StoredMsg> = self
             .store
             .lock()
             .sessions
@@ -356,6 +398,97 @@ impl Backend for DshBackend {
             .find(|s| s.native_id == native_id)
             .map(|s| s.msgs.clone())
             .unwrap_or_default();
+        // К7: dsh has no compaction of its own — ai-commander owns the
+        // history, so compact it here when the replay estimate is too big
+        {
+            let turns: Vec<crate::backend::dsh_compact::Turn> = history
+                .iter()
+                .map(|m| crate::backend::dsh_compact::Turn {
+                    role: m.role.clone(),
+                    text: m.text.clone(),
+                })
+                .collect();
+            if crate::backend::dsh_compact::needs_compaction(
+                &turns,
+                crate::backend::ESTIMATED_WINDOW,
+                crate::backend::dsh_compact::DEFAULT_THRESHOLD_PCT,
+            ) {
+                if let Some(p) = crate::backend::dsh_compact::plan(&turns) {
+                    let _ = self.events.send(BackendEvent::Compaction {
+                        harness: self.cfg.id.clone(),
+                        native_id: native_id.to_string(),
+                        compaction_id: format!("{native_id}-dsh"),
+                        status: crate::backend::CompactionStatus::InProgress,
+                        method: crate::backend::CompactionMethod::Summarize,
+                        summary_delta: None,
+                        error: None,
+                        source: crate::backend::CompactionSource::Reported,
+                    });
+                    match self
+                        .run_once(
+                            crate::backend::dsh_compact::summarize_prompt(&turns, &p),
+                            opts.cwd.map(std::path::Path::to_path_buf),
+                        )
+                        .await
+                    {
+                        Ok(summary) => {
+                            // archive the original before rewriting
+                            let archive = self.store_path.with_extension(format!(
+                                "pre-compact-{}.json",
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs())
+                                    .unwrap_or(0)
+                            ));
+                            let _ = std::fs::write(
+                                &archive,
+                                serde_json::to_vec(&history).unwrap_or_default(),
+                            );
+                            let applied = crate::backend::dsh_compact::apply(&turns, &p, &summary);
+                            history = applied
+                                .iter()
+                                .map(|t| StoredMsg {
+                                    role: t.role.clone(),
+                                    text: t.text.clone(),
+                                })
+                                .collect();
+                            {
+                                let mut g = self.store.lock();
+                                if let Some(sess) =
+                                    g.sessions.iter_mut().find(|s| s.native_id == native_id)
+                                {
+                                    sess.msgs = history.clone();
+                                }
+                                persist_atomic(&self.store_path, &g);
+                            }
+                            let _ = self.events.send(BackendEvent::Compaction {
+                                harness: self.cfg.id.clone(),
+                                native_id: native_id.to_string(),
+                                compaction_id: format!("{native_id}-dsh"),
+                                status: crate::backend::CompactionStatus::Completed,
+                                method: crate::backend::CompactionMethod::Summarize,
+                                summary_delta: Some(summary),
+                                error: None,
+                                source: crate::backend::CompactionSource::Reported,
+                            });
+                        }
+                        Err(e) => {
+                            // the summary failed — the history is intact
+                            let _ = self.events.send(BackendEvent::Compaction {
+                                harness: self.cfg.id.clone(),
+                                native_id: native_id.to_string(),
+                                compaction_id: format!("{native_id}-dsh"),
+                                status: crate::backend::CompactionStatus::Failed,
+                                method: crate::backend::CompactionMethod::Summarize,
+                                summary_delta: None,
+                                error: Some(format!("{e:#}")),
+                                source: crate::backend::CompactionSource::Reported,
+                            });
+                        }
+                    }
+                }
+            }
+        }
         let task = compose_task(&history, text);
 
         let mut extra: Vec<String> = Vec::new();
@@ -523,6 +656,24 @@ impl Backend for DshBackend {
                     harness: harness.clone(),
                     native_id: real_id,
                     title: user_text.chars().take(48).collect(),
+                });
+            }
+            // К1: chars/4 estimate after the turn (dsh reports nothing)
+            {
+                let g = store.lock();
+                let chars: usize = g
+                    .sessions
+                    .iter()
+                    .find(|s| s.native_id == *sent_id)
+                    .map(|s| s.msgs.iter().map(|m| m.text.len()).sum::<usize>())
+                    .unwrap_or(0);
+                let _ = events.send(BackendEvent::Usage {
+                    harness: harness.clone(),
+                    native_id: sent_id.clone(),
+                    used: (chars as u64) / 4,
+                    size: crate::backend::ESTIMATED_WINDOW,
+                    cost_usd: None,
+                    estimated: true,
                 });
             }
             let _ = events.send(BackendEvent::StreamDone {
