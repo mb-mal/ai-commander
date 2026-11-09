@@ -387,15 +387,26 @@ impl Backend for AcpBackend {
                             let f = &req.tool_call.fields;
                             let kind = f.kind.unwrap_or_default();
                             let action = tool_kind_name(kind).to_string();
-                            let resource = if action == "execute" {
-                                raw_input_text(f.raw_input.as_ref())
+                            // v6 #2: every touched location matters — the
+                            // policy engine takes the strictest across them
+                            let resources = if action == "execute" {
+                                let cmd = raw_input_text(f.raw_input.as_ref());
+                                if cmd.is_empty() {
+                                    Vec::new()
+                                } else {
+                                    vec![cmd]
+                                }
                             } else {
                                 f.locations
                                     .as_ref()
-                                    .and_then(|l| l.first())
-                                    .map(|l| l.path.to_string_lossy().into_owned())
+                                    .map(|locs| {
+                                        locs.iter()
+                                            .map(|l| l.path.to_string_lossy().into_owned())
+                                            .collect()
+                                    })
                                     .unwrap_or_default()
                             };
+                            let resource = resources.first().cloned().unwrap_or_default();
                             let title = f
                                 .title
                                 .clone()
@@ -425,6 +436,7 @@ impl Backend for AcpBackend {
                                 title,
                                 action,
                                 resource,
+                                resources,
                             });
                         }
                         _ => {

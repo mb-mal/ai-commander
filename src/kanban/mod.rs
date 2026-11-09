@@ -175,6 +175,10 @@ pub struct Task {
     /// into IT (via a temporary worktree), not the user's current checkout
     #[serde(default)]
     pub base_branch: String,
+    /// v6: where the task's worktree actually lives (survives hash scheme
+    /// and cache-location changes)
+    #[serde(default)]
+    pub worktree_path: String,
     /// DAG: task ids that must be Done/Cancelled before this one launches
     #[serde(default)]
     pub depends_on: Vec<String>,
@@ -319,14 +323,33 @@ pub fn classify_reply(reply: &str) -> TurnOutcome {
 
 /// Execute a board.* tool call (shared by the board-mcp binary and the IPC
 /// gateway's /board proxy endpoint). Returns human-readable text or an error.
+/// v6 #3: who is acting on the board. `Human` is the local user (the TUI
+/// keyboard or the IPC human token); `Role` is an agent. Agents may never
+/// un-park NeedsHuman tasks — that was a self-approval hole.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Actor {
+    Role(String),
+    Human,
+}
+
+impl Actor {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Actor::Role(r) => r,
+            Actor::Human => "human",
+        }
+    }
+}
+
 pub fn board_tool_call(
     name: &str,
     args: &serde_json::Value,
-    role: &str,
+    actor: &Actor,
     board: &mut store::BoardStore,
 ) -> Result<String, String> {
     use serde_json::Value;
 
+    let role = actor.as_str();
     if role.is_empty() {
         return Err("no role token: set AI_COMMANDER_ROLE for this MCP server".into());
     }
@@ -357,6 +380,18 @@ pub fn board_tool_call(
         }
         "board_update_task" => {
             let id = str_arg("task_id");
+            // v6 #3: leaving NeedsHuman is a HUMAN decision — an agent
+            // promoting the task used to grant itself the parked permit
+            if str_arg("action") == "promote" && !matches!(actor, Actor::Human) {
+                if let Some(t) = board.projection().tasks.iter().find(|t| t.id == id) {
+                    if t.status == TaskStatus::NeedsHuman {
+                        return Err(
+                            "NeedsHuman tasks are un-parked by a human —                              answer in ai-commander, not from the agent side"
+                                .into(),
+                        );
+                    }
+                }
+            }
             let action = match str_arg("action").as_str() {
                 "promote" => TaskAction::Promote,
                 "start" => TaskAction::Start,
@@ -420,6 +455,22 @@ pub fn board_tool_call(
                 t.artifacts.len()
             ))
         }
+        "board_unpark" => {
+            // v6 #3: the HUMAN answers a parked ask: NeedsHuman → Ready with
+            // a journal record — the daemon grants the parked permit on it
+            if !matches!(actor, Actor::Human) {
+                return Err("board_unpark is human-only".into());
+            }
+            let id = str_arg("task_id");
+            let t = board.transition(&id, TaskAction::Promote)?;
+            board.comment(
+                &id,
+                "human",
+                "permit",
+                "human un-parked the task — the parked permission is granted once",
+            )?;
+            Ok(format!("{} → {:?} (permit granted)", t.id, t.status))
+        }
         "board_read_inbox" => {
             let id = str_arg("task_id");
             let since = args.get("since_ms").and_then(Value::as_i64).unwrap_or(0);
@@ -465,6 +516,7 @@ mod tests {
             comments: Vec::new(),
             artifacts: Vec::new(),
             base_branch: String::new(),
+            worktree_path: String::new(),
             depends_on: Vec::new(),
             session_id: None,
             attempts: 0,

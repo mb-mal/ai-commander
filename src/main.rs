@@ -556,6 +556,8 @@ async fn run_daemon(cfg: Config) -> Result<()> {
     let mut permits = ai_commander::kanban::runner::PermitBook::new();
     let mut prev_statuses: std::collections::HashMap<String, TaskStatus> =
         std::collections::HashMap::new();
+    // v6 #3: high-water mark of processed human  comments
+    let mut last_permit_ts: i64 = 0;
     loop {
         // 1) drain finished turns via TaskRunner (Б8: classify + transition)
         use backend::PartKind;
@@ -644,6 +646,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                     title,
                     action,
                     resource,
+                    resources,
                 } => {
                     // v5: the daemon runs unattended — the policy engine
                     // decides. allow/deny are answered at once; ASK moves
@@ -665,7 +668,8 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                             continue;
                         }
                     }
-                    match policy.check(action, resource) {
+                    // v6 #2: strictest across every touched location
+                    match policy.check_all(action, resources) {
                         ai_commander::policy::Effect::Allow => {
                             println!("[policy] auto-allow {action}: {resource}");
                             let _ = b.permission_reply(session_id, request_id, "once").await;
@@ -753,14 +757,26 @@ async fn run_daemon(cfg: Config) -> Result<()> {
             }
         }
 
-        // v5 #10: notice the human un-parking asked tasks (NeedsHuman→Ready
-        // grants the parked ask once) and refresh the status snapshot
+        // v6 #3: the ONLY grant path is an explicit human action — new
+        // `permit` journal comments (written by the human-only board_unpark
+        // tool over IPC). Merely observing NeedsHuman→Ready granted agents
+        // their own permits via `promote`.
         {
             let b = board.lock();
             for t in b.projection().tasks.iter() {
-                if let Some(prev) = prev_statuses.get(&t.id) {
-                    if *prev != t.status {
-                        permits.observe_transition(&t.id, *prev, t.status);
+                for c in t.comments.iter() {
+                    if c.kind == "permit"
+                        && c.author == "human"
+                        && c.ts_ms > last_permit_ts
+                        && permits.grant(&t.id)
+                    {
+                        println!(
+                            "[permit] human granted the parked ask of {} (comment {})",
+                            t.id, c.ts_ms
+                        );
+                        if c.ts_ms > last_permit_ts {
+                            last_permit_ts = c.ts_ms;
+                        }
                     }
                 }
                 prev_statuses.insert(t.id.clone(), t.status);
