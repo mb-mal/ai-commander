@@ -303,10 +303,8 @@ async fn abort_cancels_only_its_own_session_permission() {
                     session_id,
                     request_id,
                     ..
-                } => {
-                    if !perms.iter().any(|(s, _)| *s == session_id) {
-                        perms.push((session_id, request_id));
-                    }
+                } if !perms.iter().any(|(s, _)| *s == session_id) => {
+                    perms.push((session_id, request_id));
                 }
                 _ => {}
             },

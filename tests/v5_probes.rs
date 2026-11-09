@@ -70,8 +70,7 @@ fn stream_done_after_ask_does_not_override_needs_human() {
     // waiting for a human; the daemon guard skips classification
     let still = b
         .transition(&t.id, TaskAction::Finish)
-        .err()
-        .expect("Finish must be illegal from NeedsHuman");
+        .expect_err("Finish must be illegal from NeedsHuman");
     assert!(still.contains("illegal"));
     assert_eq!(
         b.projection()

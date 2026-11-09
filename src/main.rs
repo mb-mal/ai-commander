@@ -610,19 +610,19 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                     let Some(b) = backends.get(harness).cloned() else {
                         continue;
                     };
-                    match policy.check(&action, &resource) {
+                    match policy.check(action, resource) {
                         ai_commander::policy::Effect::Allow => {
                             println!("[policy] auto-allow {action}: {resource}");
-                            let _ = b.permission_reply(&session_id, &request_id, "once").await;
+                            let _ = b.permission_reply(session_id, request_id, "once").await;
                         }
                         ai_commander::policy::Effect::Deny => {
                             println!("[policy] auto-deny {action}: {resource}");
-                            let _ = b.permission_reply(&session_id, &request_id, "reject").await;
+                            let _ = b.permission_reply(session_id, request_id, "reject").await;
                         }
                         ai_commander::policy::Effect::Ask => {
                             let task_id = {
                                 let bb = board.lock().unwrap();
-                                bb.find_by_session(harness, &session_id).map(|t| t.id)
+                                bb.find_by_session(harness, session_id).map(|t| t.id)
                             };
                             if let Some(id) = task_id {
                                 let question = format!(
@@ -643,7 +643,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                                 busy.remove(&id);
                             }
                             // the agent's turn must not hang on the answer
-                            let _ = b.permission_reply(&session_id, &request_id, "reject").await;
+                            let _ = b.permission_reply(session_id, request_id, "reject").await;
                         }
                     }
                 }
