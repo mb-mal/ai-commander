@@ -24,6 +24,8 @@
 //!   PERM selected <id> <sid> / PERM cancelled <sid> — permission outcomes
 //!   MALFORMED <code> — reply to the malformed permission request
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
+
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 
@@ -177,7 +179,7 @@ fn main() {
                     stdout,
                     "{}",
                     json!({
-                        "jsonrpc": "2.0", "id": id.unwrap(),
+                        "jsonrpc": "2.0", "id": id.clone().expect("request id"),
                         "result": {"protocolVersion": 1, "agentCapabilities": {}}
                     })
                 );
@@ -191,7 +193,7 @@ fn main() {
                     stdout,
                     "{}",
                     json!({
-                        "jsonrpc": "2.0", "id": id.unwrap(),
+                        "jsonrpc": "2.0", "id": id.clone().expect("request id"),
                         "result": {"sessionId": sid, "configOptions": []}
                     })
                 );
@@ -207,7 +209,7 @@ fn main() {
                 let _ = writeln!(
                     stdout,
                     "{}",
-                    json!({"jsonrpc": "2.0", "id": id.unwrap(), "result": {"sessionId": sid}})
+                    json!({"jsonrpc": "2.0", "id": id.clone().expect("request id"), "result": {"sessionId": sid}})
                 );
                 let _ = stdout.flush();
             }
@@ -297,7 +299,7 @@ fn main() {
                     let _ = writeln!(
                         stdout,
                         "{}",
-                        json!({"jsonrpc": "2.0", "id": id.unwrap(),
+                        json!({"jsonrpc": "2.0", "id": id.clone().expect("request id"),
                                "error": {"code": -32601, "message": format!("unknown method {method}")}})
                     );
                     let _ = stdout.flush();

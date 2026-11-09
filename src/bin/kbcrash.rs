@@ -3,6 +3,8 @@
 //! READY, then appends events in a tight loop until the parent kills the
 //! process — no graceful shutdown.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
+
 use std::io::Write;
 
 fn main() {

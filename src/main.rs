@@ -7,6 +7,8 @@
 //!   ai-commander --lang ru|en    UI language override
 //!   ai-commander --workdir PATH  working directory for the harness
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
+
 use ai_commander::{backend, config, i18n, ui};
 
 use std::io::stdout;
@@ -625,7 +627,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                                     .iter()
                                     .find(|t| t.id == id)
                                     .cloned()
-                                    .unwrap())
+                                    .expect("task present"))
                             }
                         };
                         match outcome {
