@@ -52,6 +52,9 @@ fn log_line(line: &str) {
 
 /// Strict schema check: deserialize into the typed params and require the
 /// round-trip to reproduce the payload exactly (extra fields = off-schema).
+/// Exception: `clientCapabilities.session` — the compaction RFD (Preview)
+/// is not in schema crate 1.1.0, so the client legitimately advertises it
+/// as an extension; it is stripped before the canonical comparison.
 fn validate<T>(method: &str, params: Value)
 where
     T: serde::de::DeserializeOwned + serde::Serialize,
@@ -60,6 +63,15 @@ where
         Err(e) => log_line(&format!("FAIL {method} deserialize: {e}")),
         Ok(typed) => {
             let round = serde_json::to_value(&typed).unwrap_or(Value::Null);
+            let mut params = params;
+            if method == "initialize" {
+                if let Some(cc) = params
+                    .get_mut("clientCapabilities")
+                    .and_then(|c| c.as_object_mut())
+                {
+                    cc.remove("session");
+                }
+            }
             if round != params {
                 log_line(&format!(
                     "FAIL {method} not schema-canonical: sent {params} vs schema {round}"
@@ -104,6 +116,33 @@ fn finish_turn(stdout: &mut std::io::Stdout, sid: &str, a: &AwaitingPerm, outcom
         json!({"jsonrpc": "2.0", "id": a.prompt_id.clone(),
                "result": {"stopReason": stop}})
     );
+    // К1/К2 (env-gated): report usage and run an RFD compaction sequence —
+    // usage_update, compaction_update in_progress, 3 summary chunks,
+    // compaction_update completed, and the post-compaction usage
+    if std::env::var("FAKE_ACP_COMPACTION").ok().as_deref() == Some("1") {
+        let mut upd = |body: Value| {
+            let _ = writeln!(
+                stdout,
+                "{}",
+                json!({"jsonrpc": "2.0", "method": "session/update", "params": body})
+            );
+        };
+        upd(json!({"sessionId": sid, "update": {
+            "sessionUpdate": "usage_update", "used": 53000, "size": 200000}}));
+        upd(json!({"sessionId": sid, "update": {
+            "sessionUpdate": "compaction_update",
+            "compactionId": "c-0042", "status": "in_progress"}}));
+        for chunk in ["Summarizing ", "the ", "old ", "context..."] {
+            upd(json!({"sessionId": sid, "update": {
+                "sessionUpdate": "compaction_summary_chunk",
+                "compactionId": "c-0042", "delta": chunk}}));
+        }
+        upd(json!({"sessionId": sid, "update": {
+            "sessionUpdate": "compaction_update",
+            "compactionId": "c-0042", "status": "completed"}}));
+        upd(json!({"sessionId": sid, "update": {
+            "sessionUpdate": "usage_update", "used": 41000, "size": 200000}}));
+    }
     let _ = stdout.flush();
 }
 

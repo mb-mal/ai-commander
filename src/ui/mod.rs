@@ -1,6 +1,8 @@
 //! Application state, event loop, key/mouse handling.
 
 pub mod board;
+pub mod context_map;
+pub mod defrag;
 pub mod editor;
 pub mod markdown;
 pub mod modals;
@@ -259,6 +261,16 @@ pub struct App {
     /// v6 #3: true when another process owns the store — human board
     /// actions are forwarded to the owner over IPC
     pub board_is_view: bool,
+    /// К1: last context-window usage per (harness, session)
+    pub ctx_usage: std::collections::HashMap<(String, String), (u64, u64)>,
+    /// К6: sessions with a Reported compaction (suppresses inference)
+    pub compaction_reported: std::collections::HashSet<(String, String)>,
+    /// К10: running compaction animator for the open chat
+    pub defrag: Option<crate::ui::defrag::DefragAnimator>,
+    /// К10: finished compaction history lines (one per compaction id)
+    pub compaction_lines: Vec<(String, u64, u64)>,
+    /// К12: compaction view mode (defrag | mini | off)
+    pub compaction_view: crate::ui::defrag::CompactionView,
     pub board_col: usize,
     pub board_row: usize,
     pub board_sel: Option<String>,
@@ -357,6 +369,11 @@ impl App {
             approvals_pending: 0,
             board,
             board_is_view,
+            ctx_usage: Default::default(),
+            compaction_reported: Default::default(),
+            defrag: None,
+            compaction_lines: Vec::new(),
+            compaction_view: crate::ui::defrag::CompactionView::from_env(),
             board_col: 0,
             board_row: 0,
             board_sel: None,
@@ -575,6 +592,27 @@ impl App {
             return;
         }
         let text = self.editor.text();
+        // К11: /compact — manual context compaction where supported
+        if text.trim() == "/compact" {
+            self.editor.set_text("");
+            let harness = self.cur.harness.clone();
+            let sid = self.cur.native_id.clone();
+            match self.ensure_backend(&harness) {
+                Some(b) => {
+                    if b.supports_compact() {
+                        let b = b.clone();
+                        tokio::spawn(async move {
+                            let _ = b.compact(&sid).await;
+                        });
+                        self.toast("compaction requested", false);
+                    } else {
+                        self.toast("this harness has no manual compaction", true);
+                    }
+                }
+                None => self.toast("harness unavailable", true),
+            }
+            return;
+        }
         let atts = std::mem::take(&mut self.attachments);
         if text.trim().is_empty() && atts.is_empty() {
             return;
@@ -1106,6 +1144,116 @@ impl App {
                     .unwrap_or(harness);
                 self.toast(format!("{name}: {error}"), true);
             }
+            BackendEvent::Usage {
+                harness,
+                native_id,
+                used,
+                size,
+                ..
+            } => {
+                // К1: remember the fill; К6: a sharp unreported drop in the
+                // SAME session means the harness compacted on its own
+                let key = (harness.clone(), native_id.clone());
+                let prev = self.ctx_usage.insert(key.clone(), (used, size));
+                if let Some((before, prev_size)) = prev {
+                    let dropped = before.saturating_sub(used);
+                    let frac = dropped as f64 / before.max(1) as f64;
+                    if dropped > 10_000
+                        && frac > 0.30
+                        && before <= prev_size
+                        && !self.compaction_reported.contains(&key)
+                    {
+                        let inferred = BackendEvent::Compaction {
+                            harness: harness.clone(),
+                            native_id: native_id.clone(),
+                            compaction_id: format!("inferred-{before}"),
+                            status: crate::backend::CompactionStatus::Completed,
+                            method: crate::backend::CompactionMethod::Unknown,
+                            summary_delta: None,
+                            error: None,
+                            source: crate::backend::CompactionSource::Inferred,
+                        };
+                        self.on_backend_event(inferred);
+                    }
+                }
+            }
+            BackendEvent::Compaction {
+                harness,
+                native_id,
+                compaction_id,
+                status,
+                summary_delta,
+                error,
+                source,
+                ..
+            } => {
+                let key = (harness.clone(), native_id.clone());
+                let open_chat = self.cur.harness == harness && self.cur.native_id == native_id;
+                if source == crate::backend::CompactionSource::Reported {
+                    self.compaction_reported.insert(key.clone());
+                }
+                match status {
+                    crate::backend::CompactionStatus::InProgress => {
+                        if open_chat
+                            && self.defrag.is_none()
+                            && summary_delta.is_none()
+                            && self.compaction_view == crate::ui::defrag::CompactionView::Defrag
+                        {
+                            // start the animation from the last known usage
+                            let (used, size) = self.ctx_usage.get(&key).copied().unwrap_or((0, 1));
+                            let shape = crate::ui::context_map::HistoryShape::estimate(
+                                &self.cur.msgs,
+                                2_000,
+                            );
+                            self.defrag = Some(crate::ui::defrag::DefragAnimator::new(
+                                &compaction_id,
+                                used.max(1),
+                                size.max(used.max(1)),
+                                shape,
+                                80 * 8,
+                                false,
+                            ));
+                        }
+                    }
+                    crate::backend::CompactionStatus::Completed => {
+                        if let Some(an) = self.defrag.as_mut() {
+                            an.complete(self.ctx_usage.get(&key).map(|(u, _)| *u), None);
+                        }
+                        // К10: ONE history line per compaction id
+                        if !self
+                            .compaction_lines
+                            .iter()
+                            .any(|(id, ..)| *id == *compaction_id)
+                        {
+                            let after = self.ctx_usage.get(&key).map(|(u, _)| *u).unwrap_or(0);
+                            let before_hint: u64 = compaction_id
+                                .strip_prefix("inferred-")
+                                .and_then(|n| n.parse().ok())
+                                .unwrap_or(after.max(1));
+                            self.compaction_lines.push((
+                                compaction_id.clone(),
+                                before_hint.max(after),
+                                after,
+                            ));
+                        }
+                    }
+                    crate::backend::CompactionStatus::Failed => {
+                        if let Some(an) = self.defrag.as_mut() {
+                            an.complete(None, error.clone());
+                        }
+                    }
+                    crate::backend::CompactionStatus::Cancelled => {
+                        self.defrag = None;
+                    }
+                }
+                if let Some(delta) = summary_delta {
+                    if open_chat {
+                        if let Some(an) = self.defrag.as_mut() {
+                            an.summary_chunk(delta.as_str());
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1344,6 +1492,16 @@ impl App {
         }
         if self.modal.is_some() {
             self.modal_key(k);
+            return;
+        }
+
+        // К10: Esc collapses the DEFRAG overlay into the mini-map (the
+        // underlying animation keeps running; typing stays unblocked)
+        if k.code == crossterm::event::KeyCode::Esc
+            && self.defrag.is_some()
+            && self.compaction_view == crate::ui::defrag::CompactionView::Defrag
+        {
+            self.compaction_view = crate::ui::defrag::CompactionView::Mini;
             return;
         }
 
@@ -2870,5 +3028,136 @@ mod tests {
         });
         assert!(app.busy_now(), "chat A is still busy after B finished");
         assert!(app.cur.msgs.is_empty(), "B's events do not render into A");
+    }
+}
+
+#[cfg(test)]
+mod compaction_ui_tests {
+    use super::*;
+    use crate::backend::BackendEvent;
+
+    fn app() -> App {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        App::new(crate::config::Config::default(), rx)
+    }
+
+    /// К6 thresholds: a >30% and >10k drop in the SAME session infers a
+    /// compaction; smaller drops and cross-session resets do not.
+    #[tokio::test]
+    async fn usage_drop_infers_compaction_only_on_threshold() {
+        let mut a = app();
+        let send = |a: &mut App, used: u64| {
+            a.on_backend_event(BackendEvent::Usage {
+                harness: "oc".into(),
+                native_id: "s1".into(),
+                used,
+                size: 200_000,
+                cost_usd: None,
+                estimated: false,
+            });
+        };
+        send(&mut a, 150_000);
+        a.compaction_lines.clear();
+        // a small drop: no compaction
+        send(&mut a, 140_000);
+        assert!(a.compaction_lines.is_empty(), "14k/7% is below threshold");
+        // >30% AND >10k: inferred compaction → one history line
+        send(&mut a, 150_000); // restore the baseline first
+        a.compaction_lines.clear();
+        send(&mut a, 40_000);
+        assert_eq!(a.compaction_lines.len(), 1, "110k/73% drop inferred");
+        // a second identical drop does not duplicate the SAME id
+        send(&mut a, 150_000);
+        a.compaction_lines.clear();
+        send(&mut a, 40_000);
+        assert_eq!(
+            a.compaction_lines.len(),
+            1,
+            "the same inferred id is not duplicated"
+        );
+    }
+
+    /// К10: a Reported compaction suppresses the inference for its session.
+    #[tokio::test]
+    async fn reported_compaction_suppresses_inference() {
+        let mut a = app();
+        a.on_backend_event(BackendEvent::Usage {
+            harness: "oc".into(),
+            native_id: "s2".into(),
+            used: 150_000,
+            size: 200_000,
+            cost_usd: None,
+            estimated: false,
+        });
+        a.on_backend_event(BackendEvent::Compaction {
+            harness: "oc".into(),
+            native_id: "s2".into(),
+            compaction_id: "c-9".into(),
+            status: crate::backend::CompactionStatus::InProgress,
+            method: crate::backend::CompactionMethod::Summarize,
+            summary_delta: None,
+            error: None,
+            source: crate::backend::CompactionSource::Reported,
+        });
+        a.on_backend_event(BackendEvent::Compaction {
+            harness: "oc".into(),
+            native_id: "s2".into(),
+            compaction_id: "c-9".into(),
+            status: crate::backend::CompactionStatus::Completed,
+            method: crate::backend::CompactionMethod::Summarize,
+            summary_delta: None,
+            error: None,
+            source: crate::backend::CompactionSource::Reported,
+        });
+        a.compaction_lines.clear();
+        // the sharp drop arrives but the harness already reported it
+        a.on_backend_event(BackendEvent::Usage {
+            harness: "oc".into(),
+            native_id: "s2".into(),
+            used: 40_000,
+            size: 200_000,
+            cost_usd: None,
+            estimated: false,
+        });
+        assert!(
+            a.compaction_lines
+                .iter()
+                .all(|(id, ..)| !id.starts_with("inferred-")),
+            "no duplicate inference after a Reported compaction: {:?}",
+            a.compaction_lines
+        );
+    }
+
+    /// К10: two compactions → two history lines; the overlay does NOT open
+    /// for a background session.
+    #[tokio::test]
+    async fn background_compaction_records_lines_without_overlay() {
+        let mut a = app();
+        a.compaction_view = crate::ui::defrag::CompactionView::Defrag;
+        for (id, before) in [("c-1", 170_000u64), ("c-2", 120_000)] {
+            a.on_backend_event(BackendEvent::Usage {
+                harness: "oc".into(),
+                native_id: "bg".into(),
+                used: before,
+                size: 200_000,
+                cost_usd: None,
+                estimated: false,
+            });
+            a.on_backend_event(BackendEvent::Compaction {
+                harness: "oc".into(),
+                native_id: "bg".into(),
+                compaction_id: id.into(),
+                status: crate::backend::CompactionStatus::Completed,
+                method: crate::backend::CompactionMethod::Summarize,
+                summary_delta: None,
+                error: None,
+                source: crate::backend::CompactionSource::Reported,
+            });
+        }
+        assert_eq!(a.compaction_lines.len(), 2, "one line per compaction id");
+        assert!(
+            a.defrag.is_none(),
+            "no overlay for a session that is not open"
+        );
     }
 }

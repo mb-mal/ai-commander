@@ -27,8 +27,9 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::{
-    AgentInfo, AttachmentMeta, Backend, BackendEvent, ChatMsg, MAX_ATTACHMENT_BYTES, ModelInfo,
-    PartKind, RenderPart, Role, SendOpts, SessionInfo, kill_tree,
+    AgentInfo, AttachmentMeta, Backend, BackendEvent, ChatMsg, CompactionMethod, CompactionSource,
+    CompactionStatus, MAX_ATTACHMENT_BYTES, ModelInfo, PartKind, RenderPart, Role, SendOpts,
+    SessionInfo, kill_tree,
 };
 use crate::config::HarnessCfg;
 
@@ -287,6 +288,17 @@ impl AcpBackend {
                     },
                 });
             }
+            SessionUpdate::UsageUpdate(u) => {
+                // К1: the context window fill — the "disk" of the DEFRAG map
+                let _ = events.send(BackendEvent::Usage {
+                    harness: harness.into(),
+                    native_id: sent_id.into(),
+                    used: u.used,
+                    size: u.size,
+                    cost_usd: u.cost.filter(|c| c.currency == "USD").map(|c| c.amount),
+                    estimated: false,
+                });
+            }
             _ => {}
         }
     }
@@ -319,10 +331,13 @@ impl Backend for AcpBackend {
         // initialize; the response flips `connected` from the reader thread
         // (Б2: params built from the schema types, not hand-rolled json!)
         let init = InitializeRequest::new(agent_client_protocol::schema::ProtocolVersion::V1);
-        let _init = self.call(
-            "initialize",
-            serde_json::to_value(&init).unwrap_or(Value::Null),
-        );
+        let mut init_v = serde_json::to_value(&init).unwrap_or(Value::Null);
+        // К2: declare the session-compaction capability (ACP RFD, Preview).
+        // The schema crate 1.1.0 does not know this field yet, so it is
+        // added to the serialized value; agents that do not support the
+        // RFD ignore unknown capability keys.
+        init_v["clientCapabilities"]["session"]["compaction"] = json!({});
+        let _init = self.call("initialize", init_v);
 
         let events = self.events.clone();
         let harness = self.cfg.id.clone();
@@ -349,11 +364,102 @@ impl Backend for AcpBackend {
                     let params = v.get("params").cloned().unwrap_or(Value::Null);
                     match method.as_str() {
                         "session/update" => {
-                            if let Ok(note) = serde_json::from_value::<SessionNotification>(params)
-                            {
-                                let real = note.session_id.to_string();
-                                let sent = route.lock().get(&real).cloned().unwrap_or(real.clone());
-                                Self::handle_update(&events, &acc, &harness, &sent, note);
+                            // К2: the compaction RFD types are not in schema
+                            // crate 1.1.0 — intercept by the sessionUpdate
+                            // discriminator BEFORE the typed parse
+                            let update_kind = params
+                                .get("update")
+                                .and_then(|u| u.get("sessionUpdate"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string();
+                            let sid_of = |params: &Value| {
+                                params
+                                    .get("sessionId")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string()
+                            };
+                            match update_kind.as_str() {
+                                "compaction_update" => {
+                                    let sent = {
+                                        let sid = sid_of(&params);
+                                        let r = route.lock();
+                                        r.get(&sid).cloned().unwrap_or(sid)
+                                    };
+                                    let u = params.get("update").cloned().unwrap_or(Value::Null);
+                                    let status = match u.get("status").and_then(Value::as_str) {
+                                        Some("in_progress") => CompactionStatus::InProgress,
+                                        Some("completed") => CompactionStatus::Completed,
+                                        Some("failed") => CompactionStatus::Failed,
+                                        Some("cancelled") => CompactionStatus::Cancelled,
+                                        _ => CompactionStatus::InProgress,
+                                    };
+                                    let _ = events.send(BackendEvent::Compaction {
+                                        harness: harness.clone(),
+                                        native_id: sent,
+                                        compaction_id: u
+                                            .get("compactionId")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("?")
+                                            .to_string(),
+                                        status,
+                                        method: CompactionMethod::Summarize,
+                                        summary_delta: u
+                                            .get("summary")
+                                            .and_then(Value::as_str)
+                                            .map(str::to_owned),
+                                        error: u
+                                            .get("error")
+                                            .and_then(Value::as_str)
+                                            .map(str::to_owned),
+                                        source: CompactionSource::Reported,
+                                    });
+                                }
+                                "compaction_summary_chunk" => {
+                                    let sent = {
+                                        let sid = sid_of(&params);
+                                        let r = route.lock();
+                                        r.get(&sid).cloned().unwrap_or(sid)
+                                    };
+                                    let u = params.get("update").cloned().unwrap_or(Value::Null);
+                                    let _ = events.send(BackendEvent::Compaction {
+                                        harness: harness.clone(),
+                                        native_id: sent,
+                                        compaction_id: u
+                                            .get("compactionId")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("?")
+                                            .to_string(),
+                                        status: CompactionStatus::InProgress,
+                                        method: CompactionMethod::Summarize,
+                                        summary_delta: u
+                                            .get("delta")
+                                            .and_then(Value::as_str)
+                                            .map(str::to_owned),
+                                        error: None,
+                                        source: CompactionSource::Reported,
+                                    });
+                                }
+                                _ => {
+                                    if let Ok(note) =
+                                        serde_json::from_value::<SessionNotification>(params)
+                                    {
+                                        let real = note.session_id.to_string();
+                                        let sent = {
+                                            let r = route.lock();
+                                            r.get(&real).cloned().unwrap_or(real.clone())
+                                        };
+                                        Self::handle_update(&events, &acc, &harness, &sent, note);
+                                    } else if !update_kind.is_empty() {
+                                        // К2: unknown update types are LOGGED,
+                                        // not silently dropped
+                                        crate::log_debug!(
+                                            "acp",
+                                            "unhandled session/update type {update_kind}"
+                                        );
+                                    }
+                                }
                             }
                         }
                         "session/request_permission" => {
