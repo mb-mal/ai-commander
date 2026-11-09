@@ -308,12 +308,7 @@ impl Backend for AcpBackend {
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
+        super::spawn_prep(&mut cmd);
         let mut child = cmd
             .spawn()
             .map_err(|e| anyhow!("spawn opencode acp: {e}"))?;
