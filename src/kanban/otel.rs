@@ -92,6 +92,7 @@ mod tests {
                     ts_ms: 1,
                 }],
                 artifacts: Vec::new(),
+                base_branch: String::new(),
                 depends_on: Vec::new(),
                 session_id: None,
                 attempts: 1,
