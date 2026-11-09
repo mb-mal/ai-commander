@@ -39,7 +39,9 @@ pub fn port_file() -> PathBuf {
 }
 
 /// Handler that executes one board tool call against the owner's store.
-pub type ToolHandler = Arc<dyn Fn(&str, &Value, &str) -> Result<String, String> + Send + Sync>;
+/// The actor is the resolved identity (role or human) — v6 #3.
+pub type ToolHandler =
+    Arc<dyn Fn(&str, &Value, super::Actor) -> Result<String, String> + Send + Sync>;
 
 /// 32 random bytes, hex-encoded.
 fn new_token() -> String {
@@ -89,13 +91,17 @@ pub fn serve_at(path: &std::path::Path, handle: ToolHandler) -> std::io::Result<
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
     let token = new_token();
-    std::fs::write(path, format!("{port}\n{token}"))?;
+    // v6 #3: the HUMAN token — whoever can read this 0600 file is the
+    // local user; it authorizes human-only actions (board_unpark)
+    let human_token = new_token();
+    std::fs::write(path, format!("{port}\n{token}\n{human_token}"))?;
     restrict_to_owner(path);
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let handle = handle.clone();
             let token = token.clone();
-            std::thread::spawn(move || serve_conn(stream, handle, token));
+            let human_token = human_token.clone();
+            std::thread::spawn(move || serve_conn(stream, handle, token, human_token));
         }
     });
     Ok(port)
@@ -115,14 +121,19 @@ fn restrict_to_owner(path: &std::path::Path) {
 
 /// Convenience: serve directly from a shared BoardStore (TUI shape).
 pub fn serve_board(board: Arc<Mutex<BoardStore>>) -> std::io::Result<u16> {
-    let handle: ToolHandler = Arc::new(move |tool, args, role| {
+    let handle: ToolHandler = Arc::new(move |tool, args, actor| {
         let mut b = board.lock();
-        super::board_tool_call(tool, args, role, &mut b)
+        super::board_tool_call(tool, args, &actor, &mut b)
     });
     serve(handle)
 }
 
-fn serve_conn(stream: TcpStream, handle: ToolHandler, transport_token: String) {
+fn serve_conn(
+    stream: TcpStream,
+    handle: ToolHandler,
+    transport_token: String,
+    human_token: String,
+) {
     let Ok(reader) = stream.try_clone() else {
         return;
     };
@@ -150,9 +161,15 @@ fn serve_conn(stream: TcpStream, handle: ToolHandler, transport_token: String) {
             let _ = stream.flush();
             break;
         }
-        // v4: the acting role comes from the role token only
+        // v4: the acting role comes from the role token only;
+        // v6 #3: the HUMAN token is a separate authority
         let role_token = v.get("role_token").and_then(Value::as_str).unwrap_or("");
-        let Some(role) = role_of_token(role_token) else {
+        let actor = if role_token == human_token {
+            Some(super::Actor::Human)
+        } else {
+            role_of_token(role_token).map(super::Actor::Role)
+        };
+        let Some(role) = actor else {
             let _ = writeln!(
                 stream,
                 "{}",
@@ -166,7 +183,7 @@ fn serve_conn(stream: TcpStream, handle: ToolHandler, transport_token: String) {
         let reply = if tool.is_empty() {
             json!({"ok": false, "error": "missing tool"})
         } else {
-            match handle(tool, &args, &role) {
+            match handle(tool, &args, role) {
                 Ok(text) => json!({"ok": true, "result": text}),
                 Err(e) => json!({"ok": false, "error": e}),
             }
@@ -185,18 +202,24 @@ pub fn cleanup() {
 
 /// Is a board owner listening? (port file present + connectable)
 pub fn owner_alive() -> bool {
-    let Some((port, _token)) = read_port_file(&port_file()) else {
+    let Some((port, _token, _human)) = read_port_file(&port_file()) else {
         return false;
     };
     TcpStream::connect(("127.0.0.1", port)).is_ok()
 }
 
-fn read_port_file(path: &std::path::Path) -> Option<(u16, String)> {
+/// The HUMAN token from the port file (local user authority), if present.
+pub fn human_token() -> Option<String> {
+    read_port_file(&port_file()).and_then(|(_, _, h)| h)
+}
+
+fn read_port_file(path: &std::path::Path) -> Option<(u16, String, Option<String>)> {
     let raw = std::fs::read_to_string(path).ok()?;
     let mut lines = raw.lines();
     let port: u16 = lines.next()?.trim().parse().ok()?;
     let token = lines.next()?.trim().to_string();
-    Some((port, token))
+    let human = lines.next().map(|l| l.trim().to_string());
+    Some((port, token, human))
 }
 
 /// One board tool call to the owner as the bearer of `role_token`.
@@ -212,7 +235,7 @@ pub fn call_owner_at(
     args: &Value,
     role_token: &str,
 ) -> Option<Result<String, String>> {
-    let (port, token) = read_port_file(port_file)?;
+    let (port, token, _human) = read_port_file(port_file)?;
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream
         .set_read_timeout(Some(Duration::from_secs(60)))
@@ -243,7 +266,7 @@ mod tests {
         let b2 = board.clone();
         let h: ToolHandler = Arc::new(move |tool, args, role| {
             let mut b = b2.lock();
-            super::super::board_tool_call(tool, args, role, &mut b)
+            super::super::board_tool_call(tool, args, &role, &mut b)
         });
         (h, board)
     }

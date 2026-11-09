@@ -30,11 +30,17 @@ fn worktrees_root() -> PathBuf {
 
 /// Stable per-repository slug (hash of the canonical path).
 fn repo_slug(repo: &Path) -> String {
-    use std::hash::{Hash, Hasher};
+    // v6: STABLE hash — DefaultHasher seed/algorithm changes between Rust
+    // versions, which used to relocate every worktree after a toolchain
+    // update (finish() then could not find them and reported success)
     let canon = std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_path_buf());
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    canon.hash(&mut h);
-    format!("{:016x}", h.finish())
+    let path_str = canon.to_string_lossy().into_owned();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a 64
+    for b in path_str.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
 }
 
 fn worktrees_dir(repo: &Path) -> PathBuf {
@@ -47,6 +53,14 @@ fn legacy_dir(repo: &Path) -> PathBuf {
 }
 
 pub fn worktree_path(repo: &Path, task: &Task) -> PathBuf {
+    // v6: the path stored on the task wins — it survives hash changes and
+    // relocated caches; computed locations are the fallback
+    if !task.worktree_path.is_empty() {
+        let stored = PathBuf::from(&task.worktree_path);
+        if stored.exists() {
+            return stored;
+        }
+    }
     let modern = worktrees_dir(repo).join(sanitize(&task.id));
     if modern.exists() {
         return modern;
@@ -188,30 +202,58 @@ pub fn finish(repo: &Path, task: &Task) -> Result<()> {
         );
     }
 
-    // merge inside a TEMPORARY worktree on the base tip, then move the
-    // branch ref — the user's working tree is untouched
-    let tmp = worktrees_dir(repo).join(format!("merge-{}", sanitize(&task.id)));
-    let _ = std::fs::remove_dir_all(&tmp);
-    let tmp_s = tmp.to_string_lossy().into_owned();
-    git(repo, &["worktree", "add", "--detach", &tmp_s, &base])
-        .context("open a temporary worktree on the base branch")?;
-    let merge = git(&tmp, &["merge", "--no-ff", "--no-edit", &branch]);
-    if let Err(e) = merge {
-        let _ = git(&tmp, &["merge", "--abort"]);
+    // v6 #1: two safe paths, never a bare `update-ref` under the user's
+    // feet — moving the ref below a CHECKED OUT base makes the agent's
+    // files look DELETED in the user's tree (and their next `commit -am`
+    // would record the deletion).
+    if user_on_base {
+        // the base is checked out and CLEAN: fast-forward their checkout —
+        // the agent's work APPEARS in the working tree, nothing vanishes
+        git(repo, &["merge", "--ff-only", &branch]).with_context(|| {
+            format!(
+                "fast-forward {base} to task {} (base advanced — merge manually)",
+                task.id
+            )
+        })?;
+    } else {
+        // base not checked out: merge inside a TEMPORARY worktree on the
+        // base tip, then move the branch ref WITH an expected-old guard so
+        // a concurrent commit on the base is never overwritten
+        let tmp = worktrees_dir(repo).join(format!("merge-{}", sanitize(&task.id)));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_s = tmp.to_string_lossy().into_owned();
+        git(repo, &["worktree", "add", "--detach", &tmp_s, &base])
+            .context("open a temporary worktree on the base branch")?;
+        // what we believe the base is — if it moved meanwhile, refuse
+        let expected_old = git(&tmp, &["rev-parse", "HEAD"])?.trim().to_string();
+        let merge = git(&tmp, &["merge", "--no-ff", "--no-edit", &branch]);
+        if let Err(e) = merge {
+            let _ = git(&tmp, &["merge", "--abort"]);
+            let _ = git(repo, &["worktree", "remove", "--force", &tmp_s]);
+            return Err(anyhow!(
+                "merge conflict for {} — task stays in Review. {e}",
+                task.id
+            ));
+        }
+        let new_head = git(&tmp, &["rev-parse", "HEAD"])?.trim().to_string();
+        git(
+            &tmp,
+            &[
+                "update-ref",
+                &format!("refs/heads/{base}"),
+                &new_head,
+                &expected_old,
+            ],
+        )
+        .with_context(|| {
+            format!(
+                "base {base} moved during the merge of {t} — task stays in \
+                 Review, re-run Approve",
+                t = task.id
+            )
+        })?;
         let _ = git(repo, &["worktree", "remove", "--force", &tmp_s]);
-        return Err(anyhow!(
-            "merge conflict for {} — task stays in Review. {e}",
-            task.id
-        ));
     }
-    // fast-forward the base branch ref to the merge result
-    let new_head = git(&tmp, &["rev-parse", "HEAD"])?.trim().to_string();
-    git(
-        &tmp,
-        &["update-ref", &format!("refs/heads/{base}"), &new_head],
-    )
-    .with_context(|| format!("move refs/heads/{base} to the merge result"))?;
-    let _ = git(repo, &["worktree", "remove", "--force", &tmp_s]);
 
     // the task worktree itself: refuse losing uncommitted leftovers
     let still_dirty = git(&wt, &["status", "--porcelain"])
@@ -297,6 +339,7 @@ pub fn on_transition(
             Ok(HookNote {
                 note: Some(format!("worktree {}", p.display())),
                 base_branch: Some(base),
+                worktree_path: Some(p.to_string_lossy().into_owned()),
             })
         }
         // Review→Done → merge back into the task's base branch
@@ -307,6 +350,7 @@ pub fn on_transition(
             finish(repo, task).map(|_| HookNote {
                 note: Some("merged".into()),
                 base_branch: None,
+                worktree_path: None,
             })
         }
         // Cancel with an open worktree → drop it
@@ -315,6 +359,7 @@ pub fn on_transition(
                 drop(repo, task).map(|_| HookNote {
                     note: Some("worktree dropped".into()),
                     base_branch: None,
+                    worktree_path: None,
                 })
             } else {
                 Ok(HookNote::default())
@@ -329,4 +374,6 @@ pub struct HookNote {
     pub note: Option<String>,
     /// Start: the base branch the task worktree was cut from (v5 #2)
     pub base_branch: Option<String>,
+    /// Start: where the worktree was created (v6: recorded on the task)
+    pub worktree_path: Option<String>,
 }

@@ -93,6 +93,7 @@ mod tests {
                 }],
                 artifacts: Vec::new(),
                 base_branch: String::new(),
+                worktree_path: String::new(),
                 depends_on: Vec::new(),
                 session_id: None,
                 attempts: 1,
