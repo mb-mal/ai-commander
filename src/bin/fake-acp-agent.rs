@@ -1,4 +1,4 @@
-//! Fake ACP agent for conformance tests (review v3 Б2, extended in v4).
+//! Fake ACP agent for conformance tests (review v3 Б2, extended in v4/v5).
 //!
 //! Speaks the Agent Client Protocol over stdio like a real agent, but
 //! validates EVERY incoming client message against the schema types —
@@ -14,11 +14,17 @@
 //! scenarios end to end. The read loop is a single state machine: nested
 //! stdin locks deadlock on Windows.
 //!
+//! v5: permission requests are per-session (`perm-<sessionId>` ids), so
+//! two concurrent sessions each keep their own open question; with
+//! FAKE_ACP_MALFORMED_PERM=1 the agent sends an intentionally malformed
+//! permission request and expects a -32602 error reply (not silence).
+//!
 //! Results are appended to the file named by FAKE_ACP_LOG:
-//!   OK <method>            — message is schema-canonical
-//!   FAIL <method> <error>  — validation error
-//!   PERM selected <id> / PERM cancelled — the client's permission outcome
+//!   OK <method> / FAIL <method> <error> — schema validation
+//!   PERM selected <id> <sid> / PERM cancelled <sid> — permission outcomes
+//!   MALFORMED <code> — reply to the malformed permission request
 
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
 
 use agent_client_protocol::schema::v1::{
@@ -62,18 +68,49 @@ where
     }
 }
 
-/// A prompt turn paused on the open permission request.
+/// A prompt turn paused on its open permission request.
 struct AwaitingPerm {
     prompt_id: Value,
-    session_id: String,
     echo: String,
+}
+
+fn finish_turn(stdout: &mut std::io::Stdout, sid: &str, a: &AwaitingPerm, outcome_text: &str) {
+    let stop = if outcome_text.contains("cancelled") {
+        "cancelled"
+    } else {
+        "end_turn"
+    };
+    let note = SessionNotification::new(
+        sid.to_string(),
+        SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
+            format!(
+                "echo: {} — {} — DONE: fake agent replied",
+                a.echo, outcome_text
+            ),
+        )))),
+    );
+    let _ = writeln!(
+        stdout,
+        "{}",
+        json!({"jsonrpc": "2.0", "method": "session/update",
+               "params": serde_json::to_value(&note).unwrap_or(Value::Null)})
+    );
+    let _ = writeln!(
+        stdout,
+        "{}",
+        json!({"jsonrpc": "2.0", "id": a.prompt_id.clone(),
+               "result": {"stopReason": stop}})
+    );
+    let _ = stdout.flush();
 }
 
 fn main() {
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     let mut next_session = 0u32;
-    let mut awaiting: Option<AwaitingPerm> = None;
+    // v5: per-session open questions (id = "perm-<sessionId>")
+    let mut awaiting: HashMap<String, AwaitingPerm> = HashMap::new();
+    let malformed = std::env::var("FAKE_ACP_MALFORMED_PERM").ok().as_deref() == Some("1");
 
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
@@ -85,53 +122,49 @@ fn main() {
         let params = v.get("params").cloned().unwrap_or(Value::Null);
         let is_request = id.is_some();
 
-        // the client answered our permission request → finish the turn
-        if method.is_empty() && id == Some(Value::String("perm-1".into())) {
-            if let Some(a) = awaiting.take() {
-                let mut outcome_text = String::new();
-                match serde_json::from_value::<RequestPermissionResponse>(
-                    v.get("result").cloned().unwrap_or(Value::Null),
-                ) {
-                    Ok(resp) => match resp.outcome {
-                        RequestPermissionOutcome::Selected(sel) => {
-                            outcome_text = format!("PERM selected {}", sel.option_id);
-                            log_line(&outcome_text);
+        // a reply to one of our permission requests → finish that session's turn
+        if method.is_empty() {
+            if let Some(idstr) = id.as_ref().and_then(Value::as_str) {
+                if let Some(sid) = idstr.strip_prefix("perm-bad-") {
+                    // v5: malformed probe — the client must answer -32602
+                    let sid = sid.to_string();
+                    {
+                        // v5: malformed probe — the client must answer -32602
+                        let code = v
+                            .get("error")
+                            .and_then(|e| e.get("code"))
+                            .and_then(Value::as_i64);
+                        log_line(&format!(
+                            "MALFORMED {}",
+                            code.map(|c| c.to_string()).unwrap_or_else(|| "none".into())
+                        ));
+                        if let Some(a) = awaiting.remove(&sid) {
+                            finish_turn(&mut stdout, &sid, &a, "malformed answered");
                         }
-                        RequestPermissionOutcome::Cancelled => {
-                            outcome_text = "PERM cancelled".into();
-                            log_line(&outcome_text);
+                    }
+                } else if let Some(sid) = idstr.strip_prefix("perm-") {
+                    let sid = sid.to_string();
+                    if let Some(a) = awaiting.remove(&sid) {
+                        let mut outcome_text = String::new();
+                        match serde_json::from_value::<RequestPermissionResponse>(
+                            v.get("result").cloned().unwrap_or(Value::Null),
+                        ) {
+                            Ok(resp) => match resp.outcome {
+                                RequestPermissionOutcome::Selected(sel) => {
+                                    outcome_text = format!("PERM selected {} {sid}", sel.option_id);
+                                    log_line(&outcome_text);
+                                }
+                                RequestPermissionOutcome::Cancelled => {
+                                    outcome_text = format!("PERM cancelled {sid}");
+                                    log_line(&outcome_text);
+                                }
+                                _ => log_line("FAIL unknown outcome variant"),
+                            },
+                            Err(e) => log_line(&format!("FAIL perm response not schema: {e}")),
                         }
-                        _ => log_line("FAIL unknown outcome variant"),
-                    },
-                    Err(e) => log_line(&format!("FAIL perm response not schema: {e}")),
+                        finish_turn(&mut stdout, &sid, &a, &outcome_text);
+                    }
                 }
-                let stop = if outcome_text.contains("cancelled") {
-                    "cancelled"
-                } else {
-                    "end_turn"
-                };
-                let note = SessionNotification::new(
-                    a.session_id.clone(),
-                    SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
-                        TextContent::new(format!(
-                            "echo: {} — {} — DONE: fake agent replied",
-                            a.echo, outcome_text
-                        )),
-                    ))),
-                );
-                let _ = writeln!(
-                    stdout,
-                    "{}",
-                    json!({"jsonrpc": "2.0", "method": "session/update",
-                           "params": serde_json::to_value(&note).unwrap_or(Value::Null)})
-                );
-                let _ = writeln!(
-                    stdout,
-                    "{}",
-                    json!({"jsonrpc": "2.0", "id": a.prompt_id,
-                           "result": {"stopReason": stop}})
-                );
-                let _ = stdout.flush();
             }
             continue;
         }
@@ -193,12 +226,34 @@ fn main() {
                     .unwrap_or("")
                     .to_string();
 
+                awaiting.insert(
+                    sid.clone(),
+                    AwaitingPerm {
+                        prompt_id: id.clone().unwrap_or(Value::Null),
+                        echo,
+                    },
+                );
+
+                if malformed {
+                    // v5: intentionally off-schema params — the client must
+                    // answer -32602 instead of silence
+                    let _ = writeln!(
+                        stdout,
+                        "{}",
+                        json!({"jsonrpc": "2.0", "id": format!("perm-bad-{sid}"),
+                               "method": "session/request_permission",
+                               "params": {"sessionId": sid, "options": "not-an-array"}})
+                    );
+                    let _ = stdout.flush();
+                    continue;
+                }
+
                 // v4 Б2: ask permission (typed, STRING id) before answering;
                 // the turn completes when the client replies (see above)
                 let mut fields = ToolCallUpdateFields::default();
                 fields.title = Some("rm -rf probe".into());
                 let req = RequestPermissionRequest::new(
-                    sid,
+                    sid.clone(),
                     ToolCallUpdate::new("tc_probe_1", fields),
                     vec![
                         PermissionOption::new(
@@ -218,19 +273,11 @@ fn main() {
                         ),
                     ],
                 );
-                awaiting = Some(AwaitingPerm {
-                    prompt_id: id.clone().unwrap_or(Value::Null),
-                    session_id: params
-                        .get("sessionId")
-                        .and_then(Value::as_str)
-                        .unwrap_or("ses_fake_1")
-                        .to_string(),
-                    echo,
-                });
                 let _ = writeln!(
                     stdout,
                     "{}",
-                    json!({"jsonrpc": "2.0", "id": "perm-1", "method": "session/request_permission",
+                    json!({"jsonrpc": "2.0", "id": format!("perm-{sid}"),
+                           "method": "session/request_permission",
                            "params": serde_json::to_value(&req).unwrap_or(Value::Null)})
                 );
                 let _ = stdout.flush();

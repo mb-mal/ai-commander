@@ -67,7 +67,7 @@ fn failed_start_escalates_instead_of_retry_looping() {
     let t = b.add_task("cannot start");
     b.transition(&t.id, TaskAction::Promote).unwrap(); // → Ready
 
-    runner::launch_failed(&mut b, &t.id);
+    runner::launch_failed(&mut b, &t.id, "probe: broken launch");
 
     let after = b.projection().tasks.iter().find(|x| x.id == t.id).unwrap();
     assert_eq!(

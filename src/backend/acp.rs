@@ -64,6 +64,8 @@ struct AcpStore {
 #[derive(Clone)]
 struct PendingPermission {
     jsonrpc_id: Value,
+    /// v5: only the owning session's abort may cancel this request
+    session_id: String,
     options: Vec<PermissionOption>,
 }
 
@@ -370,6 +372,17 @@ impl Backend for AcpBackend {
                             let Ok(req) =
                                 serde_json::from_value::<RequestPermissionRequest>(params.clone())
                             else {
+                                // v5: answer a malformed request instead of
+                                // silence — the agent would wait forever
+                                if let Some(id) = v.get("id") {
+                                    let reply = json!({"jsonrpc": "2.0", "id": id,
+                                        "error": {"code": -32602,
+                                                  "message": "invalid params for session/request_permission"}});
+                                    if let Some(w) = writer.lock().unwrap().as_mut() {
+                                        let _ = writeln!(w, "{reply}");
+                                        let _ = w.flush();
+                                    }
+                                }
                                 continue;
                             };
                             let raw_id = v.get("id").cloned().unwrap_or(Value::Null);
@@ -388,6 +401,7 @@ impl Backend for AcpBackend {
                             // always find the pending entry (no lost race)
                             permissions.lock().unwrap().push(PendingPermission {
                                 jsonrpc_id: raw_id.clone(),
+                                session_id: sid.clone(),
                                 options: req.options,
                             });
                             let _ = events.send(BackendEvent::PermissionRequest {
@@ -763,16 +777,22 @@ impl Backend for AcpBackend {
         Ok(())
     }
 
-    /// ACP session/cancel — a real, working abort.
+    /// ACP session/cancel — a real, working abort. `native_id` may be the
+    /// agent-side session id (route key — what the board stores) or the
+    /// client-side sent id (pending-* draft); both resolve to the real id.
     async fn abort(&self, native_id: &str) -> Result<()> {
-        if let Some(real) = self
-            .route
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|(_, v)| v.as_str() == native_id)
-            .map(|(k, _)| k.clone())
-        {
+        let real = {
+            let route = self.route.lock().unwrap();
+            if route.contains_key(native_id) {
+                Some(native_id.to_string())
+            } else {
+                route
+                    .iter()
+                    .find(|(_, v)| v.as_str() == native_id)
+                    .map(|(k, _)| k.clone())
+            }
+        };
+        if let Some(real) = &real {
             // Б2: schema-typed CancelNotification (sessionId only — the old
             // hand-rolled payload carried an off-schema "reason" field)
             let cancel = CancelNotification::new(real.to_string());
@@ -781,12 +801,16 @@ impl Backend for AcpBackend {
                 serde_json::to_value(&cancel).unwrap_or(Value::Null),
             );
         }
-        // v4 Б2: the spec REQUIRES answering every pending permission
-        // request with `cancelled` when the turn is cancelled — an
-        // unanswered request would hang the agent forever
-        let pending: Vec<PendingPermission> =
-            std::mem::take(&mut *self.permissions.lock().unwrap());
-        for p in pending {
+        // v5 Б2: the spec REQUIRES answering pending permission requests
+        // with `cancelled` when their turn is cancelled — but ONLY the ones
+        // of THIS session; another session's open questions stay alive
+        let (mine, others): (Vec<PendingPermission>, Vec<PendingPermission>) = {
+            let all = std::mem::take(&mut *self.permissions.lock().unwrap());
+            all.into_iter()
+                .partition(|p| Some(&p.session_id) == real.as_ref())
+        };
+        *self.permissions.lock().unwrap() = others;
+        for p in mine {
             let resp = RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled);
             let msg = json!({"jsonrpc": "2.0", "id": p.jsonrpc_id,
                 "result": serde_json::to_value(&resp).unwrap_or(Value::Null)});
