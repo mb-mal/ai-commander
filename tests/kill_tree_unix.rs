@@ -12,8 +12,9 @@ fn alive(pid: i32) -> bool {
 }
 
 fn descendants_of(pid: i32) -> Vec<i32> {
-    let out = Command::new("ps")
-        .args(["-o", "pid=", "--ppid", &pid.to_string()])
+    // pgrep -P works on both linux (procps) and macOS (BSD userland)
+    let out = Command::new("pgrep")
+        .args(["-P", &pid.to_string()])
         .output()
         .unwrap();
     String::from_utf8_lossy(&out.stdout)
