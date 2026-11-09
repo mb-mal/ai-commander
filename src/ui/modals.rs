@@ -87,7 +87,7 @@ fn row_rect(inner: Rect, i: usize) -> Rect {
     }
 }
 
-/// Agents & teams panel: roles with harness/model, teams, harness statuses.
+/// Agents panel: roles with harness/model, harness statuses.
 fn draw_agents_panel(app: &mut App, f: &mut Frame, size: Rect) {
     let lang = app.lang();
     let inner = dialog_frame(
@@ -97,7 +97,7 @@ fn draw_agents_panel(app: &mut App, f: &mut Frame, size: Rect) {
         if lang == Lang::Ru {
             "Агенты и команды"
         } else {
-            "Agents & teams"
+            "Agents"
         },
     );
     let roles = crate::kanban::roles::RoleSet::cached(&std::env::current_dir().unwrap_or_default());

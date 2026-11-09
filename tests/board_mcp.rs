@@ -97,19 +97,19 @@ fn mcp_board_full_dialog() {
         .map(|t| t["name"].as_str().unwrap())
         .collect();
     for expected in [
-        "board.create_task",
-        "board.update_task",
-        "board.comment",
-        "board.handoff",
-        "board.read_inbox",
-        "board.ask_human",
+        "board_create_task",
+        "board_update_task",
+        "board_comment",
+        "board_handoff",
+        "board_read_inbox",
+        "board_ask_human",
     ] {
         assert!(names.contains(&expected), "missing tool {expected}");
     }
 
     // create + advance + comment + inbox
     let (text, err) = c.call(
-        "board.create_task",
+        "board_create_task",
         serde_json::json!({"title": "write the report"}),
     );
     assert!(!err, "create failed: {text}");
@@ -117,32 +117,32 @@ fn mcp_board_full_dialog() {
     assert!(task_id.starts_with("t-"), "bad id in {text}");
 
     let (text, err) = c.call(
-        "board.update_task",
+        "board_update_task",
         serde_json::json!({"task_id": task_id, "action": "promote"}),
     );
     assert!(!err, "promote failed: {text}");
     assert!(text.contains("Ready"), "{text}");
 
     let (_, err) = c.call(
-        "board.comment",
+        "board_comment",
         serde_json::json!({"task_id": task_id, "text": "starting now"}),
     );
     assert!(!err);
 
-    let (inbox, err) = c.call("board.read_inbox", serde_json::json!({"task_id": task_id}));
+    let (inbox, err) = c.call("board_read_inbox", serde_json::json!({"task_id": task_id}));
     assert!(!err);
     assert!(inbox.contains("starting now"), "{inbox}");
 
     // handoff contract: too-short summary is rejected, proper one works
     let (text, err) = c.call(
-        "board.handoff",
+        "board_handoff",
         serde_json::json!({
         "task_id": task_id, "to_role": "reviewer", "summary": "short"}),
     );
     assert!(err, "handoff without a summary must fail: {text}");
 
     let (text, err) = c.call(
-        "board.handoff",
+        "board_handoff",
         serde_json::json!({
         "task_id": task_id, "to_role": "reviewer",
         "summary": "report draft written, needs a review pass", "open_questions": "tone ok?"}),
@@ -173,7 +173,7 @@ fn mcp_requires_role_token_and_ownership() {
         "initialize",
         serde_json::json!({"protocolVersion": "2024-11-05", "capabilities": {}}),
     );
-    let (text, err) = anon.call("board.create_task", serde_json::json!({"title": "x"}));
+    let (text, err) = anon.call("board_create_task", serde_json::json!({"title": "x"}));
     assert!(err && text.contains("role token"), "{text}");
     drop(anon);
 
@@ -183,21 +183,21 @@ fn mcp_requires_role_token_and_ownership() {
         "initialize",
         serde_json::json!({"protocolVersion": "2024-11-05", "capabilities": {}}),
     );
-    let (text, _) = coder.call("board.create_task", serde_json::json!({"title": "owned"}));
+    let (text, _) = coder.call("board_create_task", serde_json::json!({"title": "owned"}));
     let id = text.split(' ').nth(1).unwrap().to_string();
     let (text, _) = coder.call(
-        "board.handoff",
+        "board_handoff",
         serde_json::json!({
         "task_id": id, "to_role": "reviewer", "summary": "please own this task now"}),
     );
     assert!(!text.contains("error"), "{text}");
     let (text, err) = coder.call(
-        "board.update_task",
+        "board_update_task",
         serde_json::json!({"task_id": id, "action": "promote"}),
     );
     assert!(!err, "{text}");
     let (text, err) = coder.call(
-        "board.update_task",
+        "board_update_task",
         serde_json::json!({"task_id": id, "action": "start"}),
     );
     assert!(err, "ownership must block start: {text}");
@@ -210,7 +210,7 @@ fn mcp_requires_role_token_and_ownership() {
         serde_json::json!({"protocolVersion": "2024-11-05", "capabilities": {}}),
     );
     let (text, err) = reviewer.call(
-        "board.update_task",
+        "board_update_task",
         serde_json::json!({"task_id": id, "action": "start"}),
     );
     assert!(!err, "assignee must be able to start: {text}");
