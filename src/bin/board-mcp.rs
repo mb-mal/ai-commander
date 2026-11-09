@@ -4,8 +4,8 @@
 //!
 //! Protocol: newline-delimited JSON-RPC 2.0 over stdin/stdout (MCP stdio):
 //!   initialize → tools/list → tools/call
-//! Tools: board.create_task, board.update_task, board.comment, board.handoff,
-//!        board.read_inbox, board.ask_human — all hitting the same redb
+//! Tools: board_create_task, board_update_task, board_comment, board_handoff,
+//!        board_read_inbox, board_ask_human — all hitting the same redb
 //! event-sourced store the TUI and daemon use.
 
 use std::io::{BufRead, Write};
@@ -114,43 +114,43 @@ fn main() {
 
 fn tools() -> Value {
     json!([
-        {"name": "board.create_task",
+        {"name": "board_create_task",
          "description": "Create a kanban task (Backlog). Optional depends_on: task ids that must finish first; parent_id: delegate from your task (depth is capped).",
          "inputSchema": {"type": "object", "properties": {
              "title": {"type": "string"},
              "depends_on": {"type": "array", "items": {"type": "string"}},
              "parent_id": {"type": "string"}},
              "required": ["title"]}},
-        {"name": "board.update_task",
+        {"name": "board_update_task",
          "description": "Advance a task: action = promote|start|finish|approve|rework|cancel. You may only start/finish a task assigned to your role.",
          "inputSchema": {"type": "object", "properties": {
              "task_id": {"type": "string"},
              "action": {"type": "string", "enum": ["promote","start","finish","approve","rework","cancel"]}},
              "required": ["task_id", "action"]}},
-        {"name": "board.comment",
+        {"name": "board_comment",
          "description": "Post a comment to the task thread (visible to humans and other agents).",
          "inputSchema": {"type": "object", "properties": {
              "task_id": {"type": "string"}, "text": {"type": "string"}},
              "required": ["task_id", "text"]}},
-        {"name": "board.handoff",
+        {"name": "board_handoff",
          "description": "Hand the task to another role. summary (>=10 chars) and open_questions form the handoff contract; the task returns to Ready for the new owner.",
          "inputSchema": {"type": "object", "properties": {
              "task_id": {"type": "string"}, "to_role": {"type": "string"},
              "summary": {"type": "string"}, "open_questions": {"type": "string"}},
              "required": ["task_id", "to_role", "summary"]}},
-        {"name": "board.artifact",
+        {"name": "board_artifact",
          "description": "Attach a concrete output of your work to the task: a file path, branch name, link or short text. Artifacts survive handoffs and are shown to the next owner.",
          "inputSchema": {"type": "object", "properties": {
              "task_id": {"type": "string"},
              "kind": {"type": "string", "enum": ["file","branch","link","text"]},
              "value": {"type": "string"}},
              "required": ["task_id", "value"]}},
-        {"name": "board.read_inbox",
+        {"name": "board_read_inbox",
          "description": "Read task thread entries newer than since_ms (epoch ms, default 0).",
          "inputSchema": {"type": "object", "properties": {
              "task_id": {"type": "string"}, "since_ms": {"type": "integer"}},
              "required": ["task_id"]}},
-        {"name": "board.ask_human",
+        {"name": "board_ask_human",
          "description": "Escalate: mark the task NeedsHuman (only while it is in progress) with your question in text.",
          "inputSchema": {"type": "object", "properties": {
              "task_id": {"type": "string"}, "text": {"type": "string"}},
@@ -174,7 +174,7 @@ fn call_tool(
             .to_string()
     };
     match name {
-        "board.create_task" => {
+        "board_create_task" => {
             let title = str_arg("title");
             if title.trim().is_empty() {
                 return Err("title is required".into());
@@ -192,7 +192,7 @@ fn call_tool(
             }
             Ok(format!("created {} '{}' in Backlog", t.id, t.title))
         }
-        "board.update_task" => {
+        "board_update_task" => {
             let id = str_arg("task_id");
             let action = match str_arg("action").as_str() {
                 "promote" => TaskAction::Promote,
@@ -227,7 +227,7 @@ fn call_tool(
             let t = board.transition(&id, action)?;
             Ok(format!("{} → {:?}", t.id, t.status))
         }
-        "board.comment" => {
+        "board_comment" => {
             let id = str_arg("task_id");
             let text = str_arg("text");
             if text.trim().is_empty() {
@@ -236,7 +236,7 @@ fn call_tool(
             board.comment(&id, role, "comment", &text)?;
             Ok("comment posted".into())
         }
-        "board.handoff" => {
+        "board_handoff" => {
             let t = board.handoff(
                 &str_arg("task_id"),
                 role,
@@ -246,7 +246,7 @@ fn call_tool(
             )?;
             Ok(format!("handed off to {:?}; status {:?}", t.role, t.status))
         }
-        "board.artifact" => {
+        "board_artifact" => {
             let t = board.add_artifact(
                 &str_arg("task_id"),
                 &str_arg("kind"),
@@ -259,7 +259,7 @@ fn call_tool(
                 t.artifacts.len()
             ))
         }
-        "board.read_inbox" => {
+        "board_read_inbox" => {
             let id = str_arg("task_id");
             let since = args.get("since_ms").and_then(Value::as_i64).unwrap_or(0);
             let inbox = board
@@ -274,7 +274,7 @@ fn call_tool(
                 .collect::<Vec<_>>()
                 .join("\n"))
         }
-        "board.ask_human" => {
+        "board_ask_human" => {
             let id = str_arg("task_id");
             board.comment(&id, role, "system", &str_arg("text"))?;
             board.transition(&id, TaskAction::Ask)?;
