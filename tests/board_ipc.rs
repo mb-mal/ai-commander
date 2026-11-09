@@ -86,7 +86,7 @@ fn board_mcp_uses_owner_store_over_ipc() {
         .as_str()
         .unwrap_or("");
     assert!(
-        created["result"]["isError"].is_null(),
+        created["result"]["isError"].as_bool() != Some(true),
         "create over IPC failed: {text}"
     );
     assert!(text.contains("Backlog"), "created: {text}");
@@ -102,7 +102,7 @@ fn board_mcp_uses_owner_store_over_ipc() {
         .as_str()
         .unwrap_or("");
     assert!(
-        listed["result"]["isError"].is_null(),
+        listed["result"]["isError"].as_bool() != Some(true),
         "artifact over IPC failed: {atext}"
     );
 
