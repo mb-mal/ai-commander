@@ -24,6 +24,7 @@ fn fake_cfg(exe: &str, workdir: &str) -> HarnessCfg {
         workdir: workdir.into(),
         agent: String::new(),
         auto_approve: false,
+        reuse_opencode_key: false,
         default_model: None,
     }
 }
@@ -152,6 +153,7 @@ async fn permission_scenario(tag: &str, user_reply: Option<String>, expected_log
         workdir: dir.to_string_lossy().into_owned(),
         agent: String::new(),
         auto_approve: false,
+        reuse_opencode_key: false,
         default_model: None,
     };
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BackendEvent>();
@@ -269,6 +271,7 @@ async fn abort_cancels_only_its_own_session_permission() {
         workdir: dir.to_string_lossy().into_owned(),
         agent: String::new(),
         auto_approve: false,
+        reuse_opencode_key: false,
         default_model: None,
     };
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BackendEvent>();
@@ -404,6 +407,7 @@ async fn malformed_permission_request_gets_32602() {
         workdir: dir.to_string_lossy().into_owned(),
         agent: String::new(),
         auto_approve: false,
+        reuse_opencode_key: false,
         default_model: None,
     };
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BackendEvent>();
