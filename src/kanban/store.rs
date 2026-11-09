@@ -233,7 +233,7 @@ impl EventStore for RedbStore {
         Ok(table
             .iter()?
             .next_back()
-            .map(|r| r.ok().unwrap().0.value())
+            .and_then(|r| r.ok().map(|(k, _)| k.value()))
             .unwrap_or(0))
     }
 
@@ -523,7 +523,7 @@ impl BoardStore {
             .iter()
             .find(|t| t.id == task_id)
             .cloned()
-            .unwrap();
+            .expect("task present after transition");
         self.commit(task_id, &format!("transition:{action:?}"), Some(t.clone()))?;
         Ok(t)
     }
@@ -629,7 +629,7 @@ impl BoardStore {
             .iter()
             .find(|t| t.id == child.id)
             .cloned()
-            .unwrap();
+            .expect("subtask present after add");
         self.commit(&child.id, "delegated", Some(snap))?;
         Ok(child)
     }
@@ -764,7 +764,7 @@ Open questions: {open_questions}"
             .iter()
             .find(|t| t.id == task_id)
             .cloned()
-            .unwrap();
+            .expect("task present after transition");
         if t.status == TaskStatus::InProgress {
             self.transition(task_id, TaskAction::Interrupt)?;
         }
@@ -774,7 +774,7 @@ Open questions: {open_questions}"
             .iter()
             .find(|t| t.id == task_id)
             .cloned()
-            .unwrap();
+            .expect("task present after transition");
         self.commit(task_id, "handoff", Some(t.clone()))?;
         Ok(t)
     }

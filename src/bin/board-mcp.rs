@@ -8,6 +8,8 @@
 //!        board_read_inbox, board_ask_human — all hitting the same redb
 //! event-sourced store the TUI and daemon use.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
+
 use std::io::{BufRead, Write};
 
 use ai_commander::kanban::store::BoardStore;
