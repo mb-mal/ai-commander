@@ -145,9 +145,29 @@ pub fn on_activity(board: &mut BoardStore, task_id: &str) {
 
 /// v4: Start itself failed (worktree/branch broken, task still Ready) —
 /// infrastructure is broken, escalate to a human instead of retrying the
-/// same failing Start every 30 seconds forever.
-pub fn launch_failed(board: &mut BoardStore, task_id: &str) {
+/// same failing Start every 30 seconds forever. The reason lands in the
+/// task thread so the human sees WHY (v5).
+pub fn launch_failed(board: &mut BoardStore, task_id: &str, reason: &str) {
     let _ = board.transition(task_id, TaskAction::Ask);
+    let _ = board.comment(
+        task_id,
+        "system",
+        "system",
+        &format!("start failed: {reason}"),
+    );
+}
+
+/// v5: the policy engine said ASK while no human is watching (daemon).
+/// The task goes to NeedsHuman with the question in its thread instead of
+/// hanging on the lease until the watchdog fires; the agent's request is
+/// answered with a reject so the turn ends deterministically.
+pub fn on_permission_ask(
+    board: &mut BoardStore,
+    task_id: &str,
+    question: &str,
+) -> Result<Task, String> {
+    board.comment(task_id, "agent", "ask", question)?;
+    board.transition(task_id, TaskAction::Ask)
 }
 
 /// Classify the accumulated reply and transition the task (Б8: StreamDone

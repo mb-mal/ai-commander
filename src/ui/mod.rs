@@ -1833,6 +1833,10 @@ impl App {
             }
             Err(e) => {
                 self.toast(format!("start {}: {e:#}", task.id), true);
+                // v5: escalate with the reason in the task thread, same as
+                // the daemon — not just a silent toast
+                let mut board = self.board.lock().unwrap();
+                kanban::runner::launch_failed(&mut board, &task.id, &format!("{e:#}"));
                 return;
             }
         };

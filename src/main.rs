@@ -478,6 +478,9 @@ async fn run_daemon(cfg: Config) -> Result<()> {
 
     let mut backends: std::collections::HashMap<String, std::sync::Arc<dyn backend::Backend>> =
         std::collections::HashMap::new();
+    // v5: the same policy engine the TUI uses — the daemon decides
+    // unattended permission requests (allow/deny auto, ask → NeedsHuman)
+    let policy = ai_commander::policy::Policy::load(&std::env::current_dir().unwrap_or_default());
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BackendEvent>();
     for h in cfg
         .harnesses
@@ -562,17 +565,86 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                     if let Some(id) = task_id {
                         let reply = task_replies.remove(&id).unwrap_or_default();
                         let errored = task_errors.remove(&id);
+                        // v5: only a task still InProgress is classified —
+                        // a permission ASK may already have moved it to
+                        // NeedsHuman mid-turn
                         let outcome = {
                             let mut b = board.lock().unwrap();
-                            ai_commander::kanban::runner::on_stream_done_ex(
-                                &mut b, &id, &reply, errored,
-                            )
+                            let in_progress = b
+                                .projection()
+                                .tasks
+                                .iter()
+                                .any(|t| t.id == id && t.status == TaskStatus::InProgress);
+                            if in_progress {
+                                ai_commander::kanban::runner::on_stream_done_ex(
+                                    &mut b, &id, &reply, errored,
+                                )
+                            } else {
+                                Ok(b.projection()
+                                    .tasks
+                                    .iter()
+                                    .find(|t| t.id == id)
+                                    .cloned()
+                                    .unwrap())
+                            }
                         };
                         match outcome {
                             Ok(t) => println!("[done] {} → {:?}", t.id, t.status),
                             Err(e) => println!("[warn] {id} transition: {e}"),
                         }
                         busy.remove(&id);
+                    }
+                }
+                backend::BackendEvent::PermissionRequest {
+                    harness,
+                    session_id,
+                    request_id,
+                    title,
+                    action,
+                    resource,
+                } => {
+                    // v5: the daemon runs unattended — the policy engine
+                    // decides. allow/deny are answered at once; ASK moves
+                    // the task to NeedsHuman with the question recorded,
+                    // instead of hanging until the lease expires.
+                    let Some(b) = backends.get(harness).cloned() else {
+                        continue;
+                    };
+                    match policy.check(&action, &resource) {
+                        ai_commander::policy::Effect::Allow => {
+                            println!("[policy] auto-allow {action}: {resource}");
+                            let _ = b.permission_reply(&session_id, &request_id, "once").await;
+                        }
+                        ai_commander::policy::Effect::Deny => {
+                            println!("[policy] auto-deny {action}: {resource}");
+                            let _ = b.permission_reply(&session_id, &request_id, "reject").await;
+                        }
+                        ai_commander::policy::Effect::Ask => {
+                            let task_id = {
+                                let bb = board.lock().unwrap();
+                                bb.find_by_session(harness, &session_id).map(|t| t.id)
+                            };
+                            if let Some(id) = task_id {
+                                let question = format!(
+                                    "agent asks permission: {title} ({action}: {resource})"
+                                );
+                                let outcome = {
+                                    let mut bb = board.lock().unwrap();
+                                    ai_commander::kanban::runner::on_permission_ask(
+                                        &mut bb, &id, &question,
+                                    )
+                                };
+                                match outcome {
+                                    Ok(t) => {
+                                        println!("[policy] ask → {} NeedsHuman: {question}", t.id)
+                                    }
+                                    Err(e) => println!("[warn] {id} ask transition: {e}"),
+                                }
+                                busy.remove(&id);
+                            }
+                            // the agent's turn must not hang on the answer
+                            let _ = b.permission_reply(&session_id, &request_id, "reject").await;
+                        }
                     }
                 }
                 backend::BackendEvent::StreamError {
@@ -668,7 +740,11 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                     };
                     let mut b = board.lock().unwrap();
                     if still_ready {
-                        ai_commander::kanban::runner::launch_failed(&mut b, &task.id);
+                        ai_commander::kanban::runner::launch_failed(
+                            &mut b,
+                            &task.id,
+                            &format!("{e:#}"),
+                        );
                         println!("[escalate] {} → NeedsHuman (launch failure)", task.id);
                     } else {
                         let _ = ai_commander::kanban::runner::on_stream_done(&mut b, &task.id, "");
