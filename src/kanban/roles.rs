@@ -179,7 +179,7 @@ impl RoleSet {
 /// avoids re-reading and re-parsing the .md/.yaml files per task launch.
 #[derive(Debug, Default)]
 pub struct RoleCache {
-    inner: std::sync::Mutex<Option<(Fingerprint, RoleSet)>>,
+    inner: parking_lot::Mutex<Option<(Fingerprint, RoleSet)>>,
     /// full reloads performed (for tests/diagnostics)
     pub loads: std::sync::atomic::AtomicUsize,
 }
@@ -221,7 +221,7 @@ impl RoleCache {
     /// Return the cached RoleSet, reloading only when the fingerprint changed.
     pub fn get(&self, cwd: &Path) -> RoleSet {
         let fp = fingerprint(cwd);
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock();
         if let Some((prev, rs)) = g.as_ref() {
             if *prev == fp {
                 return rs.clone();

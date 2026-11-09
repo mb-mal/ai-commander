@@ -15,11 +15,12 @@
 //! hermes.rs: one shared `Arc<Mutex<…>>` source of truth, atomic writes,
 //! UI events carry the id the UI already knows.
 
+use parking_lot::Mutex;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, anyhow, bail};
@@ -270,7 +271,6 @@ impl Backend for DshBackend {
         Ok(self
             .store
             .lock()
-            .unwrap()
             .sessions
             .iter()
             .map(|s| SessionInfo {
@@ -293,14 +293,14 @@ impl Backend for DshBackend {
             title: s.title.clone(),
             updated_ms: s.updated_ms,
         };
-        let mut g = self.store.lock().unwrap();
+        let mut g = self.store.lock();
         g.sessions.push(s);
         persist_atomic(&self.store_path, &g);
         Ok(info)
     }
 
     async fn rename_session(&self, native_id: &str, title: &str) -> Result<()> {
-        let mut g = self.store.lock().unwrap();
+        let mut g = self.store.lock();
         if let Some(s) = g.sessions.iter_mut().find(|s| s.native_id == native_id) {
             s.title = title.to_string();
         }
@@ -309,14 +309,14 @@ impl Backend for DshBackend {
     }
 
     async fn delete_session(&self, native_id: &str) -> Result<()> {
-        let mut g = self.store.lock().unwrap();
+        let mut g = self.store.lock();
         g.sessions.retain(|s| s.native_id != native_id);
         persist_atomic(&self.store_path, &g);
         Ok(())
     }
 
     async fn load_history(&self, native_id: &str) -> Result<Vec<ChatMsg>> {
-        let g = self.store.lock().unwrap();
+        let g = self.store.lock();
         let Some(s) = g.sessions.iter().find(|s| s.native_id == native_id) else {
             return Ok(Vec::new());
         };
@@ -351,7 +351,6 @@ impl Backend for DshBackend {
         let history: Vec<StoredMsg> = self
             .store
             .lock()
-            .unwrap()
             .sessions
             .iter()
             .find(|s| s.native_id == native_id)
@@ -381,7 +380,7 @@ impl Backend for DshBackend {
         }
         drop(stdin);
         let stdout = child.stdout.take().expect("piped stdout");
-        *self.child.lock().unwrap() = Some(child);
+        *self.child.lock() = Some(child);
 
         let events = self.events.clone();
         let harness = self.cfg.id.clone();
@@ -471,7 +470,7 @@ impl Backend for DshBackend {
             // child reaping happens on the next send/shutdown via the slot
             let real_id = session_id.clone().unwrap_or_default();
             {
-                let mut g = store.lock().unwrap();
+                let mut g = store.lock();
                 match g.sessions.iter_mut().find(|s| s.native_id == sent_id) {
                     Some(s) => {
                         if !real_id.is_empty() {
@@ -535,7 +534,7 @@ impl Backend for DshBackend {
     }
 
     async fn abort(&self, _native_id: &str) -> Result<()> {
-        if let Some(mut ch) = self.child.lock().unwrap().take() {
+        if let Some(mut ch) = self.child.lock().take() {
             kill_tree(&mut ch);
         }
         Ok(())
@@ -556,7 +555,7 @@ impl Backend for DshBackend {
 
     fn shutdown(&self) {
         self.connected.store(false, Ordering::Relaxed);
-        if let Some(mut ch) = self.child.lock().unwrap().take() {
+        if let Some(mut ch) = self.child.lock().take() {
             kill_tree(&mut ch);
         }
     }

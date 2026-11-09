@@ -15,11 +15,12 @@
 //! and `SessionCreated` announces the real id for rebinding — the exact
 //! scenario that previously lost history and wedged the UI forever.
 
+use parking_lot::Mutex;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, anyhow, bail};
@@ -185,7 +186,6 @@ impl Backend for HermesBackend {
         Ok(self
             .store
             .lock()
-            .unwrap()
             .sessions
             .iter()
             .map(|s| SessionInfo {
@@ -208,14 +208,14 @@ impl Backend for HermesBackend {
             title: s.title.clone(),
             updated_ms: s.updated_ms,
         };
-        let mut g = self.store.lock().unwrap();
+        let mut g = self.store.lock();
         g.sessions.push(s);
         persist_atomic(&self.store_path, &g);
         Ok(info)
     }
 
     async fn rename_session(&self, native_id: &str, title: &str) -> Result<()> {
-        let mut g = self.store.lock().unwrap();
+        let mut g = self.store.lock();
         if let Some(s) = g.sessions.iter_mut().find(|s| s.native_id == native_id) {
             s.title = title.to_string();
         }
@@ -224,14 +224,14 @@ impl Backend for HermesBackend {
     }
 
     async fn delete_session(&self, native_id: &str) -> Result<()> {
-        let mut g = self.store.lock().unwrap();
+        let mut g = self.store.lock();
         g.sessions.retain(|s| s.native_id != native_id);
         persist_atomic(&self.store_path, &g);
         Ok(())
     }
 
     async fn load_history(&self, native_id: &str) -> Result<Vec<ChatMsg>> {
-        let g = self.store.lock().unwrap();
+        let g = self.store.lock();
         let Some(s) = g.sessions.iter().find(|s| s.native_id == native_id) else {
             return Ok(Vec::new());
         };
@@ -318,7 +318,7 @@ impl Backend for HermesBackend {
         drop(stdin);
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take();
-        *self.child.lock().unwrap() = Some(child);
+        *self.child.lock() = Some(child);
 
         // drain stderr so the pipe never fills; keep a tail for error reports
         let err_tail = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -327,7 +327,7 @@ impl Backend for HermesBackend {
             std::thread::spawn(move || {
                 let r = std::io::BufReader::new(se);
                 for line in r.lines().map_while(Result::ok) {
-                    let mut t = err_tail.lock().unwrap();
+                    let mut t = err_tail.lock();
                     t.push(line);
                     let len = t.len();
                     t.drain(..len.saturating_sub(5));
@@ -384,7 +384,7 @@ impl Backend for HermesBackend {
                         if code != 0 {
                             exit_error = Some(format!(
                                 "hermes exited with code {code}: {}",
-                                err_tail.lock().unwrap().join(" | ")
+                                err_tail.lock().join(" | ")
                             ));
                         }
                     }
@@ -397,7 +397,7 @@ impl Backend for HermesBackend {
             let assistant_text = result_text.clone().unwrap_or(deltas.clone());
             let real_id = result_sid.clone().unwrap_or_default();
             {
-                let mut g = store.lock().unwrap();
+                let mut g = store.lock();
                 match g.sessions.iter_mut().find(|s| s.native_id == sent_id) {
                     Some(s) => {
                         if !real_id.is_empty() {
@@ -450,7 +450,7 @@ impl Backend for HermesBackend {
                     error: err,
                 });
             } else if result_text.is_none() && deltas.is_empty() {
-                let tail = err_tail.lock().unwrap().join(" | ");
+                let tail = err_tail.lock().join(" | ");
                 let _ = events.send(BackendEvent::StreamError {
                     harness: harness.clone(),
                     native_id: sent_id.clone(),
@@ -478,7 +478,7 @@ impl Backend for HermesBackend {
 
     /// Esc really terminates the running hermes turn (whole process tree).
     async fn abort(&self, _native_id: &str) -> Result<()> {
-        if let Some(mut ch) = self.child.lock().unwrap().take() {
+        if let Some(mut ch) = self.child.lock().take() {
             kill_tree(&mut ch);
         }
         Ok(())
@@ -544,7 +544,7 @@ impl Backend for HermesBackend {
 
     fn shutdown(&self) {
         self.connected.store(false, Ordering::Relaxed);
-        if let Some(mut ch) = self.child.lock().unwrap().take() {
+        if let Some(mut ch) = self.child.lock().take() {
             kill_tree(&mut ch);
         }
     }
