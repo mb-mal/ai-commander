@@ -7,3 +7,6 @@
 # runtime artifacts
 *.log
 .aic-worktrees/
+
+# accidental local config dir (Config::save fallback with no APPDATA/XDG)
+/ai-commander/
