@@ -180,19 +180,35 @@ async fn permission_scenario(tag: &str, user_reply: Option<String>, expected_log
                 BackendEvent::PermissionRequest {
                     session_id,
                     request_id,
+                    title,
+                    action,
+                    resource,
                     ..
-                } => match user_reply.clone() {
-                    // answer as the user would (errors surface the panic)
-                    Some(reply) => {
-                        b.permission_reply(&session_id, &request_id, &reply)
-                            .await
-                            .expect("permission_reply failed");
+                } => {
+                    // v5 issues #1: the event must describe WHAT the agent
+                    // wants — the tool_call title and a real action
+                    assert!(
+                        title.contains("rm -rf probe"),
+                        "[{tag}] title must carry the tool call title: {title}"
+                    );
+                    assert_eq!(action, "execute", "kind from the tool call");
+                    assert!(
+                        resource.is_empty() || resource.contains("rm"),
+                        "resource from raw input/locations: {resource}"
+                    );
+                    match user_reply.clone() {
+                        // answer as the user would (errors surface the panic)
+                        Some(reply) => {
+                            b.permission_reply(&session_id, &request_id, &reply)
+                                .await
+                                .expect("permission_reply failed");
+                        }
+                        // cancel-during-request: abort the turn instead
+                        None => {
+                            b.abort(&session_id).await.expect("abort failed");
+                        }
                     }
-                    // cancel-during-request: abort the turn instead
-                    None => {
-                        b.abort(&session_id).await.expect("abort failed");
-                    }
-                },
+                }
                 BackendEvent::StreamDone { .. } => done = true,
                 BackendEvent::StreamError { error, .. } => {
                     panic!("[{tag}] unexpected StreamError: {error}")

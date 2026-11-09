@@ -5,6 +5,12 @@
 //! strictest effect wins — deny > ask > allow; no match → ask. Patterns use
 //! `*` wildcards matched against the action's primary resource (command,
 //! path); an empty pattern matches everything.
+//!
+//! v5 trust model: a checked-out repository is NOT trusted by default, so
+//! its policy may only TIGHTEN (deny/ask). Project `allow` rules apply only
+//! when the project is listed in the user's `trusted_projects`, and a
+//! project `action: "*"` with `allow` is rejected outright — otherwise a
+//! cloned repo could enable auto-approval of everything an agent asks.
 
 use std::path::{Path, PathBuf};
 
@@ -19,6 +25,7 @@ pub enum Effect {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Rule {
     /// action name: "bash", "edit", "webfetch", … or "*"
     pub action: String,
@@ -29,6 +36,7 @@ pub struct Rule {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PolicyFile {
     #[serde(default)]
     pub rules: Vec<Rule>,
@@ -38,6 +46,9 @@ pub struct PolicyFile {
 pub struct Policy {
     pub rules: Vec<Rule>,
     pub sources: Vec<PathBuf>,
+    /// non-fatal problems (ignored project policy, dropped rules) —
+    /// surfaced by the daemon/TUI at startup
+    pub warnings: Vec<String>,
 }
 
 fn strictest(a: Effect, b: Effect) -> Effect {
@@ -88,6 +99,11 @@ impl Policy {
             let action_ok = r.action == "*" || r.action.eq_ignore_ascii_case(action);
             let resource_ok = r.pattern.is_empty() || glob_match(&r.pattern, resource);
             if action_ok && resource_ok {
+                // v5: an unidentified action (`other`) is never auto-allowed
+                // — allow rules skip it, ask/deny still apply
+                if action == "other" && r.effect == Effect::Allow {
+                    continue;
+                }
                 decision = Some(match decision {
                     Some(d) => strictest(d, r.effect),
                     None => r.effect,
@@ -122,32 +138,100 @@ impl Policy {
         rules
     }
 
-    pub fn load(cwd: &Path) -> Policy {
+    /// Load user + project policies. A broken USER policy is a hard error
+    /// (the caller must refuse to run — silently dropping the user's own
+    /// `deny` rules is a security hole); a broken PROJECT policy is ignored
+    /// with a warning (a cloned repo must not brick the tool).
+    pub fn load_checked(cwd: &Path) -> Result<Policy, String> {
+        let mut warnings = Vec::new();
         let mut user_rules: Vec<Rule> = Vec::new();
         let mut proj_rules: Vec<Rule> = Vec::new();
         let mut sources = Vec::new();
-        let read = |path: PathBuf| -> Option<Vec<Rule>> {
-            let raw = std::fs::read_to_string(&path).ok()?;
-            let f = serde_yaml::from_str::<PolicyFile>(&raw).ok()?;
-            Some(f.rules)
-        };
+
         if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
             let p = PathBuf::from(&home)
                 .join(".ai-commander")
                 .join("policy.yaml");
-            if let Some(rules) = read(p.clone()) {
-                user_rules = rules;
-                sources.push(p);
+            if let Ok(raw) = std::fs::read_to_string(&p) {
+                match serde_yaml::from_str::<PolicyFile>(&raw) {
+                    Ok(f) => {
+                        user_rules = f.rules;
+                        sources.push(p);
+                    }
+                    Err(e) => return Err(format!("{}: {e}", p.display())),
+                }
             }
         }
         let pp = cwd.join(".ai-commander").join("policy.yaml");
-        if let Some(rules) = read(pp.clone()) {
-            proj_rules = rules;
-            sources.push(pp);
+        if let Ok(raw) = std::fs::read_to_string(&pp) {
+            match serde_yaml::from_str::<PolicyFile>(&raw) {
+                Ok(f) => {
+                    proj_rules = f.rules;
+                    sources.push(pp);
+                }
+                Err(e) => warnings.push(format!(
+                    "ignoring invalid project policy {}: {e}",
+                    pp.display()
+                )),
+            }
         }
-        let rules = Self::merge_tighten(user_rules, proj_rules);
-        Policy { rules, sources }
+
+        // v5 trust model for project allow rules
+        let trusted = trusted_projects()
+            .iter()
+            .any(|t| Path::new(t) == cwd || same_path(t, cwd));
+        let mut kept_project = Vec::new();
+        for r in proj_rules {
+            if r.effect == Effect::Allow && r.action == "*" {
+                warnings.push(
+                    "project policy: `action: \"*\"` with allow is never applied \
+                     (add explicit action rules)"
+                        .into(),
+                );
+                continue;
+            }
+            if r.effect == Effect::Allow && !trusted {
+                warnings.push(format!(
+                    "project policy: allow rules of {} are ignored — the project is not in \
+                     trusted_projects (project rules may only deny/ask)",
+                    cwd.display()
+                ));
+                continue;
+            }
+            kept_project.push(r);
+        }
+
+        let rules = Self::merge_tighten(user_rules, kept_project);
+        Ok(Policy {
+            rules,
+            sources,
+            warnings,
+        })
     }
+
+    /// Legacy lenient load for UI paths: a broken user policy degrades to
+    /// "ask everything" with a logged warning instead of blocking.
+    pub fn load(cwd: &Path) -> Policy {
+        match Self::load_checked(cwd) {
+            Ok(p) => p,
+            Err(e) => {
+                crate::log_warn!("policy", "user policy invalid, defaulting to ask: {e}");
+                Policy::default()
+            }
+        }
+    }
+}
+
+fn same_path(a: &str, b: &Path) -> bool {
+    let pa = std::fs::canonicalize(a).unwrap_or_else(|_| PathBuf::from(a));
+    let pb = std::fs::canonicalize(b).unwrap_or_else(|_| b.to_path_buf());
+    pa == pb
+}
+
+/// Projects the user explicitly trusts (their `allow` rules apply).
+/// Listed in the user config as `trusted_projects = ["/abs/path"]`.
+fn trusted_projects() -> Vec<String> {
+    crate::config::Config::load_or_default().trusted_projects
 }
 
 #[cfg(test)]
@@ -165,6 +249,7 @@ mod tests {
                 })
                 .collect(),
             sources: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -195,6 +280,17 @@ mod tests {
         assert_eq!(p.check("edit", "docs/lib.rs"), Effect::Ask);
     }
 
+    /// v5: an unidentified action (`other`) is never auto-allowed, even by
+    /// `allow *` — only ask/deny apply to it.
+    #[test]
+    fn other_action_is_never_auto_allowed() {
+        let p = policy(&[("*", "", Effect::Allow)]);
+        assert_eq!(p.check("edit", "src/lib.rs"), Effect::Allow);
+        assert_eq!(p.check("other", "mystery"), Effect::Ask);
+        let p2 = policy(&[("other", "", Effect::Allow), ("*", "", Effect::Deny)]);
+        assert_eq!(p2.check("other", "x"), Effect::Deny);
+    }
+
     #[test]
     fn project_policies_only_tighten() {
         let mk = |a: &str, p: &str, e: Effect| Rule {
@@ -210,6 +306,7 @@ mod tests {
         let p = Policy {
             rules,
             sources: Vec::new(),
+            warnings: Vec::new(),
         };
         assert_eq!(p.check("bash", "git push origin"), Effect::Deny);
         // project deny on top of user ask — kept
@@ -220,18 +317,9 @@ mod tests {
         let p = Policy {
             rules,
             sources: Vec::new(),
+            warnings: Vec::new(),
         };
         assert_eq!(p.check("edit", "prod.env"), Effect::Deny);
-        // unrelated project rule — kept
-        let rules = Policy::merge_tighten(
-            vec![mk("bash", "", Effect::Ask)],
-            vec![mk("webfetch", "", Effect::Allow)],
-        );
-        let p = Policy {
-            rules,
-            sources: Vec::new(),
-        };
-        assert_eq!(p.check("webfetch", "x"), Effect::Allow);
     }
 
     #[test]

@@ -479,8 +479,19 @@ async fn run_daemon(cfg: Config) -> Result<()> {
     let mut backends: std::collections::HashMap<String, std::sync::Arc<dyn backend::Backend>> =
         std::collections::HashMap::new();
     // v5: the same policy engine the TUI uses — the daemon decides
-    // unattended permission requests (allow/deny auto, ask → NeedsHuman)
-    let policy = ai_commander::policy::Policy::load(&std::env::current_dir().unwrap_or_default());
+    // unattended permission requests (allow/deny auto, ask → NeedsHuman).
+    // A broken USER policy refuses to start: silently dropping the user's
+    // own deny rules would be a security hole (v5 issues #1).
+    let policy = match ai_commander::policy::Policy::load_checked(
+        &std::env::current_dir().unwrap_or_default(),
+    ) {
+        Ok(p) => p,
+        Err(e) => anyhow::bail!("invalid user policy.yaml — fix it to run the daemon: {e}"),
+    };
+    for w in &policy.warnings {
+        println!("[policy] {w}");
+        ai_commander::log_warn!("daemon", "policy: {w}");
+    }
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BackendEvent>();
     for h in cfg
         .harnesses
