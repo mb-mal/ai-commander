@@ -79,6 +79,9 @@ pub struct Config {
     pub lang: Lang,
     pub profile_name: String,
     pub harnesses: Vec<HarnessCfg>,
+    /// v5 policy trust model: absolute paths of projects whose `allow`
+    /// rules are honored. Untrusted project policies may only deny/ask.
+    pub trusted_projects: Vec<String>,
 }
 
 impl Default for Config {
@@ -91,6 +94,7 @@ impl Default for Config {
                 HarnessCfg::reserved_stub("hermes", "Hermes Agent", "hermes"),
                 HarnessCfg::reserved_stub("dsh", "DeepSeek Harness", "deepseek-harness"),
             ],
+            trusted_projects: Vec::new(),
         }
     }
 }
@@ -102,6 +106,12 @@ fn whoami() -> String {
 }
 
 pub fn config_dir() -> PathBuf {
+    // explicit override first (tests, portable installs, multi-instance)
+    if let Some(p) = std::env::var_os("AI_COMMANDER_CONFIG_DIR") {
+        let base = PathBuf::from(p);
+        let _ = fs::create_dir_all(&base);
+        return base;
+    }
     let base = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("ai-commander");
@@ -114,6 +124,11 @@ pub fn config_path() -> PathBuf {
 }
 
 impl Config {
+    /// Best-effort load for places that must not fail (policy trust list).
+    pub fn load_or_default() -> Config {
+        Config::load().unwrap_or_default()
+    }
+
     pub fn load() -> Result<Config> {
         let path = config_path();
         if !path.exists() {
@@ -189,6 +204,9 @@ struct HarnessToml {
 struct ConfigToml {
     lang: String,
     profile_name: String,
+    #[serde(default)]
+    trusted_projects: Vec<String>,
+    #[serde(default)]
     harness: Vec<HarnessToml>,
 }
 
@@ -197,6 +215,7 @@ impl serde::Serialize for Config {
         let cfg = ConfigToml {
             lang: self.lang.code().into(),
             profile_name: self.profile_name.clone(),
+            trusted_projects: self.trusted_projects.clone(),
             harness: self
                 .harnesses
                 .iter()
@@ -227,6 +246,7 @@ impl<'de> serde::Deserialize<'de> for Config {
         Ok(Config {
             lang: Lang::parse(&raw.lang),
             profile_name: raw.profile_name,
+            trusted_projects: raw.trusted_projects,
             harnesses: raw
                 .harness
                 .into_iter()
