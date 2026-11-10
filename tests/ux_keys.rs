@@ -58,18 +58,6 @@ async fn end_goes_to_line_end_alt_enter_newlines() {
         a.editor.text()
     );
 
-    // Shift+Enter too (some terminals swallow Alt+Enter)
-    let newlines = a.editor.text().matches('\n').count();
-    a.on_key(key(
-        crossterm::event::KeyCode::Enter,
-        crossterm::event::KeyModifiers::SHIFT,
-    ));
-    assert_eq!(
-        a.editor.text().matches('\n').count(),
-        newlines + 1,
-        "Shift+Enter newlines"
-    );
-
     // Ctrl+J also newlines (the classic terminal-safe binding)
     let newlines = a.editor.text().matches('\n').count();
     a.on_key(key(
@@ -80,6 +68,21 @@ async fn end_goes_to_line_end_alt_enter_newlines() {
         a.editor.text().matches('\n').count(),
         newlines + 1,
         "Ctrl+J newlines"
+    );
+
+    // Shift+Enter is NOT a command — it falls through to send_current()
+    // (Shift is for capital letters only). The editor clears on send.
+    assert!(
+        !a.editor.text().is_empty(),
+        "editor has text before the send"
+    );
+    a.on_key(key(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::SHIFT,
+    ));
+    assert!(
+        a.editor.text().is_empty(),
+        "Shift+Enter sends (no newline inserted — Shift is caps, not a command)"
     );
 }
 
@@ -156,16 +159,16 @@ async fn search_finds_lines_and_copies_selection() {
     assert_eq!(sr.matches.len(), 1, "one matching line");
     assert_eq!(sr.match_idx, 0);
 
-    // selection: Shift+Down twice selects 2 lines, Ctrl+C copies
+    // selection: Ctrl+Down selects lines, Ctrl+C copies
     a.modal = None;
     a.on_key(key(
         crossterm::event::KeyCode::Down,
-        crossterm::event::KeyModifiers::SHIFT,
+        crossterm::event::KeyModifiers::CONTROL,
     ));
     assert!(a.sel_anchor.is_some(), "selection started");
     a.on_key(key(
         crossterm::event::KeyCode::Down,
-        crossterm::event::KeyModifiers::SHIFT,
+        crossterm::event::KeyModifiers::CONTROL,
     ));
 
     // typing clears the selection
