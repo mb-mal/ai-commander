@@ -1674,15 +1674,9 @@ impl App {
 
         match self.focus {
             Focus::Composer => match (k.code, ctrl, alt) {
-                // newline: Alt+Enter, Shift+Enter, Ctrl+J (some terminals
-                // swallow Alt+Enter — v6 feedback)
-                (KeyCode::Enter, false, true)
-                | (KeyCode::Enter, true, false)
-                | (KeyCode::Char('j' | 'J'), true, false) => self.editor.newline(),
-                // Shift+Enter: some terminals swallow Alt+Enter — the
-                // modifiers check above only sees ctrl/alt, SHIFT is
-                // handled by this guard on the plain Enter arm
-                (KeyCode::Enter, false, false) if k.modifiers.contains(KeyModifiers::SHIFT) => {
+                // newline: Alt+Enter or Ctrl+J — Shift is for CAPS,
+                // never a modifier for commands (user rule)
+                (KeyCode::Enter, false, true) | (KeyCode::Char('j' | 'J'), true, false) => {
                     self.editor.newline()
                 }
                 (KeyCode::Enter, false, false) => self.send_current(),
@@ -1736,18 +1730,10 @@ impl App {
                         self.copy_selection();
                     }
                 }
-                // UX: Shift+Up/Down select chat lines; Ctrl+C copies them
-                (KeyCode::Up, _, true) | (KeyCode::Up, false, false)
-                    if k.modifiers.contains(KeyModifiers::SHIFT) =>
-                {
-                    self.sel_move(-1)
-                }
-                (KeyCode::Down, _, true) | (KeyCode::Down, false, false)
-                    if k.modifiers.contains(KeyModifiers::SHIFT) =>
-                {
-                    self.sel_move(1)
-                }
-                (code, false, _) if !k.modifiers.contains(KeyModifiers::SHIFT) => {
+                // UX: Ctrl+Up/Down select chat output lines; Ctrl+C copies
+                (KeyCode::Up, true, false) => self.sel_move(-1),
+                (KeyCode::Down, true, false) => self.sel_move(1),
+                (code, false, _) => {
                     // any plain typing clears the selection
                     self.editor_key(code)
                 }
