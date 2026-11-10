@@ -54,12 +54,33 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     draw_header(app, f, header);
 
     let cols = if app.show_sidebar {
-        Layout::horizontal([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(20)]).split(body)
+        Layout::horizontal([Constraint::Length(app.sidebar_width), Constraint::Min(20)]).split(body)
     } else {
         Layout::horizontal([Constraint::Length(0), Constraint::Min(20)]).split(body)
     };
     if app.show_sidebar {
         draw_sidebar(app, f, cols[0]);
+        // UX: the 1-column drag handle between sidebar and chat
+        if cols[0].right() < cols[1].x {
+            let handle = Rect {
+                x: cols[0].right(),
+                y: cols[0].y,
+                width: 1,
+                height: cols[0].height,
+            };
+            for y in handle.y..handle.y + handle.height {
+                let c = &mut f.buffer_mut()[(handle.x, y)];
+                c.set_symbol("│")
+                    .set_style(Style::new().fg(th.border_dim).bg(th.bg));
+            }
+            app.hit.targets.push((
+                handle,
+                super::HitTarget::SidebarResize {
+                    start_width: app.sidebar_width,
+                    start_x: cols[0].right(),
+                },
+            ));
+        }
     }
 
     let chat_rows = Layout::vertical([
@@ -480,6 +501,13 @@ fn attach_label(atts: &[AttachmentMeta]) -> String {
     names.join(", ")
 }
 
+/// Search/copy view of the chat: the same lines the chat renders at its
+/// CURRENT width (so indexes match what is on screen).
+pub fn build_chat_lines_stable(app: &mut App) -> Vec<Line<'static>> {
+    let w = app.hit.chat_rect.width.saturating_sub(3).max(20) as usize;
+    build_chat_lines(app, w)
+}
+
 pub fn build_chat_lines(app: &mut App, width: usize) -> Vec<Line<'static>> {
     let th = &THEME;
     let lang = app.lang();
@@ -599,10 +627,26 @@ pub fn build_chat_lines(app: &mut App, width: usize) -> Vec<Line<'static>> {
                         }
                         PartKind::Tool => {
                             any = true;
-                            out.push(Line::from(Span::styled(
-                                format!(" {}", part.text),
-                                th.tool_style(),
-                            )));
+                            // UX: tool lines carry their size — the user can
+                            // see how much context a tool call eats
+                            let tok = (part.text.len() as u64) / 4;
+                            let meta = if tok >= 1000 {
+                                format!(" [{:.1}k tok]", tok as f64 / 1000.0)
+                            } else if tok > 0 {
+                                format!(" [{tok} tok]")
+                            } else {
+                                String::new()
+                            };
+                            let lines_n = part.text.lines().count().max(1);
+                            let meta = if lines_n > 1 {
+                                format!("{meta} [{lines_n} ln]")
+                            } else {
+                                meta
+                            };
+                            out.push(Line::from(vec![
+                                Span::styled(format!(" {}", part.text), th.tool_style()),
+                                Span::styled(meta, th.dim_style()),
+                            ]));
                         }
                     }
                 }
