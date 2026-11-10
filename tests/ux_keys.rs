@@ -159,17 +159,19 @@ async fn search_finds_lines_and_copies_selection() {
     assert_eq!(sr.matches.len(), 1, "one matching line");
     assert_eq!(sr.match_idx, 0);
 
-    // selection: Ctrl+Down selects lines, Ctrl+C copies
+    // selection: Ctrl+Down AND Shift+Down both select (arrows don't type)
     a.modal = None;
     a.on_key(key(
         crossterm::event::KeyCode::Down,
         crossterm::event::KeyModifiers::CONTROL,
     ));
-    assert!(a.sel_anchor.is_some(), "selection started");
+    assert!(a.sel_anchor.is_some(), "Ctrl+Down starts selection");
+    a.sel_anchor = None; // reset to test Shift+Down independently
     a.on_key(key(
         crossterm::event::KeyCode::Down,
-        crossterm::event::KeyModifiers::CONTROL,
+        crossterm::event::KeyModifiers::SHIFT,
     ));
+    assert!(a.sel_anchor.is_some(), "Shift+Down also starts selection");
 
     // typing clears the selection
     a.on_key(key(

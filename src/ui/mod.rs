@@ -1730,9 +1730,17 @@ impl App {
                         self.copy_selection();
                     }
                 }
-                // UX: Ctrl+Up/Down select chat output lines; Ctrl+C copies
+                // UX: Ctrl+Up/Down AND Shift+Up/Down select chat output
+                // lines; Ctrl+C copies. Shift+arrows don't type text, so
+                // they are safe command modifiers (unlike Shift+letters).
                 (KeyCode::Up, true, false) => self.sel_move(-1),
                 (KeyCode::Down, true, false) => self.sel_move(1),
+                (KeyCode::Up, false, false) if k.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.sel_move(-1)
+                }
+                (KeyCode::Down, false, false) if k.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.sel_move(1)
+                }
                 (code, false, _) => {
                     // any plain typing clears the selection
                     self.editor_key(code)
