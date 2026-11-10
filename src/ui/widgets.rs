@@ -85,9 +85,8 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     if app.modal.is_none() {
         if let Some(an) = app.defrag.as_ref() {
             if app.compaction_view == crate::ui::defrag::CompactionView::Defrag {
-                crate::ui::defrag::render_dialog(
-                    f.buffer_mut(),
-                    size,
+                crate::ui::defrag::draw_overlay(
+                    f,
                     &an.frame,
                     crate::ui::defrag::ascii_mode(),
                     &crate::ui::defrag::DefragPalette::cga(crate::ui::defrag::mono_mode()),
@@ -924,6 +923,57 @@ fn fmt_tokens(n: u64) -> String {
     } else {
         n.to_string()
     }
+}
+
+// ---------------- shared dialog component ----------------
+// v6: THE one opaque dialog frame for every window in the app (modals,
+// the DEFRAG overlay, …) — shadow, Clear (opaque background), double
+// border, themed title. Caller-owned content goes into the returned inner.
+
+/// Center a w×h rect inside `size`.
+pub(crate) fn centered(size: Rect, w: u16, h: u16) -> Rect {
+    let w = w.min(size.width);
+    let h = h.min(size.height);
+    Rect {
+        x: size.x + (size.width.saturating_sub(w)) / 2,
+        y: size.y + (size.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    }
+}
+
+/// Shadowed, OPAQUE, double-bordered dialog frame; returns the inner rect.
+pub(crate) fn dialog_frame(f: &mut Frame, area: Rect, title: &str) -> Rect {
+    use ratatui::symbols::border;
+    use ratatui::widgets::{Block, Clear};
+    let th = &THEME;
+    // shadow
+    if area.right() < f.area().right() || area.bottom() < f.area().bottom() {
+        let shadow = Rect {
+            x: area.x + 2,
+            y: area.y + 1,
+            width: area.width,
+            height: area.height,
+        };
+        let shadow_clipped = shadow.intersection(f.area());
+        f.render_widget(
+            Block::new().style(Style::new().bg(th.shadow)),
+            shadow_clipped,
+        );
+    }
+    // OPAQUE background — this is what makes it a real window
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .border_set(border::DOUBLE)
+        .border_style(th.dlg_border_style())
+        .title(Span::styled(
+            format!(" {title} "),
+            th.dlg_bold(th.dlg_accent),
+        ))
+        .style(Style::new().bg(th.dlg_bg));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    inner
 }
 
 #[cfg(test)]

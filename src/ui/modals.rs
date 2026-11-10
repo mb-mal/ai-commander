@@ -5,9 +5,8 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::symbols::border;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use super::theme::{THEME as TH, wrap_str};
 use super::{App, FilePicker, HitTarget, Modal};
@@ -36,44 +35,12 @@ pub fn draw_modal(app: &mut App, f: &mut Frame, size: Rect) {
 }
 
 fn centered(size: Rect, w: u16, h: u16) -> Rect {
-    let w = w.min(size.width);
-    let h = h.min(size.height);
-    Rect {
-        x: size.x + (size.width.saturating_sub(w)) / 2,
-        y: size.y + (size.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
-    }
+    super::widgets::centered(size, w, h)
 }
 
-/// Draw a shadowed area then the double-bordered dialog frame.
-/// Registers the modal rect as the wheel zone.
+/// Draw the shared dialog frame and register the modal rect (wheel zone).
 fn dialog_frame(app: &mut App, f: &mut Frame, area: Rect, title: &str) -> Rect {
-    // shadow
-    if area.right() < f.area().right() || area.bottom() < f.area().bottom() {
-        let shadow = Rect {
-            x: area.x + 2,
-            y: area.y + 1,
-            width: area.width,
-            height: area.height,
-        };
-        let shadow_clipped = shadow.intersection(f.area());
-        f.render_widget(
-            Block::new().style(Style::new().bg(TH.shadow)),
-            shadow_clipped,
-        );
-    }
-    f.render_widget(Clear, area);
-    let block = Block::default()
-        .border_set(border::DOUBLE)
-        .border_style(TH.dlg_border_style())
-        .title(Span::styled(
-            format!(" {title} "),
-            TH.dlg_bold(TH.dlg_accent),
-        ))
-        .style(Style::new().bg(TH.dlg_bg));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let inner = super::widgets::dialog_frame(f, area, title);
     app.hit.modal_rect = Some(area);
     inner
 }

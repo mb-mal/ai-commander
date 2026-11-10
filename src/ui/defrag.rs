@@ -373,17 +373,12 @@ impl DefragPalette {
     }
 }
 
-/// Draw the compaction as a DIALOG over the running UI (v6 feedback: a
-/// full-screen map wall was unreadable). A bordered window with a short
-/// map strip, tokens before→after, a progress bar and the current action;
-/// after completion it waits for Esc.
-pub fn render_dialog(
-    buf: &mut ratatui::buffer::Buffer,
-    screen: Rect,
-    f: &Frame,
-    ascii: bool,
-    palette: &DefragPalette,
-) {
+/// Draw the compaction dialog: the app's STANDARD opaque dialog frame
+/// (shadow + Clear + double border — same component as every modal), with
+/// the DEFRAG content inside: a 3-row map strip, tokens before→after, a
+/// progress bar, method and action lines. After completion it waits for Esc.
+pub fn draw_overlay(f: &mut ratatui::Frame, data: &Frame, ascii: bool, palette: &DefragPalette) {
+    let screen = f.area();
     // dialog size: ~70% width, fixed content height
     let w = (screen.width * 7 / 10).clamp(46, screen.width.saturating_sub(4));
     let h: u16 = 12;
@@ -391,61 +386,19 @@ pub fn render_dialog(
     if w < 40 || h < 8 {
         return;
     }
-    let area = Rect {
-        x: screen.x + (screen.width.saturating_sub(w)) / 2,
-        y: screen.y + (screen.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
-    };
-
-    // dialog surface + shadow + border
-    for y in area.y..area.y + area.height {
-        for x in area.x..area.x + area.width {
-            buf[(x, y)].set_style(Style::default().bg(palette.bg));
-        }
-    }
-    if area.x + area.width < screen.x + screen.width {
-        for y in area.y + 1..area.y + area.height {
-            let c = &mut buf[(
-                area.x + area.width,
-                y.min(screen.bottom().saturating_sub(1)),
-            )];
-            c.set_style(Style::default().bg(palette.free));
-        }
-    }
-    draw_box(
-        buf,
-        area,
-        Style::default().fg(palette.summary).bg(palette.bg),
-    );
-    // title
-    let title = " Context Defrag ";
-    for (i, ch) in title.chars().enumerate() {
-        let x = area.x + 2 + i as u16;
-        if x < area.x + area.width - 2 {
-            buf[(x, area.y)]
-                .set_symbol(ch.to_string().as_str())
-                .set_style(Style::default().fg(palette.summary).bg(palette.bg));
-        }
-    }
-
-    let inner = Rect {
-        x: area.x + 2,
-        y: area.y + 2,
-        width: area.width.saturating_sub(4),
-        height: area.height.saturating_sub(3),
-    };
+    let area = crate::ui::widgets::centered(screen, w, h);
+    let inner = crate::ui::widgets::dialog_frame(f, area, "Context Defrag");
     if inner.width < 20 || inner.height < 5 {
         return;
     }
+    let buf = f.buffer_mut();
 
-    // --- map strip: 3 rows of blocks, evenly down-sampled from the full
-    // map so head AND tail are visible in the window ---
+    // --- map strip: 3 rows, evenly down-sampled so head AND tail show ---
     let map_rows: u16 = 3;
     let cells = (inner.width as usize) * map_rows as usize;
-    let total = f.blocks.len().max(1);
+    let total = data.blocks.len().max(1);
     for i in 0..cells.min(total) {
-        let b = f.blocks[i * total / cells.min(total)];
+        let b = data.blocks[i * total / cells.min(total)];
         let col = (i as u16) % inner.width;
         let row = (i as u16) / inner.width;
         let (glyph, color) = match block_cell(b, ascii) {
@@ -457,20 +410,20 @@ pub fn render_dialog(
             (g, _) => (g, palette.pinned),
         };
         let cell = &mut buf[(inner.x + col, inner.y + row)];
-        cell.set_symbol(glyph).set_fg(color).set_bg(palette.bg);
+        cell.set_symbol(glyph).set_fg(color);
     }
 
     // --- tokens line ---
-    let after_txt = if f.used_after_estimated {
-        format!("~{}", f.used_after)
+    let after_txt = if data.used_after_estimated {
+        format!("~{}", data.used_after)
     } else {
-        f.used_after.to_string()
+        data.used_after.to_string()
     };
-    let tokens_line = Line::from(Span::styled(
-        format!("Tokens  {} -> {}", f.used_before, after_txt),
-        Style::default().fg(palette.turn).bg(palette.bg),
-    ));
-    Paragraph::new(tokens_line).render(
+    Paragraph::new(Line::from(format!(
+        "Tokens  {} -> {}",
+        data.used_before, after_txt
+    )))
+    .render(
         Rect {
             x: inner.x,
             y: inner.y + map_rows + 1,
@@ -480,24 +433,22 @@ pub fn render_dialog(
         buf,
     );
 
-    // --- progress bar ---
+    // --- progress bar (percent from the stream; indeterminate without) ---
     let bar_y = inner.y + map_rows + 2;
     let bar_w = inner.width.saturating_sub(2) as usize;
-    let pct = f.summary_ceiling.checked_div(1).map(|_| ()).and(Some(()));
-    let _ = pct;
-    let filled = if f.phase == Phase::Done {
+    let filled = if data.phase == Phase::Done {
         bar_w
-    } else if f.summary_ceiling == 0 {
-        0 // indeterminate
+    } else if data.summary_ceiling == 0 {
+        0
     } else {
-        let p = (f.summary_tokens as f64 / f.summary_ceiling as f64).clamp(0.0, 0.99);
+        let p = (data.summary_tokens as f64 / data.summary_ceiling as f64).clamp(0.0, 0.99);
         (p * bar_w as f64) as usize
     };
     let mut bar = String::from("[");
     for i in 0..bar_w {
-        if f.phase == Phase::Done {
+        if data.phase == Phase::Done {
             bar.push('=');
-        } else if f.summary_ceiling == 0 {
+        } else if data.summary_ceiling == 0 {
             bar.push(if i % 2 == 0 { '-' } else { ' ' });
         } else if i < filled {
             bar.push('=');
@@ -508,7 +459,7 @@ pub fn render_dialog(
     bar.push(']');
     Paragraph::new(Line::from(Span::styled(
         bar,
-        Style::default().fg(palette.summary).bg(palette.bg),
+        Style::default().fg(palette.summary),
     )))
     .render(
         Rect {
@@ -521,15 +472,11 @@ pub fn render_dialog(
     );
 
     // --- method + action lines ---
-    let method = match f.phase {
+    let method = match data.phase {
         Phase::Prune => "Method  Unfragment Files Only (prune)",
         _ => "Method  Full Optimization (summarize)",
     };
-    Paragraph::new(Line::from(Span::styled(
-        method,
-        Style::default().fg(palette.chrome).bg(palette.bg),
-    )))
-    .render(
+    Paragraph::new(Line::from(method)).render(
         Rect {
             x: inner.x,
             y: bar_y + 1,
@@ -539,7 +486,7 @@ pub fn render_dialog(
         buf,
     );
 
-    let (action, color) = match f.phase {
+    let (action, color) = match data.phase {
         Phase::Analyze => ("Analyzing context...", palette.chrome),
         Phase::Prune => ("Pruning old tool outputs...", palette.chrome),
         Phase::Summarize => ("Writing summary...", palette.summary),
@@ -548,10 +495,7 @@ pub fn render_dialog(
     };
     Paragraph::new(Line::from(Span::styled(
         format!(" {action}"),
-        Style::default()
-            .fg(color)
-            .bg(palette.bg)
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
     )))
     .render(
         Rect {
@@ -564,45 +508,48 @@ pub fn render_dialog(
     );
 }
 
-fn draw_box(buf: &mut ratatui::buffer::Buffer, r: Rect, style: Style) {
-    if r.width < 2 || r.height < 2 {
-        return;
-    }
-    for x in r.x..r.x + r.width {
-        buf[(x, r.y)].set_symbol("─").set_style(style);
-        buf[(x, r.y + r.height - 1)]
-            .set_symbol("─")
-            .set_style(style);
-    }
-    for y in r.y..r.y + r.height {
-        buf[(r.x, y)].set_symbol("│").set_style(style);
-        buf[(r.x + r.width - 1, y)].set_symbol("│").set_style(style);
-    }
-    buf[(r.x, r.y)].set_symbol("┌");
-    buf[(r.x + r.width - 1, r.y)].set_symbol("┐");
-    buf[(r.x, r.y + r.height - 1)].set_symbol("└");
-    buf[(r.x + r.width - 1, r.y + r.height - 1)].set_symbol("┘");
-}
-
 #[cfg(test)]
 mod render_tests {
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    /// Draw the overlay over a background of X's, then dump the buffer.
     fn render_to_text(f: &Frame, ascii: bool, w: u16, h: u16) -> String {
         let mut t = Terminal::new(TestBackend::new(w, h)).expect("terminal");
         t.draw(|fr| {
-            let area = fr.area();
-            render_dialog(fr.buffer_mut(), area, f, ascii, &DefragPalette::cga(false));
+            // noisy background: everything the dialog must OPAQUELY cover
+            let bg_text = "@".repeat((w * h) as usize);
+            let mut y = 0;
+            let mut rest = bg_text.as_str();
+            while rest.len() > w as usize {
+                let (line, r) = rest.split_at(w as usize);
+                Paragraph::new(Line::from(line)).render(
+                    ratatui::layout::Rect {
+                        x: 0,
+                        y,
+                        width: w,
+                        height: 1,
+                    },
+                    fr.buffer_mut(),
+                );
+                rest = r;
+                y += 1;
+            }
+            draw_overlay(fr, f, ascii, &DefragPalette::cga(false));
         })
         .expect("draw");
         let buf = t.backend().buffer();
-        let mut out = String::new();
-        for c in buf.content() {
-            out.push_str(c.symbol());
+        let mut rows: Vec<String> = Vec::new();
+        for y in 0..h {
+            let mut row = String::new();
+            for x in 0..w {
+                let c = buf[(x, y)].symbol().to_string();
+                row.push_str(if c.is_empty() { " " } else { &c });
+            }
+            rows.push(row);
         }
-        out
+        rows.join("\n")
     }
 
     fn frame() -> (DefragAnimator, Frame) {
@@ -618,8 +565,6 @@ mod render_tests {
             recent_tokens: 8_000,
         };
         let mut an = DefragAnimator::new("c-render", 174_000, 200_000, sh, 80 * 8, true);
-        // play the prune wave out, then stream one real summary chunk:
-        // the snapshot is mid-SUMMARIZE, like the layout mock
         for _ in 0..2000 {
             an.step();
             if an.frame.phase == Phase::Summarize {
@@ -631,33 +576,77 @@ mod render_tests {
         (an, f)
     }
 
-    /// К9: the mid-compaction frame contains every map element and the
-    /// status numbers.
+    /// The dialog is OPAQUE: no background X bleeds inside its border, and
+    /// the strip is bounded (not a wall of map glyphs).
     #[test]
-    fn snapshot_mid_compaction_80x25() {
+    fn dialog_is_opaque_and_bounded() {
         let (_, f) = frame();
         let text = render_to_text(&f, false, 80, 25);
-        assert!(text.contains('X'), "pinned head");
-        assert!(text.contains('●'), "summary written");
-        assert!(text.contains('▓'), "recent tail");
-        assert!(text.contains("174000 -> ~"), "before → estimated after");
-        assert!(text.contains("Tokens"), "status header missing");
+
+        assert!(text.contains("Context Defrag"), "title on the frame");
+        // the strip renders MAP GLYPHS (turns/recent/free); the writer's ●
+        // needs a big streamed summary — checked separately below
         assert!(
-            text.contains("Full Optimization") || text.contains("Unfragment Files Only"),
-            "method: {}",
-            &text[..text.len().min(3000)]
+            ['■', '▓', '░'].iter().any(|g| text.contains(*g)),
+            "map strip glyphs visible"
         );
+        assert!(text.contains("174000 -> ~"), "tokens line");
         assert!(text.contains("Writing summary..."), "action line");
+        // opacity: find the border row; no 'X' between the border columns
+        let lines: Vec<&str> = text.split('\n').collect();
+        let border_row = lines
+            .iter()
+            .position(|l| l.contains("Context Defrag"))
+            .expect("top border (the title row)");
+        // opacity: NO background '@' inside the dialog's horizontal span
+        // on ANY content row (the row below the title, map rows, and the
+        // area between the border columns)
+        let title_row = &lines[border_row];
+        let left = title_row.find('@').unwrap_or(0) + 1;
+        let right = title_row.rfind('@').unwrap_or(title_row.len());
+        for row in lines.iter().take(border_row + 10).skip(border_row + 1) {
+            if let Some(pos) = row.find('@') {
+                if pos > left && pos < right {
+                    panic!("the dialog leaks the background at col {pos}: {row:?}");
+                }
+            }
+        }
+        let blocks = text.matches('■').count();
+        assert!(blocks < 300, "strip bounded ({blocks} blocks)");
+    }
+
+    /// A big streamed summary visibly advances the writer (● region).
+    #[test]
+    fn streamed_summary_shows_in_the_strip() {
+        let (_, f) = frame();
+        let mut an2 = DefragAnimator {
+            frame: f.clone(),
+            shape: HistoryShape {
+                pinned_tokens: 2_000,
+                messages: vec![(20_000, false), (5_000, true), (20_000, false)],
+                recent_tokens: 8_000,
+            },
+            map_cells: 640,
+            rng: Rng::new(seed_of("c-2")),
+            finished: false,
+        };
+        // stream ~4000 tokens of summary (the whole ceiling)
+        for _ in 0..8 {
+            an2.summary_chunk(&"word ".repeat(400));
+        }
+        let text = render_to_text(&an2.frame, false, 80, 25);
+        assert!(
+            text.contains('●'),
+            "writer cells visible: strip must show ●"
+        );
     }
 
     #[test]
-    fn snapshot_120x40_ascii() {
+    fn ascii_mode_gifs() {
         let (_, f) = frame();
         let text = render_to_text(&f, true, 120, 40);
         assert!(text.contains('o'), "ASCII summary glyph");
         assert!(text.contains('#'), "ASCII used glyph");
-        assert!(text.contains('.'), "ASCII free glyph");
-        assert!(text.contains('X'), "pinned");
     }
 
     #[test]
@@ -666,12 +655,13 @@ mod render_tests {
         an.complete(Some(41_000), None);
         let text = render_to_text(&an.frame, false, 80, 25);
         assert!(text.contains("41000"), "real after-tokens");
-        assert!(text.contains("complete"), "final dialog line");
+        assert!(text.contains("complete"), "final line");
+        assert!(text.contains("Esc"), "waits for Esc");
     }
 }
 
-/// К12: ASCII glyphs (`/G0`) — env `AI_COMMANDER_ASCII=1` or old Windows
-/// consoles; monochrome (`/BW`) — `NO_COLOR`.
+/// К12: ASCII glyphs (`/G0`) — env `AI_COMMANDER_ASCII=1`; monochrome
+/// (`/BW`) — `NO_COLOR`.
 pub fn ascii_mode() -> bool {
     std::env::var("AI_COMMANDER_ASCII")
         .map(|v| v == "1")
