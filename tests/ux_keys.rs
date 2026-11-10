@@ -70,19 +70,17 @@ async fn end_goes_to_line_end_alt_enter_newlines() {
         "Ctrl+J newlines"
     );
 
-    // Shift+Enter is NOT a command — it falls through to send_current()
-    // (Shift is for capital letters only). The editor clears on send.
-    assert!(
-        !a.editor.text().is_empty(),
-        "editor has text before the send"
-    );
+    // Shift+Enter IS a newline (Shift on non-letter keys is a command;
+    // the rule is only Shift+LETTERS = caps)
+    let newlines = a.editor.text().matches('\n').count();
     a.on_key(key(
         crossterm::event::KeyCode::Enter,
         crossterm::event::KeyModifiers::SHIFT,
     ));
-    assert!(
-        a.editor.text().is_empty(),
-        "Shift+Enter sends (no newline inserted — Shift is caps, not a command)"
+    assert_eq!(
+        a.editor.text().matches('\n').count(),
+        newlines + 1,
+        "Shift+Enter newlines (non-letter key — Shift is safe)"
     );
 }
 

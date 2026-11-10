@@ -1679,6 +1679,11 @@ impl App {
                 (KeyCode::Enter, true, false) | (KeyCode::Char('j' | 'J'), true, false) => {
                     self.editor.newline()
                 }
+                // Shift+Enter: Shift on a NON-LETTER key is a command
+                // (user rule: Shift+letters = caps, Shift+Enter/arrows = OK)
+                (KeyCode::Enter, false, false) if k.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.editor.newline()
+                }
                 (KeyCode::Enter, false, false) => self.send_current(),
                 (KeyCode::Esc, _, _) => self.abort_current(),
                 (KeyCode::Tab, _, _) => self.focus = Focus::Sidebar,
