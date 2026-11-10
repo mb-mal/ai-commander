@@ -47,14 +47,14 @@ async fn end_goes_to_line_end_alt_enter_newlines() {
         "End moved the cursor to the end (text: {text:?})"
     );
 
-    // Alt+Enter inserts a newline
+    // Ctrl+Enter inserts a newline (Alt is fullscreen in Windows)
     a.on_key(key(
         crossterm::event::KeyCode::Enter,
-        crossterm::event::KeyModifiers::ALT,
+        crossterm::event::KeyModifiers::CONTROL,
     ));
     assert!(
         a.editor.text().contains('\n'),
-        "Alt+Enter newlines: {:?}",
+        "Ctrl+Enter newlines: {:?}",
         a.editor.text()
     );
 
