@@ -697,6 +697,7 @@ impl Backend for DshBackend {
             provider_id: "deepseek-official".into(),
             model_id: "deepseek-chat".into(),
             name: "DeepSeek (default route)".into(),
+            context_limit: Some(128_000),
         }])
     }
 

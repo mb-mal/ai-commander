@@ -35,6 +35,9 @@ pub struct ModelInfo {
     pub provider_id: String,
     pub model_id: String,
     pub name: String,
+    /// context window (tokens) when the harness reports it
+    /// (opencode: model.limit.context) — used for the ctx fill display
+    pub context_limit: Option<u64>,
 }
 
 impl ModelInfo {
