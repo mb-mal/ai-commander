@@ -401,5 +401,5 @@ FAKE_ACP_COMPACTION=1 ./target/release/ai-commander
 
 Type a message, Enter → approve the permission dialog → the reply arrives,
 then `usage_update` 53k fills the mini-map and the streamed compaction
-opens the full DEFRAG screen (Esc collapses it). On a real harness:
+opens the Context Defrag dialog (a compact map strip, tokens before -> after, progress bar; Esc closes it). On a real harness:
 OpenCode — type `/compact`; DSH — let the history pass 80% of the window.
