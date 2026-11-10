@@ -778,6 +778,10 @@ impl Backend for OpenCodeBackend {
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .to_string(),
+                        context_limit: m
+                            .get("limit")
+                            .and_then(|l| l.get("context"))
+                            .and_then(Value::as_u64),
                     })
                     .collect()
             })

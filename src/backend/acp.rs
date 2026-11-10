@@ -783,6 +783,7 @@ impl Backend for AcpBackend {
                                                     .and_then(Value::as_str)
                                                     .unwrap_or(value)
                                                     .to_string(),
+                                                context_limit: None,
                                             });
                                         }
                                     }
