@@ -60,27 +60,36 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     };
     if app.show_sidebar {
         draw_sidebar(app, f, cols[0]);
-        // UX: the 1-column drag handle between sidebar and chat
-        if cols[0].right() < cols[1].x {
-            let handle = Rect {
-                x: cols[0].right(),
-                y: cols[0].y,
-                width: 1,
-                height: cols[0].height,
-            };
-            for y in handle.y..handle.y + handle.height {
-                let c = &mut f.buffer_mut()[(handle.x, y)];
-                c.set_symbol("│")
-                    .set_style(Style::new().fg(th.border_dim).bg(th.bg));
-            }
-            app.hit.targets.push((
-                handle,
-                super::HitTarget::SidebarResize {
-                    start_width: app.sidebar_width,
-                    start_x: cols[0].right(),
-                },
-            ));
+        // UX: the drag handle between sidebar and chat — a visible ┊ line
+        // at the boundary. Layout puts cols adjacent (no gap), so the
+        // handle sits ON the chat's left border column.
+        let handle_x = cols[0].right().saturating_sub(1).max(cols[0].x);
+        let handle = Rect {
+            x: handle_x,
+            y: cols[0].y,
+            width: 1,
+            height: cols[0].height,
+        };
+        // visual: a subtle ┊ in the LAST sidebar column (its right border)
+        for y in handle.y..handle.y + handle.height {
+            let c = &mut f.buffer_mut()[(handle.x, y)];
+            c.set_symbol("┊")
+                .set_style(Style::new().fg(th.border_dim).bg(th.bg));
         }
+        // hit target is 2 columns wide for easier grabbing
+        let grab = Rect {
+            x: handle_x.saturating_sub(1),
+            y: handle.y,
+            width: 3,
+            height: handle.height,
+        };
+        app.hit.targets.push((
+            grab,
+            super::HitTarget::SidebarResize {
+                start_width: app.sidebar_width,
+                start_x: handle_x,
+            },
+        ));
     }
 
     let chat_rows = Layout::vertical([
