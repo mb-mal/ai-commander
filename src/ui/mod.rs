@@ -1674,9 +1674,9 @@ impl App {
 
         match self.focus {
             Focus::Composer => match (k.code, ctrl, alt) {
-                // newline: Alt+Enter or Ctrl+J — Shift is for CAPS,
-                // never a modifier for commands (user rule)
-                (KeyCode::Enter, false, true) | (KeyCode::Char('j' | 'J'), true, false) => {
+                // newline: Ctrl+Enter or Ctrl+J — Alt is FULLSCREEN in
+                // Windows, Shift is CAPS; only Ctrl is a safe modifier
+                (KeyCode::Enter, true, false) | (KeyCode::Char('j' | 'J'), true, false) => {
                     self.editor.newline()
                 }
                 (KeyCode::Enter, false, false) => self.send_current(),
