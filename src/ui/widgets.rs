@@ -76,7 +76,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     if app.modal.is_none() {
         if let Some(an) = app.defrag.as_ref() {
             if app.compaction_view == crate::ui::defrag::CompactionView::Defrag {
-                crate::ui::defrag::render(
+                crate::ui::defrag::render_dialog(
                     f.buffer_mut(),
                     size,
                     &an.frame,

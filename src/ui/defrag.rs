@@ -325,6 +325,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use ratatui::widgets::Widget;
 
 /// CGA-named palette as RGB (terminal themes override ANSI indexes).
 pub struct DefragPalette {
@@ -372,81 +373,82 @@ impl DefragPalette {
     }
 }
 
-/// Draw one full DEFRAG frame into `area` (the whole screen).
-pub fn render(
+/// Draw the compaction as a DIALOG over the running UI (v6 feedback: a
+/// full-screen map wall was unreadable). A bordered window with a short
+/// map strip, tokens before→after, a progress bar and the current action;
+/// after completion it waits for Esc.
+pub fn render_dialog(
     buf: &mut ratatui::buffer::Buffer,
-    area: Rect,
+    screen: Rect,
     f: &Frame,
     ascii: bool,
     palette: &DefragPalette,
 ) {
-    use ratatui::widgets::Widget;
-
-    // background
-    buf.set_style(area, Style::default().bg(palette.bg));
-
-    let inner = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
-    };
-    if inner.width < 10 || inner.height < 6 {
+    // dialog size: ~70% width, fixed content height
+    let w = (screen.width * 7 / 10).clamp(46, screen.width.saturating_sub(4));
+    let h: u16 = 12;
+    let h = h.min(screen.height.saturating_sub(2));
+    if w < 40 || h < 8 {
         return;
     }
-    // frame
-    for y in [area.y, area.y + area.height - 1] {
-        for x in area.x..area.x + area.width {
-            buf[(x, y)].set_style(Style::default().bg(palette.chrome).fg(palette.bg));
-        }
-    }
-    for x in [area.x, area.x + area.width - 1] {
-        for y in area.y..area.y + area.height {
-            buf[(x, y)].set_style(Style::default().bg(palette.chrome).fg(palette.bg));
-        }
-    }
-
-    // menu line
-    let title = " Optimize  View  Session                    F1=Help ";
-    let spans = vec![
-        Span::styled(
-            " Optimize ",
-            Style::default()
-                .bg(palette.chrome)
-                .fg(Color::Rgb(0xAA, 0x00, 0x00))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            &title[10..],
-            Style::default().bg(palette.chrome).fg(palette.bg),
-        ),
-    ];
-    let menu = Paragraph::new(Line::from(spans));
-    menu.render(
-        Rect {
-            x: area.x,
-            y: area.y,
-            width: area.width.min(title.len() as u16 + 2),
-            height: 1,
-        },
-        buf,
-    );
-
-    // map occupies the rows between the menu and the bottom windows
-    let bottom_h = 6u16.min(inner.height / 2);
-    let map = Rect {
-        x: inner.x,
-        y: inner.y,
-        width: inner.width,
-        height: inner.height.saturating_sub(bottom_h + 1),
+    let area = Rect {
+        x: screen.x + (screen.width.saturating_sub(w)) / 2,
+        y: screen.y + (screen.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
     };
-    for (i, b) in f.blocks.iter().enumerate() {
-        let col = (i as u16) % map.width;
-        let row = (i as u16) / map.width;
-        if row >= map.height {
-            break;
+
+    // dialog surface + shadow + border
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            buf[(x, y)].set_style(Style::default().bg(palette.bg));
         }
-        let (glyph, color) = match block_cell(*b, ascii) {
+    }
+    if area.x + area.width < screen.x + screen.width {
+        for y in area.y + 1..area.y + area.height {
+            let c = &mut buf[(
+                area.x + area.width,
+                y.min(screen.bottom().saturating_sub(1)),
+            )];
+            c.set_style(Style::default().bg(palette.free));
+        }
+    }
+    draw_box(
+        buf,
+        area,
+        Style::default().fg(palette.summary).bg(palette.bg),
+    );
+    // title
+    let title = " Context Defrag ";
+    for (i, ch) in title.chars().enumerate() {
+        let x = area.x + 2 + i as u16;
+        if x < area.x + area.width - 2 {
+            buf[(x, area.y)]
+                .set_symbol(ch.to_string().as_str())
+                .set_style(Style::default().fg(palette.summary).bg(palette.bg));
+        }
+    }
+
+    let inner = Rect {
+        x: area.x + 2,
+        y: area.y + 2,
+        width: area.width.saturating_sub(4),
+        height: area.height.saturating_sub(3),
+    };
+    if inner.width < 20 || inner.height < 5 {
+        return;
+    }
+
+    // --- map strip: 3 rows of blocks, evenly down-sampled from the full
+    // map so head AND tail are visible in the window ---
+    let map_rows: u16 = 3;
+    let cells = (inner.width as usize) * map_rows as usize;
+    let total = f.blocks.len().max(1);
+    for i in 0..cells.min(total) {
+        let b = f.blocks[i * total / cells.min(total)];
+        let col = (i as u16) % inner.width;
+        let row = (i as u16) / inner.width;
+        let (glyph, color) = match block_cell(b, ascii) {
             (g, "turn") => (g, palette.turn),
             (g, "free") => (g, palette.free),
             (g, "summary") => (g, palette.summary),
@@ -454,124 +456,107 @@ pub fn render(
             (g, "recent") => (g, palette.recent),
             (g, _) => (g, palette.pinned),
         };
-        let cell = &mut buf[(map.x + col, map.y + row)];
-        cell.set_symbol(glyph)
-            .set_fg(color)
-            .set_bg(if *b == Block::Pruned && !palette.mono {
-                Color::Black
-            } else {
-                palette.bg
-            });
+        let cell = &mut buf[(inner.x + col, inner.y + row)];
+        cell.set_symbol(glyph).set_fg(color).set_bg(palette.bg);
     }
 
-    // status + legend windows
-    let win_w = inner.width / 2;
-    let status = Rect {
-        x: inner.x,
-        y: map.y + map.height + 1,
-        width: win_w,
-        height: bottom_h,
+    // --- tokens line ---
+    let after_txt = if f.used_after_estimated {
+        format!("~{}", f.used_after)
+    } else {
+        f.used_after.to_string()
     };
-    let legend = Rect {
-        x: inner.x + win_w + 1,
-        y: status.y,
-        width: inner.width.saturating_sub(win_w + 1),
-        height: bottom_h,
-    };
-    let border = Style::default().fg(palette.summary);
-    draw_box(buf, status, border);
-    draw_box(buf, legend, border);
+    let tokens_line = Line::from(Span::styled(
+        format!("Tokens  {} -> {}", f.used_before, after_txt),
+        Style::default().fg(palette.turn).bg(palette.bg),
+    ));
+    Paragraph::new(tokens_line).render(
+        Rect {
+            x: inner.x,
+            y: inner.y + map_rows + 1,
+            width: inner.width,
+            height: 1,
+        },
+        buf,
+    );
 
-    let pct = f.summary_ceiling.checked_mul(0).map(|_| 0u8).unwrap_or(0);
+    // --- progress bar ---
+    let bar_y = inner.y + map_rows + 2;
+    let bar_w = inner.width.saturating_sub(2) as usize;
+    let pct = f.summary_ceiling.checked_div(1).map(|_| ()).and(Some(()));
     let _ = pct;
-    let status_lines: Vec<Line> = vec![
-        Line::from(Span::styled(
-            format!(
-                " Tokens   {} -> {}",
-                f.used_before,
-                if f.used_after_estimated {
-                    format!("~{}", f.used_after)
-                } else {
-                    f.used_after.to_string()
-                }
-            ),
-            Style::default().fg(palette.turn),
-        )),
-        Line::from(Span::styled(
-            format!(" Summary  {} tokens", f.summary_tokens),
-            Style::default().fg(palette.turn),
-        )),
-        Line::from(Span::styled(
-            match f.phase {
-                Phase::Prune => String::from(" Unfragment Files Only (prune)"),
-                Phase::Failed => String::from(" FAILED"),
-                _ => String::from(" Full Optimization (summarize)"),
-            },
-            Style::default().fg(if f.phase == Phase::Failed {
-                palette.pruned
-            } else {
-                palette.summary
-            }),
-        )),
-    ];
-    Paragraph::new(status_lines).render(
-        Rect {
-            x: status.x + 1,
-            y: status.y + 1,
-            width: status.width.saturating_sub(2),
-            height: status.height.saturating_sub(2),
-        },
-        buf,
-    );
-
-    let legend_lines: Vec<Line> = vec![
-        Line::from(Span::styled(
-            if ascii {
-                String::from(" # Used   . Free   o Compacted")
-            } else {
-                String::from(" ■ Used   ░ Free   ● Compacted")
-            },
-            Style::default().fg(palette.turn),
-        )),
-        Line::from(Span::styled(
-            if ascii {
-                String::from(" X Pinned   = Recent (tail)")
-            } else {
-                String::from(" X Pinned   ▓ Recent (tail)")
-            },
-            Style::default().fg(palette.turn),
-        )),
-        Line::from(Span::styled(
-            String::from(" B Pruned   r/W read/write"),
-            Style::default().fg(palette.turn),
-        )),
-    ];
-    Paragraph::new(legend_lines).render(
-        Rect {
-            x: legend.x + 1,
-            y: legend.y + 1,
-            width: legend.width.saturating_sub(2),
-            height: legend.height.saturating_sub(2),
-        },
-        buf,
-    );
-
-    // action line at the very bottom
-    let action: String = match f.phase {
-        Phase::Analyze => String::from(" Analyzing context..."),
-        Phase::Prune => String::from(" Pruning tool outputs..."),
-        Phase::Summarize => String::from(" Writing summary..."),
-        Phase::Done => String::from(" Optimization complete. Esc - back to chat"),
-        Phase::Failed => String::from(" Compaction failed - see Status"),
+    let filled = if f.phase == Phase::Done {
+        bar_w
+    } else if f.summary_ceiling == 0 {
+        0 // indeterminate
+    } else {
+        let p = (f.summary_tokens as f64 / f.summary_ceiling as f64).clamp(0.0, 0.99);
+        (p * bar_w as f64) as usize
     };
+    let mut bar = String::from("[");
+    for i in 0..bar_w {
+        if f.phase == Phase::Done {
+            bar.push('=');
+        } else if f.summary_ceiling == 0 {
+            bar.push(if i % 2 == 0 { '-' } else { ' ' });
+        } else if i < filled {
+            bar.push('=');
+        } else {
+            bar.push('.');
+        }
+    }
+    bar.push(']');
     Paragraph::new(Line::from(Span::styled(
-        action,
-        Style::default().fg(palette.accent),
+        bar,
+        Style::default().fg(palette.summary).bg(palette.bg),
     )))
     .render(
         Rect {
             x: inner.x,
-            y: area.y + area.height - 2,
+            y: bar_y,
+            width: (bar_w + 2) as u16,
+            height: 1,
+        },
+        buf,
+    );
+
+    // --- method + action lines ---
+    let method = match f.phase {
+        Phase::Prune => "Method  Unfragment Files Only (prune)",
+        _ => "Method  Full Optimization (summarize)",
+    };
+    Paragraph::new(Line::from(Span::styled(
+        method,
+        Style::default().fg(palette.chrome).bg(palette.bg),
+    )))
+    .render(
+        Rect {
+            x: inner.x,
+            y: bar_y + 1,
+            width: inner.width,
+            height: 1,
+        },
+        buf,
+    );
+
+    let (action, color) = match f.phase {
+        Phase::Analyze => ("Analyzing context...", palette.chrome),
+        Phase::Prune => ("Pruning old tool outputs...", palette.chrome),
+        Phase::Summarize => ("Writing summary...", palette.summary),
+        Phase::Done => ("Compaction complete. Press Esc to close", palette.summary),
+        Phase::Failed => ("Compaction FAILED", palette.pruned),
+    };
+    Paragraph::new(Line::from(Span::styled(
+        format!(" {action}"),
+        Style::default()
+            .fg(color)
+            .bg(palette.bg)
+            .add_modifier(Modifier::BOLD),
+    )))
+    .render(
+        Rect {
+            x: inner.x,
+            y: bar_y + 2,
             width: inner.width,
             height: 1,
         },
@@ -580,8 +565,6 @@ pub fn render(
 }
 
 fn draw_box(buf: &mut ratatui::buffer::Buffer, r: Rect, style: Style) {
-    use ratatui::buffer::Buffer;
-    let _ = Buffer::empty;
     if r.width < 2 || r.height < 2 {
         return;
     }
@@ -611,7 +594,7 @@ mod render_tests {
         let mut t = Terminal::new(TestBackend::new(w, h)).expect("terminal");
         t.draw(|fr| {
             let area = fr.area();
-            render(fr.buffer_mut(), area, f, ascii, &DefragPalette::cga(false));
+            render_dialog(fr.buffer_mut(), area, f, ascii, &DefragPalette::cga(false));
         })
         .expect("draw");
         let buf = t.backend().buffer();
@@ -656,7 +639,6 @@ mod render_tests {
         let text = render_to_text(&f, false, 80, 25);
         assert!(text.contains('X'), "pinned head");
         assert!(text.contains('●'), "summary written");
-        assert!(text.contains('B'), "pruned candidates");
         assert!(text.contains('▓'), "recent tail");
         assert!(text.contains("174000 -> ~"), "before → estimated after");
         assert!(text.contains("Tokens"), "status header missing");

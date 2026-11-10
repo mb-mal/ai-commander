@@ -1155,6 +1155,17 @@ impl App {
                 // SAME session means the harness compacted on its own
                 let key = (harness.clone(), native_id.clone());
                 let prev = self.ctx_usage.insert(key.clone(), (used, size));
+                // v6 feedback: opencode reports no window size (0) — a
+                // finished DEFRAG dialog still waits for the real after
+                // number, which arrives with THIS event
+                if let Some(an) = self.defrag.as_mut() {
+                    if an.frame.phase == crate::ui::defrag::Phase::Done
+                        && used < an.frame.used_before
+                    {
+                        an.frame.used_after = used;
+                        an.frame.used_after_estimated = false;
+                    }
+                }
                 if let Some((before, prev_size)) = prev {
                     let dropped = before.saturating_sub(used);
                     let frac = dropped as f64 / before.max(1) as f64;
@@ -1199,8 +1210,16 @@ impl App {
                             && summary_delta.is_none()
                             && self.compaction_view == crate::ui::defrag::CompactionView::Defrag
                         {
-                            // start the animation from the last known usage
+                            // start the animation from the last known usage;
+                            // unknown window (0, opencode) → assume the
+                            // estimate window so the map is not 100% full
                             let (used, size) = self.ctx_usage.get(&key).copied().unwrap_or((0, 1));
+                            let used = used.max(1);
+                            let size = if size > 0 {
+                                size
+                            } else {
+                                crate::backend::ESTIMATED_WINDOW.max(used)
+                            };
                             let shape = crate::ui::context_map::HistoryShape::estimate(
                                 &self.cur.msgs,
                                 2_000,
