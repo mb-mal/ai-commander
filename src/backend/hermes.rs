@@ -573,6 +573,7 @@ impl Backend for HermesBackend {
                                 provider_id: provider.clone(),
                                 model_id: id.to_string(),
                                 name: id.to_string(),
+                                context_limit: None,
                             });
                         }
                     }

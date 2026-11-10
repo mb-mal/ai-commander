@@ -261,8 +261,9 @@ pub struct App {
     /// v6 #3: true when another process owns the store — human board
     /// actions are forwarded to the owner over IPC
     pub board_is_view: bool,
-    /// К1: last context-window usage per (harness, session)
-    pub ctx_usage: std::collections::HashMap<(String, String), (u64, u64)>,
+    /// К1: last context-window usage per (harness, session):
+    /// (used tokens, window size, cumulative session cost USD)
+    pub ctx_usage: std::collections::HashMap<(String, String), (u64, u64, Option<f64>)>,
     /// К6: sessions with a Reported compaction (suppresses inference)
     pub compaction_reported: std::collections::HashSet<(String, String)>,
     /// К10: running compaction animator for the open chat
@@ -1149,12 +1150,13 @@ impl App {
                 native_id,
                 used,
                 size,
+                cost_usd,
                 ..
             } => {
                 // К1: remember the fill; К6: a sharp unreported drop in the
                 // SAME session means the harness compacted on its own
                 let key = (harness.clone(), native_id.clone());
-                let prev = self.ctx_usage.insert(key.clone(), (used, size));
+                let prev = self.ctx_usage.insert(key.clone(), (used, size, cost_usd));
                 // v6 feedback: opencode reports no window size (0) — a
                 // finished DEFRAG dialog still waits for the real after
                 // number, which arrives with THIS event
@@ -1166,7 +1168,7 @@ impl App {
                         an.frame.used_after_estimated = false;
                     }
                 }
-                if let Some((before, prev_size)) = prev {
+                if let Some((before, prev_size, _)) = prev {
                     let dropped = before.saturating_sub(used);
                     let frac = dropped as f64 / before.max(1) as f64;
                     if dropped > 10_000
@@ -1213,7 +1215,8 @@ impl App {
                             // start the animation from the last known usage;
                             // unknown window (0, opencode) → assume the
                             // estimate window so the map is not 100% full
-                            let (used, size) = self.ctx_usage.get(&key).copied().unwrap_or((0, 1));
+                            let (used, size, _) =
+                                self.ctx_usage.get(&key).copied().unwrap_or((0, 1, None));
                             let used = used.max(1);
                             let size = if size > 0 {
                                 size
@@ -1236,7 +1239,7 @@ impl App {
                     }
                     crate::backend::CompactionStatus::Completed => {
                         if let Some(an) = self.defrag.as_mut() {
-                            an.complete(self.ctx_usage.get(&key).map(|(u, _)| *u), None);
+                            an.complete(self.ctx_usage.get(&key).map(|(u, _, _)| *u), None);
                         }
                         // К10: ONE history line per compaction id
                         if !self
@@ -1244,7 +1247,7 @@ impl App {
                             .iter()
                             .any(|(id, ..)| *id == *compaction_id)
                         {
-                            let after = self.ctx_usage.get(&key).map(|(u, _)| *u).unwrap_or(0);
+                            let after = self.ctx_usage.get(&key).map(|(u, _, _)| *u).unwrap_or(0);
                             let before_hint: u64 = compaction_id
                                 .strip_prefix("inferred-")
                                 .and_then(|n| n.parse().ok())

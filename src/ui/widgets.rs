@@ -23,25 +23,33 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     app.hit.targets.clear();
     app.hit.modal_rect = None;
 
+    // two bottom lines (v6 feedback): status info above the F-keys menu —
+    // the menu must ALWAYS be visible (a layout regression hid it)
     let rows = if app.show_activity {
         Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(5),
             Constraint::Length(6), // activity feed
-            Constraint::Length(1),
+            Constraint::Length(1), // status info
+            Constraint::Length(1), // f-keys menu
         ])
         .split(size)
     } else {
         Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(5),
-            Constraint::Length(1),
-            Constraint::Length(0),
+            Constraint::Length(1), // status info
+            Constraint::Length(1), // f-keys menu
         ])
         .split(size)
     };
-    let (header, body, status) = (rows[0], rows[1], rows[3]);
-    let feed = rows[2];
+    let n = rows.len();
+    let (header, body, info, status) = (rows[0], rows[1], rows[n - 2], rows[n - 1]);
+    let feed = if app.show_activity {
+        rows[2]
+    } else {
+        rows[n - 3]
+    };
 
     draw_header(app, f, header);
 
@@ -62,6 +70,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     draw_chat(app, f, chat_rows[0]);
     draw_composer(app, f, chat_rows[1]);
 
+    draw_status_info(app, f, info);
     draw_statusbar(app, f, status);
     if app.show_activity {
         draw_activity_feed(app, f, feed);
@@ -719,39 +728,6 @@ fn draw_statusbar(app: &mut App, f: &mut Frame, area: Rect) {
     let lang = app.lang();
     let mut spans = vec![];
 
-    // К10: context mini-map — window fill of the CURRENT chat; animated
-    // while a compaction runs
-    {
-        let key = (app.cur.harness.clone(), app.cur.native_id.clone());
-        let fill = app.ctx_usage.get(&key);
-        let running = app.defrag.is_some();
-        let mut mini = String::from(" ctx ");
-        if running {
-            mini.push_str("<compacting> ");
-        } else if let Some((used, size)) = fill {
-            if *size > 0 {
-                let cells = 10usize;
-                let filled = ((*used as f64 / *size as f64) * cells as f64).round() as usize;
-                let filled = filled.min(cells);
-                for _ in 0..filled {
-                    mini.push('█');
-                }
-                for _ in 0..(cells - filled) {
-                    mini.push('░');
-                }
-                mini.push_str(&format!(" {}% ", used * 100 / size));
-            } else if *used > 0 {
-                mini.push_str(&format!(" {}k ", used / 1000));
-            }
-        }
-        spans.push(Span::styled(
-            mini,
-            Style::new()
-                .fg(if running { th.accent } else { th.fg })
-                .bg(th.bg),
-        ));
-    }
-
     let keys: Vec<(&str, &str)> = vec![
         ("F1", t(lang, Str::Help)),
         ("F2", t(lang, Str::Settings)),
@@ -855,4 +831,110 @@ fn draw_activity_feed(app: &App, f: &mut Frame, area: Rect) {
         lines.push(Line::from(Span::styled(" (no events yet)", th.dim_style())));
     }
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// v6 feedback: the second bottom line — active harness, model, context
+/// fill relative to the model's window, session cost, local clock right.
+fn draw_status_info(app: &App, f: &mut Frame, area: Rect) {
+    let th = &THEME;
+    let harness_name = app
+        .cfg
+        .harness(&app.cur.harness)
+        .map(|h| h.name.clone())
+        .unwrap_or_else(|| app.cur.harness.clone());
+    let model = app
+        .current_model()
+        .map(|m| m.display())
+        .unwrap_or_else(|| "-".into());
+
+    // context fill: the reported window wins; opencode reports none (0) —
+    // fall back to the ACTIVE model's context limit, else tokens only
+    let key = (app.cur.harness.clone(), app.cur.native_id.clone());
+    let usage = app.ctx_usage.get(&key).copied();
+    // the ACTIVE model's window: the override/default ModelRef has no
+    // limit — look it up in the harness's live model list
+    let model_limit = app
+        .current_model()
+        .and_then(|m| {
+            app.models
+                .get(&app.cur.harness)
+                .and_then(|list| {
+                    list.iter()
+                        .find(|x| x.provider_id == m.provider_id && x.model_id == m.model_id)
+                })
+                .map(|x| x.context_limit)
+        })
+        .flatten()
+        .or_else(|| {
+            app.models
+                .get(&app.cur.harness)
+                .and_then(|list| list.first())
+                .and_then(|m| m.context_limit)
+        });
+    let ctx = match usage {
+        Some((used, size, _)) if size > 0 => format!(
+            "ctx {}/{} ({}%)",
+            fmt_tokens(used),
+            fmt_tokens(size),
+            used.min(size) * 100 / size
+        ),
+        Some((used, _, _)) => match model_limit {
+            Some(lim) if lim > 0 => format!(
+                "ctx {}/{} ({}%)",
+                fmt_tokens(used),
+                fmt_tokens(lim),
+                used.min(lim) * 100 / lim
+            ),
+            _ => format!("ctx {}", fmt_tokens(used)),
+        },
+        None => "ctx -".into(),
+    };
+    let cost = usage
+        .and_then(|(_, _, c)| c)
+        .map(|c| format!("${c:.2}"))
+        .unwrap_or_else(|| "$-".into());
+
+    let left = format!(" {harness_name} · {model} · {ctx} · {cost} ");
+    let right = format!("{} ", chrono::Local::now().format("%H:%M"));
+
+    let free_w = area.width as usize;
+    let lw = left.chars().count();
+    let rw = right.chars().count();
+    let pad = if free_w > lw + rw {
+        " ".repeat(free_w - lw - rw)
+    } else {
+        String::new()
+    };
+    let line = Line::from(vec![
+        Span::styled(left, Style::new().fg(th.fg).bg(th.header_bg)),
+        Span::styled(pad, Style::new().fg(th.dim).bg(th.header_bg)),
+        Span::styled(right, Style::new().fg(th.accent).bg(th.header_bg)),
+    ]);
+    f.render_widget(
+        Paragraph::new(line).style(Style::new().bg(th.header_bg)),
+        area,
+    );
+}
+
+fn fmt_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
+#[cfg(test)]
+mod status_info_tests {
+    use super::fmt_tokens;
+
+    #[test]
+    fn token_formatting() {
+        assert_eq!(fmt_tokens(950), "950");
+        assert_eq!(fmt_tokens(12_300), "12.3k");
+        assert_eq!(fmt_tokens(174_200), "174.2k");
+        assert_eq!(fmt_tokens(1_250_000), "1.2M");
+    }
 }
