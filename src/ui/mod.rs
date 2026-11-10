@@ -53,6 +53,11 @@ pub enum HitTarget {
     ComposerFocus,
     /// status-bar key index: 0=F1 1=F2 2=^N 3=^K 4=^P 5=^H 6=^O 7=F10
     StatusKey(u8),
+    /// UX: drag handle between sidebar and chat
+    SidebarResize {
+        start_width: u16,
+        start_x: u16,
+    },
     ModalSettingsRow(usize),
     ModalModelRow(usize),
     ModalHarnessRow(usize),
@@ -118,14 +123,52 @@ pub struct FilePicker {
     pub err: Option<String>,
 }
 
+/// Mouse drag in progress.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DragKind {
+    /// the border between the sidebar and the chat
+    SidebarResize { start_width: u16, start_x: u16 },
+    /// the chat scrollbar thumb
+    ChatScroll {
+        start_offset: u16,
+        start_y: u16,
+        max: u16,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct DragState {
+    pub kind: DragKind,
+}
+
+/// Ctrl+F incremental search over the rendered chat lines.
+#[derive(Clone)]
+pub struct SearchState {
+    pub query: String,
+    /// index into the matched line numbers
+    pub match_idx: usize,
+    pub matches: Vec<usize>,
+}
+
 #[derive(Clone)]
 pub enum InputAction {
-    RenameSession { harness: String, native_id: String },
+    /// UX: the Ctrl+F search field
+    SearchQuery,
+    RenameSession {
+        harness: String,
+        native_id: String,
+    },
     ProfileName,
-    ServerUrl { harness: String },
-    ServerPassword { harness: String },
+    ServerUrl {
+        harness: String,
+    },
+    ServerPassword {
+        harness: String,
+    },
     NewTaskTitle,
-    BoardTitle { task_id: String },
+    BoardTitle {
+        task_id: String,
+    },
 }
 
 #[derive(Clone)]
@@ -261,6 +304,15 @@ pub struct App {
     /// v6 #3: true when another process owns the store — human board
     /// actions are forwarded to the owner over IPC
     pub board_is_view: bool,
+    /// UX: resizable sidebar (drag the border or Ctrl+minus/Ctrl+equal)
+    pub sidebar_width: u16,
+    /// drag state: what the mouse is currently dragging
+    pub drag: Option<DragState>,
+    /// UX: keyboard selection of chat lines (copy with Ctrl+C)
+    pub sel_anchor: Option<usize>,
+    pub sel_cursor: usize,
+    /// UX: Ctrl+F search — the query and the current match line
+    pub search: Option<SearchState>,
     /// К1: last context-window usage per (harness, session):
     /// (used tokens, window size, cumulative session cost USD)
     pub ctx_usage: std::collections::HashMap<(String, String), (u64, u64, Option<f64>)>,
@@ -384,6 +436,11 @@ impl App {
             render_cache: std::collections::HashMap::new(),
             events_tx,
             events_rx,
+            sidebar_width: 32,
+            drag: None,
+            sel_anchor: None,
+            sel_cursor: 0,
+            search: None,
             input_rx,
         };
         app.ensure_backend(&active);
@@ -1397,6 +1454,33 @@ impl App {
                     }
                 }
             }
+            MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Moved => {
+                let Some(drag) = self.drag else { return };
+                match drag.kind {
+                    DragKind::SidebarResize {
+                        start_width,
+                        start_x,
+                    } => {
+                        let dx = m.column as i32 - start_x as i32;
+                        self.sidebar_width = (start_width as i32 + dx).clamp(20, 60) as u16;
+                    }
+                    DragKind::ChatScroll {
+                        start_offset,
+                        start_y,
+                        max,
+                    } => {
+                        let dy = m.column as i32 - start_y as i32;
+                        // dy of 1 row = max/visible rows of content
+                        let rows = self.hit.chat_rect.height.max(1) as i32;
+                        let d_off = dy * max as i32 / rows;
+                        self.bottom_offset =
+                            (start_offset as i32 - d_off).clamp(0, max as i32) as u16;
+                    }
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.drag = None;
+            }
             MouseEventKind::Down(MouseButton::Left) => {
                 // find the innermost target under the cursor
                 let hit = self
@@ -1411,6 +1495,17 @@ impl App {
                 let modal_open = self.modal.is_some();
                 match target {
                     HitTarget::StatusKey(n) if !modal_open => self.status_key_action(n),
+                    HitTarget::SidebarResize {
+                        start_width,
+                        start_x,
+                    } if !modal_open => {
+                        self.drag = Some(DragState {
+                            kind: DragKind::SidebarResize {
+                                start_width,
+                                start_x,
+                            },
+                        });
+                    }
                     HitTarget::NewChat if !modal_open => self.new_chat(),
                     HitTarget::Session { harness, native_id } if !modal_open => {
                         self.sidebar_sel = Some((harness.clone(), native_id.clone()));
@@ -1506,7 +1601,7 @@ impl App {
         }
     }
 
-    fn on_key(&mut self, k: crossterm::event::KeyEvent) {
+    pub fn on_key(&mut self, k: crossterm::event::KeyEvent) {
         use crossterm::event::{KeyCode, KeyModifiers};
 
         if k.kind != crossterm::event::KeyEventKind::Press {
@@ -1579,7 +1674,15 @@ impl App {
 
         match self.focus {
             Focus::Composer => match (k.code, ctrl, alt) {
-                (KeyCode::Enter, false, true) | (KeyCode::Char('j' | 'J'), true, false) => {
+                // newline: Alt+Enter, Shift+Enter, Ctrl+J (some terminals
+                // swallow Alt+Enter — v6 feedback)
+                (KeyCode::Enter, false, true)
+                | (KeyCode::Enter, true, false)
+                | (KeyCode::Char('j' | 'J'), true, false) => self.editor.newline(),
+                // Shift+Enter: some terminals swallow Alt+Enter — the
+                // modifiers check above only sees ctrl/alt, SHIFT is
+                // handled by this guard on the plain Enter arm
+                (KeyCode::Enter, false, false) if k.modifiers.contains(KeyModifiers::SHIFT) => {
                     self.editor.newline()
                 }
                 (KeyCode::Enter, false, false) => self.send_current(),
@@ -1589,15 +1692,65 @@ impl App {
                 (KeyCode::Char('d'), true, _) => {
                     self.attachments.pop();
                 }
+                // UX: Ctrl+R renames the CURRENT session from anywhere
+                (KeyCode::Char('r' | 'R'), true, _) => {
+                    let h = self.cur.harness.clone();
+                    let id = self.cur.native_id.clone();
+                    if !id.is_empty() && !id.starts_with("pending-") {
+                        self.rename_session(&h, &id);
+                    } else {
+                        self.toast("send a message first — nothing to rename", true);
+                    }
+                }
+                // UX: Ctrl+F searches the chat output
+                (KeyCode::Char('f' | 'F'), true, _) => {
+                    self.open_modal(Modal::Input {
+                        title: self.tr(Str::Search).to_string(),
+                        editor: Editor::new(),
+                        action: InputAction::SearchQuery,
+                    });
+                }
+                // UX: F3 / Ctrl+G — next search match
+                (KeyCode::F(3), _, _) | (KeyCode::Char('g' | 'G'), true, _) => {
+                    self.search_next();
+                }
+                // UX: Ctrl+minus / Ctrl+equal resize the sidebar
+                (KeyCode::Char('-'), true, _) => {
+                    self.sidebar_width = self.sidebar_width.saturating_sub(2).max(20)
+                }
+                (KeyCode::Char('=' | '+'), true, _) => {
+                    self.sidebar_width = (self.sidebar_width + 2).min(60)
+                }
                 (KeyCode::PageUp, _, _) => {
                     self.bottom_offset = self.bottom_offset.saturating_add(10)
                 }
                 (KeyCode::PageDown, _, _) => {
                     self.bottom_offset = self.bottom_offset.saturating_sub(10)
                 }
-                (KeyCode::End, _, _) => self.bottom_offset = 0,
-                (KeyCode::Char('c'), _, _) if k.modifiers.contains(KeyModifiers::CONTROL) => {}
-                (code, false, _) => self.editor_key(code),
+                // UX: plain End goes to the END OF THE LINE (editor);
+                // scroll-to-bottom moved to Ctrl+End
+                (KeyCode::End, true, _) => self.bottom_offset = 0,
+                (KeyCode::Char('c'), _, _) if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                    // UX: with a chat selection, Ctrl+C COPIES it
+                    if self.sel_anchor.is_some() {
+                        self.copy_selection();
+                    }
+                }
+                // UX: Shift+Up/Down select chat lines; Ctrl+C copies them
+                (KeyCode::Up, _, true) | (KeyCode::Up, false, false)
+                    if k.modifiers.contains(KeyModifiers::SHIFT) =>
+                {
+                    self.sel_move(-1)
+                }
+                (KeyCode::Down, _, true) | (KeyCode::Down, false, false)
+                    if k.modifiers.contains(KeyModifiers::SHIFT) =>
+                {
+                    self.sel_move(1)
+                }
+                (code, false, _) if !k.modifiers.contains(KeyModifiers::SHIFT) => {
+                    // any plain typing clears the selection
+                    self.editor_key(code)
+                }
                 _ => {}
             },
             Focus::Sidebar => match (k.code, ctrl, alt) {
@@ -1620,8 +1773,104 @@ impl App {
         }
     }
 
+    /// UX: incremental search over the rendered chat lines.
+    fn search_apply(&mut self, query: &str) {
+        if query.is_empty() {
+            self.search = None;
+            return;
+        }
+        let lines = crate::ui::widgets::build_chat_lines_stable(self);
+        let matches: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| {
+                l.spans.iter().any(|sp| {
+                    sp.content
+                        .to_string()
+                        .to_lowercase()
+                        .contains(&query.to_lowercase())
+                })
+            })
+            .map(|(i, _)| i)
+            .collect();
+        self.search = Some(SearchState {
+            query: query.to_string(),
+            match_idx: 0,
+            matches,
+        });
+        self.search_goto(true);
+    }
+
+    fn search_next(&mut self) {
+        if let Some(sr) = self.search.as_mut() {
+            if !sr.matches.is_empty() {
+                sr.match_idx = (sr.match_idx + 1) % sr.matches.len();
+                self.search_goto(false);
+            }
+        }
+    }
+
+    /// Scroll the chat so the current match is visible (stick to bottom).
+    fn search_goto(&mut self, _first: bool) {
+        let Some(sr) = self.search.clone() else {
+            return;
+        };
+        let Some(&line) = sr.matches.get(sr.match_idx) else {
+            return;
+        };
+        // chat is drawn bottom-anchored; show the match ~2/3 down the view
+        self.bottom_offset = line.saturating_sub(2) as u16;
+        let n = sr.matches.len();
+        self.toast(
+            format!("match {}/{}: '{}'", sr.match_idx + 1, n, sr.query),
+            false,
+        );
+    }
+
+    /// UX: keyboard selection of rendered chat lines.
+    fn sel_move(&mut self, dir: i32) {
+        let lines = crate::ui::widgets::build_chat_lines_stable(self);
+        let total = lines.len();
+        if total == 0 {
+            return;
+        }
+        if self.sel_anchor.is_none() {
+            // start at the bottom line (what the user sees)
+            self.sel_anchor = Some(total - 1);
+            self.sel_cursor = total - 1;
+        }
+        let c = self.sel_cursor as i32 + dir;
+        self.sel_cursor = c.clamp(0, total as i32 - 1) as usize;
+    }
+
+    fn copy_selection(&mut self) {
+        let (a, b) = match self.sel_anchor {
+            Some(a) => (a.min(self.sel_cursor), a.max(self.sel_cursor)),
+            None => return,
+        };
+        let lines = crate::ui::widgets::build_chat_lines_stable(self);
+        let text: Vec<String> = lines[a..=b.min(lines.len() - 1)]
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|sp| sp.content.to_string())
+                    .collect::<String>()
+            })
+            .collect();
+        let text = text.join("\n");
+        match clipboard_copy(&text) {
+            Ok(()) => self.toast(format!("copied {} lines", b - a + 1), false),
+            Err(e) => self.toast(format!("copy failed: {e}"), true),
+        }
+        self.sel_anchor = None; // selection consumed
+    }
+
     fn editor_key(&mut self, code: crossterm::event::KeyCode) {
         use crossterm::event::KeyCode;
+        if let KeyCode::Char(_) = code {
+            self.sel_anchor = None; // typing clears the selection
+        }
         match code {
             KeyCode::Char(c) => self.editor.insert_char(c),
             KeyCode::Backspace => self.editor.backspace(),
@@ -1659,6 +1908,23 @@ impl App {
         };
         let (h, id, _, _) = items[next].clone();
         self.sidebar_sel = Some((h, id));
+    }
+
+    fn rename_session(&mut self, h: &str, id: &str) {
+        let title = self
+            .sessions
+            .get(h)
+            .and_then(|l| l.iter().find(|s| s.native_id == id))
+            .map(|s| s.title.clone())
+            .unwrap_or_default();
+        self.open_modal(Modal::Input {
+            title: self.tr(Str::RenameSession).to_string(),
+            editor: Editor::with_text(&title),
+            action: InputAction::RenameSession {
+                harness: h.to_string(),
+                native_id: id.to_string(),
+            },
+        });
     }
 
     fn rename_selected(&mut self) {
@@ -2556,8 +2822,11 @@ impl App {
         }
     }
 
-    fn apply_input(&mut self, value: String, action: InputAction) {
+    pub fn apply_input(&mut self, value: String, action: InputAction) {
         match action {
+            InputAction::SearchQuery => {
+                self.search_apply(&value);
+            }
             InputAction::RenameSession { harness, native_id } => {
                 let title = value.trim().to_string();
                 if title.is_empty() {
@@ -2805,6 +3074,57 @@ impl App {
             kind: SettingsKind::DefaultModel,
         });
         rows
+    }
+}
+
+/// Copy text to the system clipboard: `clip.exe` on Windows, pbcopy on
+/// macOS, xclip/xsel/wl-copy on Linux. No extra dependency needed.
+pub fn clipboard_copy(text: &str) -> anyhow::Result<()> {
+    use std::io::Write;
+    #[cfg(windows)]
+    {
+        let mut child = std::process::Command::new("clip")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        child
+            .stdin
+            .take()
+            .expect("piped stdin")
+            .write_all(text.as_bytes())?;
+        let status = child.wait()?;
+        if status.success() {
+            Ok(())
+        } else {
+            anyhow::bail!("clip.exe exited with {status}")
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        for cmd in [
+            ("pbcopy", Vec::<&str>::new()),
+            ("wl-copy", vec![]),
+            ("xclip", vec!["-selection", "clipboard"]),
+            ("xsel", vec!["--clipboard", "--input"]),
+        ] {
+            if let Ok(mut child) = std::process::Command::new(cmd.0)
+                .args(&cmd.1)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                if let Some(mut si) = child.stdin.take() {
+                    si.write_all(text.as_bytes())?;
+                }
+                let status = child.wait()?;
+                if status.success() {
+                    return Ok(());
+                }
+            }
+        }
+        anyhow::bail!("no clipboard tool found (pbcopy/wl-copy/xclip/xsel)")
     }
 }
 
