@@ -132,6 +132,12 @@ pub fn normalize_path(p: &str) -> String {
 
 impl Policy {
     pub fn check(&self, action: &str, resource: &str) -> Effect {
+        // v7: built-in deny — the agent must NEVER read/write the
+        // ai-commander config dir (board.port, policy.yaml, config.toml).
+        // This cannot be overridden by any user or project rule.
+        if is_config_dir_resource(action, resource) {
+            return Effect::Deny;
+        }
         let mut decision: Option<Effect> = None;
         // v6 #2: allow rules cannot match a command with shell
         // metacharacters — a second command hidden behind `;`/`&&`/`$()`
@@ -289,6 +295,22 @@ impl Policy {
             }
         }
     }
+}
+
+/// v7: the agent touches the ai-commander config dir → deny, always.
+fn is_config_dir_resource(action: &str, resource: &str) -> bool {
+    if !matches!(
+        action,
+        "read" | "edit" | "delete" | "move" | "execute" | "write"
+    ) {
+        return false;
+    }
+    let config = crate::config::config_dir();
+    let config_str = config.to_string_lossy().to_lowercase();
+    let resource_lower = resource.to_lowercase();
+    // direct hit or a traversal that resolves inside
+    let norm = normalize_path(resource);
+    resource_lower.contains(&config_str) || norm.to_lowercase().contains(&config_str)
 }
 
 fn same_path(a: &str, b: &Path) -> bool {
