@@ -113,7 +113,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     // К10: the DEFRAG compaction overlay over everything; Esc collapses
     // it into the mini-map (the animation keeps running in the status bar)
     if app.modal.is_none() {
-        if let Some(an) = app.defrag.as_ref() {
+        if let Some((_, _, _, an)) = app.defrag.as_ref() {
             if app.compaction_view == crate::ui::defrag::CompactionView::Defrag {
                 crate::ui::defrag::draw_overlay(
                     f,
