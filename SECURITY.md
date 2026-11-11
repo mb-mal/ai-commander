@@ -22,3 +22,34 @@ You will get an acknowledgement within 72 hours.
   private; prefer pointing `server_url` at your own already-running server.
 - Attachments are capped at 8 MB and sent as data-URLs to the harness.
 - `scripts/fetch-tools.sh` verifies the SHA-256 of the downloaded archive.
+
+## Threat model (v7)
+
+**What ai-commander's permissions protect against:** mistakes by the model
+and prompt injection through tool outputs — the "approve this shell command?"
+dialog stops an agent from quietly running something the user did not intend.
+
+**What they do NOT protect against:** a malicious agent that already has
+arbitrary code execution. If you allow `execute cargo *`, the agent can
+write a `build.rs` that reads any file the user can read and exfiltrates it.
+For untrusted code, use OS-level isolation (containers, separate user
+accounts) or the agent harness's own sandbox.
+
+**Board IPC security layers:**
+
+1. The redb store is single-owner (exclusive lock); only the TUI or daemon
+   has it open.
+2. The IPC transport token (in `board.port`, 0600) authenticates every
+   request; the acting role is identified by a per-role token minted at
+   agent launch — the `role` field of a request body is never trusted.
+3. The human token (for `board_unpark`, i.e. approving a parked permission)
+   is NOT in `board.port` — it lives in a separate temp file outside the
+   config dir, read once by the TUI and deleted.
+4. Agents cannot read, write or execute anything inside the ai-commander
+   config directory (`~/.config/ai-commander/`): built-in deny rules in the
+   policy engine block all such requests regardless of user or project
+   policy.yaml settings. This protects `board.port`, `policy.yaml`, and
+   `config.toml` from tampering by the agent.
+5. Un-parking a NeedsHuman task is human-only: the `board_unpark` tool
+   requires the human token, and the `promote` MCP action is refused for
+   agents.

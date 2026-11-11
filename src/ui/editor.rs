@@ -1,5 +1,5 @@
 //! Minimal multi-line text editor for the composer (no external widget deps,
-//! full control over Enter/Alt+Enter behaviour and unicode). Cursor movement
+//! full control over Enter/Ctrl+Enter behaviour and unicode). Cursor movement
 //! and deletion are grapheme-aware (emoji, CJK combining sequences).
 
 #[derive(Debug, Clone, Default)]

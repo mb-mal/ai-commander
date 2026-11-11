@@ -83,12 +83,16 @@ fn ipc_human_token_authorizes_unpark() {
     let _ = std::fs::remove_file(&pf);
     let port = ai_commander::kanban::ipc::serve_at(&pf, handle).expect("serve");
 
-    // read the port file: 3 lines = port, transport, human
+    // v7: board.port has exactly 2 lines (port + transport); the human
+    // token is NOT there — it is in the owner's memory / temp file
     let raw = std::fs::read_to_string(&pf).expect("port file");
     let lines: Vec<&str> = raw.lines().collect();
-    assert_eq!(lines.len(), 3, "port file carries the human token");
+    assert_eq!(lines.len(), 2, "port file has port + transport only");
     assert_eq!(lines[0], port.to_string());
-    let human = lines[2].to_string();
+    // get the human token from the owner's internal state
+    let human = ai_commander::kanban::ipc::human_token_internal()
+        .expect("owner has a human token")
+        .2;
 
     let call = |token: &str| {
         ai_commander::kanban::ipc::call_owner_at(

@@ -53,6 +53,10 @@ fn new_token() -> String {
 /// Role tokens minted by the owner, mapped to the role they authorize.
 static ROLE_TOKENS: Mutex<Option<std::collections::HashMap<String, String>>> = Mutex::new(None);
 
+/// The owner's human token (set by serve_at, read by the TUI to publish
+/// it to a temp file outside config_dir). NEVER in board.port.
+static HUMAN_TOKEN: std::sync::OnceLock<(u16, String, String)> = std::sync::OnceLock::new();
+
 fn role_tokens_mut<R>(f: impl FnOnce(&mut std::collections::HashMap<String, String>) -> R) -> R {
     let mut g = ROLE_TOKENS.lock();
     let map = g.get_or_insert_with(Default::default);
@@ -91,20 +95,44 @@ pub fn serve_at(path: &std::path::Path, handle: ToolHandler) -> std::io::Result<
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
     let token = new_token();
-    // v6 #3: the HUMAN token — whoever can read this 0600 file is the
-    // local user; it authorizes human-only actions (board_unpark)
+    // v7: the HUMAN token is NOT in board.port (agents can read it);
+    // it lives only in memory and in a SEPARATE file outside config_dir
     let human_token = new_token();
-    std::fs::write(path, format!("{port}\n{token}\n{human_token}"))?;
+    std::fs::write(path, format!("{port}\n{token}"))?;
     restrict_to_owner(path);
+    let _ = HUMAN_TOKEN.set((port, token.clone(), human_token.clone()));
+    let human_clone = human_token.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let handle = handle.clone();
             let token = token.clone();
-            let human_token = human_token.clone();
+            let human_token = human_clone.clone();
             std::thread::spawn(move || serve_conn(stream, handle, token, human_token));
         }
     });
     Ok(port)
+}
+
+/// The human token is published to a file OUTSIDE config_dir (agents
+/// read board.port; they must not see this). The TUI reads it once at
+/// startup and deletes the file.
+pub fn publish_human_token(token: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!("ai-commander-human-{}", std::process::id()));
+    let _ = std::fs::write(&path, token);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    path
+}
+
+/// Read and DELETE the human token file (the TUI does this once).
+pub fn take_human_token() -> Option<String> {
+    let path = std::env::temp_dir().join(format!("ai-commander-human-{}", std::process::id()));
+    let token = std::fs::read_to_string(&path).ok()?;
+    let _ = std::fs::remove_file(&path);
+    Some(token.trim().to_string())
 }
 
 /// Port file readable by the owning user only (on Unix; on Windows the
@@ -202,24 +230,33 @@ pub fn cleanup() {
 
 /// Is a board owner listening? (port file present + connectable)
 pub fn owner_alive() -> bool {
-    let Some((port, _token, _human)) = read_port_file(&port_file()) else {
+    let Some((port, _token)) = read_port_file(&port_file()) else {
         return false;
     };
     TcpStream::connect(("127.0.0.1", port)).is_ok()
 }
 
-/// The HUMAN token from the port file (local user authority), if present.
+/// The HUMAN token: read once from the temp file (not board.port!).
+/// Cached in memory for the process lifetime.
 pub fn human_token() -> Option<String> {
-    read_port_file(&port_file()).and_then(|(_, _, h)| h)
+    static CACHED: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    CACHED.get_or_init(take_human_token).clone()
 }
 
-fn read_port_file(path: &std::path::Path) -> Option<(u16, String, Option<String>)> {
+/// The owner's CURRENT human token (for publishing to the temp file).
+/// Only the board owner should call this.
+pub fn human_token_internal() -> Option<(u16, String, String)> {
+    HUMAN_TOKEN
+        .get()
+        .map(|(port, tok, human)| (*port, tok.clone(), human.clone()))
+}
+
+fn read_port_file(path: &std::path::Path) -> Option<(u16, String)> {
     let raw = std::fs::read_to_string(path).ok()?;
     let mut lines = raw.lines();
     let port: u16 = lines.next()?.trim().parse().ok()?;
     let token = lines.next()?.trim().to_string();
-    let human = lines.next().map(|l| l.trim().to_string());
-    Some((port, token, human))
+    Some((port, token))
 }
 
 /// One board tool call to the owner as the bearer of `role_token`.
@@ -235,7 +272,7 @@ pub fn call_owner_at(
     args: &Value,
     role_token: &str,
 ) -> Option<Result<String, String>> {
-    let (port, token, _human) = read_port_file(port_file)?;
+    let (port, token) = read_port_file(port_file)?;
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream
         .set_read_timeout(Some(Duration::from_secs(60)))

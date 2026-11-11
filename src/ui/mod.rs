@@ -318,8 +318,10 @@ pub struct App {
     pub ctx_usage: std::collections::HashMap<(String, String), (u64, u64, Option<f64>)>,
     /// К6: sessions with a Reported compaction (suppresses inference)
     pub compaction_reported: std::collections::HashSet<(String, String)>,
-    /// К10: running compaction animator for the open chat
-    pub defrag: Option<crate::ui::defrag::DefragAnimator>,
+    /// К10: running compaction animator for the open chat — bound to
+    /// (harness, native_id, compaction_id) so a new compaction replaces
+    /// a finished one, and switching chats drops a foreign dialog
+    pub defrag: Option<(String, String, String, crate::ui::defrag::DefragAnimator)>,
     /// К10: finished compaction history lines (one per compaction id)
     pub compaction_lines: Vec<(String, u64, u64)>,
     /// К12: compaction view mode (defrag | mini | off)
@@ -365,7 +367,15 @@ impl App {
             if owns {
                 board_is_view = false;
                 match kanban::ipc::serve_board(arc.clone()) {
-                    Ok(port) => crate::log_info!("board", "IPC owner on port {port}"),
+                    Ok(port) => {
+                        crate::log_info!("board", "IPC owner on port {port}");
+                        // v7: the human token goes to a TEMP file, not
+                        // board.port (agents can read that)
+                        if let Some((_, _, human)) = kanban::ipc::human_token_internal() {
+                            let p = kanban::ipc::publish_human_token(&human);
+                            crate::log_info!("board", "human token published to {}", p.display());
+                        }
+                    }
                     Err(e) => crate::log_warn!("board", "IPC server failed: {e}"),
                 }
                 // v5 #3: drop worktrees of tasks that no longer exist
@@ -601,6 +611,12 @@ impl App {
     pub fn open_session(&mut self, harness: &str, native_id: &str) {
         if self.cur.harness == harness && self.cur.native_id == native_id {
             return;
+        }
+        // v7: drop a DEFRAG dialog belonging to the PREVIOUS session
+        if let Some((h, n, _, _)) = self.defrag.as_ref() {
+            if h != harness || n != native_id {
+                self.defrag = None;
+            }
         }
         let title = self
             .sessions
@@ -865,7 +881,7 @@ impl App {
         Ok(())
     }
 
-    pub(crate) fn on_backend_event(&mut self, ev: BackendEvent) {
+    pub fn on_backend_event(&mut self, ev: BackendEvent) {
         match ev {
             BackendEvent::Connected { harness, version } => {
                 self.connecting.remove(&harness);
@@ -1217,7 +1233,7 @@ impl App {
                 // v6 feedback: opencode reports no window size (0) — a
                 // finished DEFRAG dialog still waits for the real after
                 // number, which arrives with THIS event
-                if let Some(an) = self.defrag.as_mut() {
+                if let Some((_, _, _, an)) = self.defrag.as_mut() {
                     if an.frame.phase == crate::ui::defrag::Phase::Done
                         && used < an.frame.used_before
                     {
@@ -1264,8 +1280,26 @@ impl App {
                 }
                 match status {
                     crate::backend::CompactionStatus::InProgress => {
+                        // v7: replace a FINISHED animator belonging to a
+                        // different compaction; keep a RUNNING one
+                        let finished = self.defrag.as_ref().is_some_and(|(_, _, _, an)| {
+                            an.frame.phase == crate::ui::defrag::Phase::Done
+                                || an.frame.phase == crate::ui::defrag::Phase::Failed
+                        });
+                        if self
+                            .defrag
+                            .as_ref()
+                            .is_some_and(|(h, n, _, _)| *h != harness || *n != native_id)
+                        {
+                            // foreign session — drop the stale dialog
+                            self.defrag = None;
+                        }
+                        let same_id = self
+                            .defrag
+                            .as_ref()
+                            .is_some_and(|(_, _, id, _)| *id == *compaction_id);
                         if open_chat
-                            && self.defrag.is_none()
+                            && (self.defrag.is_none() || finished || !same_id)
                             && summary_delta.is_none()
                             && self.compaction_view == crate::ui::defrag::CompactionView::Defrag
                         {
@@ -1284,18 +1318,23 @@ impl App {
                                 &self.cur.msgs,
                                 2_000,
                             );
-                            self.defrag = Some(crate::ui::defrag::DefragAnimator::new(
-                                &compaction_id,
-                                used.max(1),
-                                size.max(used.max(1)),
-                                shape,
-                                80 * 8,
-                                false,
+                            self.defrag = Some((
+                                harness.clone(),
+                                native_id.clone(),
+                                compaction_id.clone(),
+                                crate::ui::defrag::DefragAnimator::new(
+                                    &compaction_id,
+                                    used.max(1),
+                                    size.max(used.max(1)),
+                                    shape,
+                                    80 * 8,
+                                    false,
+                                ),
                             ));
                         }
                     }
                     crate::backend::CompactionStatus::Completed => {
-                        if let Some(an) = self.defrag.as_mut() {
+                        if let Some((_, _, _, an)) = self.defrag.as_mut() {
                             an.complete(self.ctx_usage.get(&key).map(|(u, _, _)| *u), None);
                         }
                         // К10: ONE history line per compaction id
@@ -1317,7 +1356,7 @@ impl App {
                         }
                     }
                     crate::backend::CompactionStatus::Failed => {
-                        if let Some(an) = self.defrag.as_mut() {
+                        if let Some((_, _, _, an)) = self.defrag.as_mut() {
                             an.complete(None, error.clone());
                         }
                     }
@@ -1327,7 +1366,7 @@ impl App {
                 }
                 if let Some(delta) = summary_delta {
                     if open_chat {
-                        if let Some(an) = self.defrag.as_mut() {
+                        if let Some((_, _, _, an)) = self.defrag.as_mut() {
                             an.summary_chunk(delta.as_str());
                         }
                     }
@@ -1612,14 +1651,22 @@ impl App {
             return;
         }
 
-        // К10: Esc collapses the DEFRAG overlay into the mini-map (the
-        // underlying animation keeps running; typing stays unblocked)
-        if k.code == crossterm::event::KeyCode::Esc
-            && self.defrag.is_some()
-            && self.compaction_view == crate::ui::defrag::CompactionView::Defrag
-        {
-            self.compaction_view = crate::ui::defrag::CompactionView::Mini;
+        // К10: Esc closes the CURRENT defrag dialog. The user
+        // preference `compaction_view` stays — the NEXT compaction opens
+        // a fresh dialog. Any other key also dismisses a DONE dialog.
+        if k.code == crossterm::event::KeyCode::Esc && self.defrag.is_some() {
+            self.defrag = None;
             return;
+        }
+        if self.defrag.is_some()
+            && self
+                .defrag
+                .as_ref()
+                .is_some_and(|(_, _, _, an)| an.frame.phase == crate::ui::defrag::Phase::Done)
+        {
+            // any keypress dismisses a completed dialog (v7: not just Esc)
+            self.defrag = None;
+            // fall through: the key is ALSO processed by the app
         }
 
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);

@@ -85,7 +85,7 @@ Run inside **Windows Terminal** (UTF-8, emoji, mouse). The first launch creates
 
 | Key | Action |
 |---|---|
-| `Enter` | send · `Alt+Enter`/`Ctrl+J` — newline |
+| `Enter` | send · `Ctrl+Enter`/`Shift+Enter`/`Ctrl+J` — newline |
 | `Esc` | stop following (the turn finishes in background; the next message steers it — the server has no abort) |
 | `Ctrl+N` | new chat · `Ctrl+K` — model picker (live list) · `Ctrl+H` — harness |
 | `Ctrl+P` | attach files (NC browser: `Ins` mark, `Tab` drives, `Enter` pick) |

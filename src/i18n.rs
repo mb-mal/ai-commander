@@ -197,7 +197,7 @@ pub fn t(lang: Lang, key: Str) -> &'static str {
             Str::PickAttach => "Attach",
             Str::ParentDir => ".. up",
 
-            Str::NewlineHint => "Alt+Enter = newline",
+            Str::NewlineHint => "Ctrl+Enter = newline",
             Str::NotConnected => "backend not connected",
             Str::Draft => "draft",
             Str::StopNote => {
@@ -284,7 +284,7 @@ pub fn t(lang: Lang, key: Str) -> &'static str {
             Str::PickAttach => "Прикрепить",
             Str::ParentDir => ".. наверх",
 
-            Str::NewlineHint => "Alt+Enter — перенос строки",
+            Str::NewlineHint => "Ctrl+Enter — перенос строки",
             Str::NotConnected => "бэкенд не подключён",
             Str::Draft => "черновик",
             Str::StopNote => {
