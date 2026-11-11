@@ -197,7 +197,7 @@ fn draw_help(app: &mut App, f: &mut Frame, size: Rect) {
             },
         ),
         (
-            "Alt+Enter / Ctrl+J",
+            "Ctrl+Enter / Shift+Enter / Ctrl+J",
             if ru {
                 "перенос строки"
             } else {
