@@ -61,7 +61,9 @@ pub struct DshBackend {
     events: UnboundedSender<BackendEvent>,
     store_path: PathBuf,
     store: Arc<Mutex<DshStore>>,
-    child: Mutex<Option<Child>>,
+    /// v8 #9: children keyed by session id — parallel sessions
+    /// must not overwrite each other's process handles
+    children: Mutex<std::collections::HashMap<String, Child>>,
     connected: AtomicBool,
 }
 
@@ -117,7 +119,7 @@ impl DshBackend {
             events,
             store_path,
             store: Arc::new(Mutex::new(store)),
-            child: Mutex::new(None),
+            children: Mutex::new(std::collections::HashMap::new()),
             connected: AtomicBool::new(false),
         }
     }
@@ -513,7 +515,7 @@ impl Backend for DshBackend {
         }
         drop(stdin);
         let stdout = child.stdout.take().expect("piped stdout");
-        *self.child.lock() = Some(child);
+        self.children.lock().insert(native_id.to_string(), child);
 
         let events = self.events.clone();
         let harness = self.cfg.id.clone();
@@ -684,8 +686,8 @@ impl Backend for DshBackend {
         Ok(())
     }
 
-    async fn abort(&self, _native_id: &str) -> Result<()> {
-        if let Some(mut ch) = self.child.lock().take() {
+    async fn abort(&self, native_id: &str) -> Result<()> {
+        if let Some(mut ch) = self.children.lock().remove(native_id) {
             kill_tree(&mut ch);
         }
         Ok(())
@@ -707,7 +709,8 @@ impl Backend for DshBackend {
 
     fn shutdown(&self) {
         self.connected.store(false, Ordering::Relaxed);
-        if let Some(mut ch) = self.child.lock().take() {
+        let mut children = self.children.lock();
+        for (_, mut ch) in children.drain() {
             kill_tree(&mut ch);
         }
     }

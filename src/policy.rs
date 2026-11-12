@@ -122,7 +122,13 @@ pub fn normalize_path(p: &str) -> String {
         match c {
             "" | "." => {}
             ".." => {
-                out.pop(); // never below the root of the expression
+                // v8 #5: leading ".." must SURVIVE — dropping it turns
+                // ../src/lib.rs into src/lib.rs which matches scoped allows
+                if out.last().is_some_and(|x| *x != "..") {
+                    out.pop();
+                } else {
+                    out.push("..");
+                }
             }
             other => out.push(other),
         }
