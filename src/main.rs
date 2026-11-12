@@ -558,7 +558,22 @@ async fn run_daemon(cfg: Config) -> Result<()> {
         std::collections::HashMap::new();
     // v6 #3: high-water mark of processed human  comments
     let mut last_permit_ts: i64 = 0;
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
+        // v8 #8: wait for EITHER an event (immediate) or the 2s tick —
+        // permission requests and StreamDone no longer lag up to 2 s
+        let _periodic = tokio::select! {
+            ev = rx.recv() => {
+                if ev.is_none() {
+                    // channel closed — exit the daemon cleanly
+                    return Ok(());
+                }
+                // fall through to the drain loop below which handles it
+                false
+            }
+            _ = tick.tick() => { true }
+        };
         // 1) drain finished turns via TaskRunner (Б8: classify + transition)
         use backend::PartKind;
         while let Ok(ev) = rx.try_recv() {
@@ -588,10 +603,14 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                     }
                 }
                 backend::BackendEvent::PartUpdated {
-                    native_id, harness, ..
+                    native_id,
+                    harness,
+                    part,
+                    ..
                 } => {
                     // v4 Д1: tool-call progress (PartUpdated, no delta text)
-                    // is a liveness signal — renew the task lease
+                    // is a liveness signal — renew the task lease.
+                    // v8 #1: Text-kind PartUpdated REPLACES the reply (dsh)
                     let task_id = {
                         let b = board.lock();
                         b.find_by_session(harness, native_id).map(|t| t.id)
@@ -599,6 +618,11 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                     if let Some(id) = task_id {
                         let mut b = board.lock();
                         ai_commander::kanban::runner::on_activity(&mut b, &id);
+                        drop(b);
+                        if part.kind == backend::PartKind::Text {
+                            // v8 #1: the daemon keys replies by TASK id
+                            task_replies.insert(id, part.text.clone());
+                        }
                     }
                 }
                 backend::BackendEvent::StreamDone { native_id, harness } => {

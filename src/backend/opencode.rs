@@ -925,14 +925,31 @@ fn handle_sse_event(
                 format!("{action}: {resource}")
             };
             if !sid.is_empty() && !request_id.is_empty() {
+                // v8 #7: ALL touched resources, not just the first —
+                // the policy engine checks the strictest across them
+                let resources: Vec<String> = props
+                    .get("resources")
+                    .and_then(Value::as_array)
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|r| r.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let resources = if resources.is_empty() {
+                    vec![resource.to_string()]
+                } else {
+                    resources
+                };
+                let resource = resources.first().cloned().unwrap_or_default();
                 send(BackendEvent::PermissionRequest {
                     harness: harness.into(),
                     session_id: sid,
                     request_id,
                     title,
                     action: action.to_string(),
-                    resource: resource.to_string(),
-                    resources: vec![resource.to_string()],
+                    resource,
+                    resources,
                 });
             }
         }

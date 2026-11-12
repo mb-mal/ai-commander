@@ -420,7 +420,20 @@ pub fn board_tool_call(
                     "you cannot approve your own work — a different role must review".into(),
                 );
             }
-            let t = board.transition(&id, action)?;
+            // v8 #3: transition_in so Approve merges the worktree back
+            // and Cancel drops it — but ONLY for tasks that HAVE a worktree
+            // (base_branch or worktree_path set); memory-store tasks
+            // (tests, IPC without a git repo) use plain transition
+            let has_worktree =
+                board.projection().tasks.iter().any(|t| {
+                    t.id == id && (!t.base_branch.is_empty() || !t.worktree_path.is_empty())
+                });
+            let t = if has_worktree {
+                let repo = std::env::current_dir().unwrap_or_default();
+                board.transition_in(&repo, &id, action)?
+            } else {
+                board.transition(&id, action)?
+            };
             Ok(format!("{} → {:?}", t.id, t.status))
         }
         "board_comment" => {

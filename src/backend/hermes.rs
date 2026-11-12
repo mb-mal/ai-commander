@@ -72,7 +72,9 @@ pub struct HermesBackend {
     events: UnboundedSender<BackendEvent>,
     store_path: PathBuf,
     store: Arc<Mutex<HermesStore>>,
-    child: Mutex<Option<Child>>,
+    /// v8 #9: children keyed by session id — parallel sessions
+    /// must not overwrite each other's process handles
+    children: Mutex<std::collections::HashMap<String, Child>>,
     connected: AtomicBool,
 }
 
@@ -107,7 +109,7 @@ impl HermesBackend {
             events,
             store_path,
             store: Arc::new(Mutex::new(store)),
-            child: Mutex::new(None),
+            children: Mutex::new(std::collections::HashMap::new()),
             connected: AtomicBool::new(false),
         }
     }
@@ -331,7 +333,7 @@ impl Backend for HermesBackend {
         drop(stdin);
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take();
-        *self.child.lock() = Some(child);
+        self.children.lock().insert(native_id.to_string(), child);
 
         // drain stderr so the pipe never fills; keep a tail for error reports
         let err_tail = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -526,8 +528,8 @@ impl Backend for HermesBackend {
     }
 
     /// Esc really terminates the running hermes turn (whole process tree).
-    async fn abort(&self, _native_id: &str) -> Result<()> {
-        if let Some(mut ch) = self.child.lock().take() {
+    async fn abort(&self, native_id: &str) -> Result<()> {
+        if let Some(mut ch) = self.children.lock().remove(native_id) {
             kill_tree(&mut ch);
         }
         Ok(())
@@ -594,7 +596,8 @@ impl Backend for HermesBackend {
 
     fn shutdown(&self) {
         self.connected.store(false, Ordering::Relaxed);
-        if let Some(mut ch) = self.child.lock().take() {
+        let mut children = self.children.lock();
+        for (_, mut ch) in children.drain() {
             kill_tree(&mut ch);
         }
     }
