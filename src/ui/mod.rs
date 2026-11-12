@@ -313,6 +313,11 @@ pub struct App {
     pub sel_cursor: usize,
     /// UX: Ctrl+F search — the query and the current match line
     pub search: Option<SearchState>,
+    /// v8 #10: permission requests queued while another modal is open —
+    /// a parallel task's request must not silently overwrite the current
+    /// one (the backend would hang waiting for a reply)
+    pub pending_permissions:
+        std::collections::VecDeque<(String, String, String, String, String, Vec<String>)>,
     /// К1: last context-window usage per (harness, session):
     /// (used tokens, window size, cumulative session cost USD)
     pub ctx_usage: std::collections::HashMap<(String, String), (u64, u64, Option<f64>)>,
@@ -451,6 +456,7 @@ impl App {
             sel_anchor: None,
             sel_cursor: 0,
             search: None,
+            pending_permissions: Default::default(),
             input_rx,
         };
         app.ensure_backend(&active);
@@ -909,17 +915,31 @@ impl App {
                 native_id,
                 title,
             } => {
+                // v8 #2: rebind ONLY the ONE pending task that belongs to
+                // this harness — not every pending-* on the board (that
+                // stole the id when a parallel chat also got created)
                 {
                     let mut b = self.board.lock();
                     let pendings: Vec<String> = b
                         .projection()
                         .tasks
                         .iter()
+                        .filter(|t| {
+                            t.session_id
+                                .as_deref()
+                                .is_some_and(|sid| sid.starts_with("pending-"))
+                                && t.harness.as_deref() == Some(&harness)
+                        })
                         .filter_map(|t| t.session_id.clone())
-                        .filter(|sid| sid.starts_with("pending-"))
                         .collect();
                     for p in pendings {
                         b.rebind_session(&p, &native_id);
+                        // v8 #2: transfer the accumulated reply buffer to
+                        // the new key so StreamDone finds it
+                        if let Some(reply) = self.task_replies.remove(&(harness.clone(), p)) {
+                            self.task_replies
+                                .insert((harness.clone(), native_id.clone()), reply);
+                        }
                     }
                 }
                 let old = if self.cur.harness == harness {
@@ -972,7 +992,9 @@ impl App {
                 delta,
             } => {
                 // heartbeat (Д1): renew lease on ANY progress event — Text,
-                // Reasoning, tool calls all indicate the agent is alive
+                // Reasoning, tool calls all indicate the agent is alive.
+                // v8 #1: ALSO accumulate the reply text so StreamDone has
+                // something to classify (was always empty → Failed)
                 {
                     let task_id = {
                         let b = self.board.lock();
@@ -981,6 +1003,13 @@ impl App {
                     if let Some(id) = task_id {
                         let mut b = self.board.lock();
                         kanban::runner::on_progress_no_reply(&mut b, &id, &delta);
+                        drop(b);
+                        if kind == PartKind::Text {
+                            self.task_replies
+                                .entry((harness.clone(), native_id.clone()))
+                                .or_default()
+                                .push_str(&delta);
+                        }
                     }
                 }
                 if self.follow {
@@ -995,7 +1024,9 @@ impl App {
             } => {
                 // v4 Д1: tool-call progress (PartUpdated, no delta text) is a
                 // liveness signal — renew the task lease so a long tool call
-                // inside one turn is not watchdog-interrupted
+                // inside one turn is not watchdog-interrupted.
+                // v8 #1: Text-kind PartUpdated REPLACES the accumulated
+                // reply (dsh emits cumulative updates, not deltas)
                 {
                     let task_id = {
                         let b = self.board.lock();
@@ -1004,6 +1035,11 @@ impl App {
                     if let Some(id) = task_id {
                         let mut b = self.board.lock();
                         kanban::runner::on_activity(&mut b, &id);
+                        drop(b);
+                        if part.kind == PartKind::Text {
+                            self.task_replies
+                                .insert((harness.clone(), native_id.clone()), part.text.clone());
+                        }
                     }
                 }
                 if self.follow {
@@ -1055,23 +1091,30 @@ impl App {
                     }
                     crate::policy::Effect::Ask => {}
                 }
-                // the agent asks before acting — surface a modal (NC silver)
+                // the agent asks before acting — surface a modal (NC silver).
+                // v8 #10: if a permission modal is ALREADY open, QUEUE this
+                // request instead of overwriting (the backend would hang)
                 let lang = self.cfg.lang;
                 let items = vec![
                     ("once".into(), t(lang, Str::PermOnce).to_string()),
                     ("always".into(), t(lang, Str::PermAlways).to_string()),
                     ("reject".into(), t(lang, Str::PermReject).to_string()),
                 ];
-                self.modal = Some(Modal::List {
-                    title: format!("⚠ {title}"),
-                    items,
-                    sel: 0,
-                    action: ListAction::PermissionReply {
-                        harness,
-                        session_id,
-                        request_id,
-                    },
-                });
+                if self.modal.is_some() {
+                    self.pending_permissions
+                        .push_back((harness, session_id, request_id, title, action, resources));
+                } else {
+                    self.modal = Some(Modal::List {
+                        title: format!("⚠ {title}"),
+                        items,
+                        sel: 0,
+                        action: ListAction::PermissionReply {
+                            harness,
+                            session_id,
+                            request_id,
+                        },
+                    });
+                }
             }
             BackendEvent::Reconnected { harness } => {
                 // SSE dropped and recovered: resync list + current history
@@ -1103,10 +1146,23 @@ impl App {
                 }
             }
             BackendEvent::StreamDone { harness, native_id } => {
-                // a task turn finished: classify DONE/BLOCKED/ASK -> FSM
+                // a task turn finished: classify DONE/BLOCKED/ASK -> FSM.
+                // v8 #2: the session may have been rebound from pending-* to
+                // the real id — check BOTH keys (the reply buffer too)
                 let task = {
                     let b = self.board.lock();
-                    b.find_by_session(&harness, &native_id)
+                    b.find_by_session(&harness, &native_id).or_else(|| {
+                        // the pending-* key no longer matches — try any task
+                        // whose session was JUST rebound (the reply buffer
+                        // was transferred to the real key in SessionCreated)
+                        let real_reply =
+                            self.task_replies.get(&(harness.clone(), native_id.clone()));
+                        if real_reply.is_some() {
+                            b.find_by_session(&harness, &native_id)
+                        } else {
+                            None
+                        }
+                    })
                 };
                 if let Some(task) = task {
                     let reply = self
@@ -1508,7 +1564,7 @@ impl App {
                         start_y,
                         max,
                     } => {
-                        let dy = m.column as i32 - start_y as i32;
+                        let dy = m.row as i32 - start_y as i32;
                         // dy of 1 row = max/visible rows of content
                         let rows = self.hit.chat_rect.height.max(1) as i32;
                         let d_off = dy * max as i32 / rows;
@@ -2290,9 +2346,12 @@ impl App {
         let Some(t) = self.selected_board_task() else {
             return;
         };
+        // v8 #3: transition_in so Approve MERGES the worktree and Cancel
+        // drops it — plain transition() skipped the git side-effects
+        let repo = std::env::current_dir().unwrap_or_default();
         let outcome = {
             let mut b = self.board.lock();
-            b.transition(&t.id, action)
+            b.transition_in(&repo, &t.id, action)
         };
         match outcome {
             Ok(updated) => self.toast(format!("{} → {:?}", updated.id, updated.status), false),
@@ -2419,6 +2478,36 @@ impl App {
 
     // ---------------- modal key handling ----------------
 
+    /// v8 #10: open the next queued permission request (if any) after the
+    /// current modal closes. A parallel task's request must not be lost.
+    fn show_next_pending_permission(&mut self) {
+        if self.modal.is_some() {
+            return;
+        }
+        let Some((harness, session_id, request_id, title, _action, _resources)) =
+            self.pending_permissions.pop_front()
+        else {
+            return;
+        };
+        let lang = self.cfg.lang;
+        let items = vec![
+            ("once".into(), t(lang, Str::PermOnce).to_string()),
+            ("always".into(), t(lang, Str::PermAlways).to_string()),
+            ("reject".into(), t(lang, Str::PermReject).to_string()),
+        ];
+        self.approvals_pending += 1;
+        self.modal = Some(Modal::List {
+            title: format!("⚠ {title}"),
+            items,
+            sel: 0,
+            action: ListAction::PermissionReply {
+                harness,
+                session_id,
+                request_id,
+            },
+        });
+    }
+
     fn modal_key(&mut self, k: crossterm::event::KeyEvent) {
         use crossterm::event::{KeyCode, KeyModifiers};
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
@@ -2426,6 +2515,7 @@ impl App {
         // Esc closes any modal (except when typing — still closes)
         if k.code == KeyCode::Esc {
             self.modal = None;
+            self.show_next_pending_permission();
             return;
         }
 
