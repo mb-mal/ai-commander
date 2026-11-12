@@ -9,6 +9,8 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
+use std::time::Instant;
+
 use ai_commander::{backend, config, i18n, ui};
 
 use std::io::stdout;
@@ -132,7 +134,6 @@ async fn main() -> Result<()> {
 
 async fn run_send(cfg: Config, text: &str, wait_secs: u64, harness_id: &str) -> Result<()> {
     use backend::{BackendEvent, PartKind, SendOpts, create_backend};
-    use std::time::Instant;
 
     let harness_cfg = cfg
         .harnesses
@@ -327,7 +328,6 @@ async fn run_check(cfg: Config, harness_id: &str) -> Result<()> {
 async fn run_task(cfg: Config, title: &str, wait_secs: u64, harness_id: &str) -> Result<()> {
     use ai_commander::kanban::{TaskAction, classify_reply, store::BoardStore};
     use backend::{BackendEvent, PartKind, SendOpts, create_backend};
-    use std::time::Instant;
 
     let harness_cfg = cfg
         .harnesses
@@ -476,7 +476,6 @@ fn print_mcp_config() -> Result<()> {
 async fn run_daemon(cfg: Config) -> Result<()> {
     use ai_commander::kanban::{TaskStatus, store::BoardStore};
     use backend::{BackendEvent, create_backend};
-    use std::time::Instant;
 
     let mut backends: std::collections::HashMap<String, std::sync::Arc<dyn backend::Backend>> =
         std::collections::HashMap::new();
@@ -558,26 +557,66 @@ async fn run_daemon(cfg: Config) -> Result<()> {
         std::collections::HashMap::new();
     // v6 #3: high-water mark of processed human  comments
     let mut last_permit_ts: i64 = 0;
+    // v9 #2: (harness, pending_id) -> real_id for event normalization
+    let mut rebound: std::collections::HashMap<(String, String), String> =
+        std::collections::HashMap::new();
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        // v8 #8: wait for EITHER an event (immediate) or the 2s tick —
-        // permission requests and StreamDone no longer lag up to 2 s
-        let _periodic = tokio::select! {
+        // v8 #8 / v9 #1: wait for EITHER an event (immediate) or the 2s
+        // tick. The event from select! is KEPT and processed first —
+        // the old code dropped it (every lone event was lost).
+        let (first_ev, periodic) = tokio::select! {
             ev = rx.recv() => {
-                if ev.is_none() {
-                    // channel closed — exit the daemon cleanly
-                    return Ok(());
+                match ev {
+                    Some(e) => (Some(e), false),
+                    None => return Ok(()), // channel closed
                 }
-                // fall through to the drain loop below which handles it
-                false
             }
-            _ = tick.tick() => { true }
+            _ = tick.tick() => (None, true)
         };
+        // v9 #6: periodic tasks (cron, watchdog, launch, OTel) run ONLY
+        // on the timer tick or when a turn finishes — not on every PartDelta
+        let do_periodic = periodic;
+        // v9 #1: process the FIRST event from select! + drain the rest
         // 1) drain finished turns via TaskRunner (Б8: classify + transition)
         use backend::PartKind;
+        let mut events: Vec<backend::BackendEvent> = Vec::new();
+        if let Some(ev) = first_ev {
+            events.push(ev);
+        }
         while let Ok(ev) = rx.try_recv() {
-            match &ev {
+            events.push(ev);
+        }
+        for ev in &events {
+            // v9 #2: handle SessionCreated (rebind pending tasks on the board)
+            if let backend::BackendEvent::SessionCreated {
+                harness, native_id, ..
+            } = ev
+            {
+                let mut b = board.lock();
+                let pendings: Vec<String> = b
+                    .projection()
+                    .tasks
+                    .iter()
+                    .filter(|t| {
+                        t.session_id
+                            .as_deref()
+                            .is_some_and(|sid| sid.starts_with("pending-"))
+                            && t.harness.as_deref() == Some(harness.as_str())
+                    })
+                    .filter_map(|t| t.session_id.clone())
+                    .collect();
+                for pid in pendings {
+                    b.rebind_session(&pid, native_id);
+                    rebound.insert((harness.clone(), pid), native_id.clone());
+                }
+                continue;
+            }
+            // v9 #2: normalize native_id through the rebind map
+            let ev = normalize_event_id(ev, &rebound);
+            let ev = &ev;
+            match ev {
                 backend::BackendEvent::PartDelta {
                     native_id,
                     harness,
@@ -746,6 +785,11 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                 }
                 _ => {}
             }
+        }
+
+        if !do_periodic {
+            // v9 #6: skip the heavy periodic work on event-only iterations
+            continue;
         }
 
         // 1.5) cron triggers: spawn due recurring tasks
@@ -932,8 +976,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                 }
             }
         }
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        let _ = Instant::now();
+        // v9 #6: no unconditional sleep — tick.tick() above IS the timer
     }
 }
 
@@ -1023,4 +1066,48 @@ async fn run_tui(cfg: Config) -> Result<()> {
     ai_commander::kanban::ipc::cleanup();
     guard.release();
     run_result
+}
+
+/// v9 #2: rewrite the native_id of an event through the rebind map so all
+/// handlers see the real session id even when the backend sends pending-*.
+fn normalize_event_id(
+    ev: &backend::BackendEvent,
+    rebound: &std::collections::HashMap<(String, String), String>,
+) -> backend::BackendEvent {
+    let fix = |harness: &str, id: &str| -> String {
+        rebound
+            .get(&(harness.to_string(), id.to_string()))
+            .cloned()
+            .unwrap_or_else(|| id.to_string())
+    };
+    let mut ev = ev.clone();
+    match &mut ev {
+        backend::BackendEvent::PartDelta {
+            harness, native_id, ..
+        }
+        | backend::BackendEvent::PartUpdated {
+            harness, native_id, ..
+        }
+        | backend::BackendEvent::StreamDone { harness, native_id }
+        | backend::BackendEvent::StreamError {
+            harness, native_id, ..
+        }
+        | backend::BackendEvent::Usage {
+            harness, native_id, ..
+        }
+        | backend::BackendEvent::Compaction {
+            harness, native_id, ..
+        } => {
+            *native_id = fix(harness, native_id);
+        }
+        backend::BackendEvent::PermissionRequest {
+            harness,
+            session_id,
+            ..
+        } => {
+            *session_id = fix(harness, session_id);
+        }
+        _ => {}
+    }
+    ev
 }

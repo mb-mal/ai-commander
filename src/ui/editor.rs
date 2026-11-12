@@ -178,22 +178,45 @@ impl Editor {
         self.col = self.lines[self.row].chars().count();
     }
 
+    /// Display position of the cursor (unwrapped, width in cells).
+    /// v9 #5: display width via UnicodeWidthStr (CJK/emoji = 2 cells).
+    pub fn screen_cursor(&self) -> (u16, u16) {
+        let line = self.lines.get(self.row).map(|s| s.as_str()).unwrap_or("");
+        let prefix = &line[..self.col.min(line.len())];
+        let col = unicode_width::UnicodeWidthStr::width(prefix);
+        (self.row as u16, col as u16)
+    }
+
     /// Display position of the cursor after soft-wrapping at `width`:
     /// (wrapped_line_index, column_within_line).
-    pub fn screen_cursor(&self, width: usize) -> (usize, usize) {
-        let width = width.max(1);
-        let mut row_offset = 0usize;
+    pub fn screen_cursor_wrapped(&self, width: usize) -> (u16, u16) {
+        let mut row_offset = 0u16;
         for (i, line) in self.lines.iter().enumerate() {
-            let n = line.chars().count();
-            let wrapped = if n == 0 { 1 } else { n.div_ceil(width) };
+            let n = unicode_width::UnicodeWidthStr::width(line.as_str());
+            let wrapped: u16 = if width == 0 {
+                1
+            } else {
+                n.div_ceil(width) as u16
+            };
             if i == self.row {
-                let c = self.col.min(n);
-                let r = c / width;
-                return (row_offset + r, c % width);
+                let c = self.col.min(line.chars().count());
+                let w = self.display_col(line, c);
+                let r = w / width;
+                return (row_offset + r as u16, (w % width) as u16);
             }
             row_offset += wrapped;
         }
         (row_offset, 0)
+    }
+
+    /// Display column (in cells) of char index `char_idx` within `line`.
+    fn display_col(&self, line: &str, char_idx: usize) -> usize {
+        let end = line
+            .char_indices()
+            .nth(char_idx)
+            .map(|(b, _)| b)
+            .unwrap_or(line.len());
+        unicode_width::UnicodeWidthStr::width(&line[..end])
     }
 }
 
@@ -238,7 +261,7 @@ mod tests {
     fn screen_cursor_wraps() {
         let mut ed = Editor::with_text("abcdefghij");
         ed.end();
-        let (r, c) = ed.screen_cursor(4);
+        let (r, c) = ed.screen_cursor_wrapped(4);
         assert_eq!((r, c), (2, 2));
     }
 }

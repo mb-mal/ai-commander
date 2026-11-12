@@ -765,10 +765,10 @@ fn draw_composer(app: &mut App, f: &mut Frame, area: Rect) {
     );
 
     if focus {
-        let (r, c) = app.editor.screen_cursor(width);
+        let (r, c) = app.editor.screen_cursor_wrapped(width);
         let (r, c) = if placeholder { (0, 0) } else { (r, c) };
-        let y = inner.y + r as u16;
-        let x = inner.x + c as u16 + 1;
+        let y = inner.y + r;
+        let x = inner.x + c + 1;
         if y < inner.bottom() {
             f.set_cursor_position((x, y));
         }

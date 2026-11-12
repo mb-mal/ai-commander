@@ -313,6 +313,9 @@ pub struct App {
     pub sel_cursor: usize,
     /// UX: Ctrl+F search — the query and the current match line
     pub search: Option<SearchState>,
+    /// v9 #2: (harness, pending_id) -> real_id — populated on
+    /// SessionCreated; all event handlers normalize native_id through it
+    pub rebound_sessions: std::collections::HashMap<(String, String), String>,
     /// v8 #10: permission requests queued while another modal is open —
     /// a parallel task's request must not silently overwrite the current
     /// one (the backend would hang waiting for a reply)
@@ -456,6 +459,7 @@ impl App {
             sel_anchor: None,
             sel_cursor: 0,
             search: None,
+            rebound_sessions: Default::default(),
             pending_permissions: Default::default(),
             input_rx,
         };
@@ -615,7 +619,10 @@ impl App {
     }
 
     pub fn open_session(&mut self, harness: &str, native_id: &str) {
-        if self.cur.harness == harness && self.cur.native_id == native_id {
+        let matches_cur = self.cur.harness == harness
+            && (self.cur.native_id == native_id
+                || self.cur.prev_native_id.as_deref() == Some(native_id));
+        if matches_cur {
             return;
         }
         // v7: drop a DEFRAG dialog belonging to the PREVIOUS session
@@ -915,9 +922,10 @@ impl App {
                 native_id,
                 title,
             } => {
-                // v8 #2: rebind ONLY the ONE pending task that belongs to
-                // this harness — not every pending-* on the board (that
-                // stole the id when a parallel chat also got created)
+                // v8 #2 / v9 #2: rebind ONLY the ONE pending task that
+                // belongs to this harness; record the mapping so ALL event
+                // handlers (PartDelta, StreamDone, Usage, Compaction) can
+                // normalize the old pending-* id to the real one
                 {
                     let mut b = self.board.lock();
                     let pendings: Vec<String> = b
@@ -934,8 +942,10 @@ impl App {
                         .collect();
                     for p in pendings {
                         b.rebind_session(&p, &native_id);
-                        // v8 #2: transfer the accumulated reply buffer to
-                        // the new key so StreamDone finds it
+                        // remember: (harness, pending_id) -> real_id
+                        self.rebound_sessions
+                            .insert((harness.clone(), p.clone()), native_id.clone());
+                        // transfer the accumulated reply buffer
                         if let Some(reply) = self.task_replies.remove(&(harness.clone(), p)) {
                             self.task_replies
                                 .insert((harness.clone(), native_id.clone()), reply);
@@ -969,7 +979,10 @@ impl App {
                 native_id,
                 msgs,
             } => {
-                if self.cur.harness == harness && self.cur.native_id == native_id {
+                let matches_cur = self.cur.harness == harness
+                    && (self.cur.native_id == native_id
+                        || self.cur.prev_native_id.as_deref() == Some(native_id.as_str()));
+                if matches_cur {
                     self.cur.msgs = msgs;
                     self.cur.loading = false;
                 }
@@ -991,6 +1004,13 @@ impl App {
                 kind,
                 delta,
             } => {
+                // v9 #2: normalize pending-* -> real_id (backends stream
+                // deltas under the OLD id even after SessionCreated)
+                let native_id = self
+                    .rebound_sessions
+                    .get(&(harness.clone(), native_id.clone()))
+                    .cloned()
+                    .unwrap_or(native_id);
                 // heartbeat (Д1): renew lease on ANY progress event — Text,
                 // Reasoning, tool calls all indicate the agent is alive.
                 // v8 #1: ALSO accumulate the reply text so StreamDone has
@@ -1022,6 +1042,12 @@ impl App {
                 msg_id,
                 part,
             } => {
+                // v9 #2: normalize pending-* -> real_id
+                let native_id = self
+                    .rebound_sessions
+                    .get(&(harness.clone(), native_id.clone()))
+                    .cloned()
+                    .unwrap_or(native_id);
                 // v4 Д1: tool-call progress (PartUpdated, no delta text) is a
                 // liveness signal — renew the task lease so a long tool call
                 // inside one turn is not watchdog-interrupted.
@@ -1146,9 +1172,14 @@ impl App {
                 }
             }
             BackendEvent::StreamDone { harness, native_id } => {
+                // v9 #2: normalize pending-* -> real_id FIRST — the board
+                // already has the real id, the event carries the old one
+                let native_id = self
+                    .rebound_sessions
+                    .get(&(harness.clone(), native_id.clone()))
+                    .cloned()
+                    .unwrap_or(native_id);
                 // a task turn finished: classify DONE/BLOCKED/ASK -> FSM.
-                // v8 #2: the session may have been rebound from pending-* to
-                // the real id — check BOTH keys (the reply buffer too)
                 let task = {
                     let b = self.board.lock();
                     b.find_by_session(&harness, &native_id).or_else(|| {
@@ -1195,7 +1226,10 @@ impl App {
                         .remove(&(harness.clone(), self.cur.native_id.clone()));
                     self.cur.prev_native_id = None;
                 }
-                if self.cur.harness == harness && self.cur.native_id == native_id {
+                let matches_cur = self.cur.harness == harness
+                    && (self.cur.native_id == native_id
+                        || self.cur.prev_native_id.as_deref() == Some(native_id.as_str()));
+                if matches_cur {
                     self.last_sent = None;
                     if !self.follow {
                         // detached earlier — pull the finished turn from history
@@ -1211,6 +1245,12 @@ impl App {
                 native_id,
                 error,
             } => {
+                // v9 #2: normalize pending-* -> real_id
+                let native_id = self
+                    .rebound_sessions
+                    .get(&(harness.clone(), native_id.clone()))
+                    .cloned()
+                    .unwrap_or(native_id);
                 self.busy.remove(&(harness.clone(), native_id.clone()));
                 // v4 Н2: mark the task session so the following StreamDone
                 // classifies as Failed regardless of any DONE: marker
@@ -1224,7 +1264,10 @@ impl App {
                             .insert((harness.clone(), native_id.clone()));
                     }
                 }
-                if self.cur.harness == harness && self.cur.native_id == native_id {
+                let matches_cur = self.cur.harness == harness
+                    && (self.cur.native_id == native_id
+                        || self.cur.prev_native_id.as_deref() == Some(native_id.as_str()));
+                if matches_cur {
                     self.follow = true;
                     let msg = ChatMsg {
                         msg_id: format!("err_{}", self.cur.msgs.len()),
@@ -2495,7 +2538,6 @@ impl App {
             ("always".into(), t(lang, Str::PermAlways).to_string()),
             ("reject".into(), t(lang, Str::PermReject).to_string()),
         ];
-        self.approvals_pending += 1;
         self.modal = Some(Modal::List {
             title: format!("⚠ {title}"),
             items,
@@ -2512,8 +2554,28 @@ impl App {
         use crossterm::event::{KeyCode, KeyModifiers};
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
 
-        // Esc closes any modal (except when typing — still closes)
+        // Esc closes any modal; on a permission modal it also REJECTS
+        // so the backend doesn't hang waiting for a reply (v9 #3)
         if k.code == KeyCode::Esc {
+            if let Some(Modal::List {
+                action:
+                    ListAction::PermissionReply {
+                        harness,
+                        session_id,
+                        request_id,
+                    },
+                ..
+            }) = self.modal.clone()
+            {
+                if let Some(b) = self.backends.get(&harness).cloned() {
+                    let s = session_id.clone();
+                    let r = request_id.clone();
+                    tokio::spawn(async move {
+                        let _ = b.permission_reply(&s, &r, "reject").await;
+                    });
+                }
+                self.approvals_pending = self.approvals_pending.saturating_sub(1);
+            }
             self.modal = None;
             self.show_next_pending_permission();
             return;
@@ -2968,7 +3030,10 @@ impl App {
                 if title.is_empty() {
                     return;
                 }
-                if self.cur.harness == harness && self.cur.native_id == native_id {
+                let matches_cur = self.cur.harness == harness
+                    && (self.cur.native_id == native_id
+                        || self.cur.prev_native_id.as_deref() == Some(native_id.as_str()));
+                if matches_cur {
                     self.cur.title = title.clone();
                 }
                 if let Some(sessions) = self.sessions.get_mut(&harness) {
@@ -3032,7 +3097,10 @@ impl App {
     fn apply_confirm(&mut self, action: ConfirmAction) {
         match action {
             ConfirmAction::DeleteSession { harness, native_id } => {
-                if self.cur.harness == harness && self.cur.native_id == native_id {
+                let matches_cur = self.cur.harness == harness
+                    && (self.cur.native_id == native_id
+                        || self.cur.prev_native_id.as_deref() == Some(native_id.as_str()));
+                if matches_cur {
                     self.cur = CurrentChat::draft(&self.active_harness.clone());
                 }
                 self.sessions
