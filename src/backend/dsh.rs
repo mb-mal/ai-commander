@@ -63,7 +63,7 @@ pub struct DshBackend {
     store: Arc<Mutex<DshStore>>,
     /// v8 #9: children keyed by session id — parallel sessions
     /// must not overwrite each other's process handles
-    children: Mutex<std::collections::HashMap<String, Child>>,
+    children: std::sync::Arc<Mutex<std::collections::HashMap<String, Child>>>,
     connected: AtomicBool,
 }
 
@@ -119,7 +119,7 @@ impl DshBackend {
             events,
             store_path,
             store: Arc::new(Mutex::new(store)),
-            children: Mutex::new(std::collections::HashMap::new()),
+            children: std::sync::Arc::new(Mutex::new(std::collections::HashMap::new())),
             connected: AtomicBool::new(false),
         }
     }
@@ -520,6 +520,8 @@ impl Backend for DshBackend {
         let events = self.events.clone();
         let harness = self.cfg.id.clone();
         let sent_id = native_id.to_string();
+        let children: std::sync::Arc<Mutex<std::collections::HashMap<String, Child>>> =
+            Arc::clone(&self.children);
         let user_text = text.to_string();
         let store = Arc::clone(&self.store);
         let store_path = self.store_path.clone();
@@ -678,6 +680,10 @@ impl Backend for DshBackend {
                     estimated: true,
                 });
             }
+            // v9 #4: the process finished — remove and reap
+            if let Some(mut ch) = children.lock().remove(&sent_id) {
+                let _ = ch.wait();
+            }
             let _ = events.send(BackendEvent::StreamDone {
                 harness,
                 native_id: sent_id, // the id the UI tracks
@@ -687,7 +693,12 @@ impl Backend for DshBackend {
     }
 
     async fn abort(&self, native_id: &str) -> Result<()> {
-        if let Some(mut ch) = self.children.lock().remove(native_id) {
+        let mut children = self.children.lock();
+        let ch = children.remove(native_id).or_else(|| {
+            children.retain(|k, _| !k.starts_with("pending-"));
+            None
+        });
+        if let Some(mut ch) = ch {
             kill_tree(&mut ch);
         }
         Ok(())

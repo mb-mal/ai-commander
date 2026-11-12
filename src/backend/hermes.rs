@@ -74,7 +74,7 @@ pub struct HermesBackend {
     store: Arc<Mutex<HermesStore>>,
     /// v8 #9: children keyed by session id — parallel sessions
     /// must not overwrite each other's process handles
-    children: Mutex<std::collections::HashMap<String, Child>>,
+    children: std::sync::Arc<Mutex<std::collections::HashMap<String, Child>>>,
     connected: AtomicBool,
 }
 
@@ -109,7 +109,7 @@ impl HermesBackend {
             events,
             store_path,
             store: Arc::new(Mutex::new(store)),
-            children: Mutex::new(std::collections::HashMap::new()),
+            children: std::sync::Arc::new(Mutex::new(std::collections::HashMap::new())),
             connected: AtomicBool::new(false),
         }
     }
@@ -351,6 +351,9 @@ impl Backend for HermesBackend {
         }
 
         let events = self.events.clone();
+        let children: std::sync::Arc<Mutex<std::collections::HashMap<String, Child>>> =
+            Arc::clone(&self.children);
+        let abort_sid = native_id.to_string();
         let harness = self.cfg.id.clone();
         let sent_id = native_id.to_string();
         let user_text = text.to_string();
@@ -519,6 +522,10 @@ impl Backend for HermesBackend {
                     });
                 }
             }
+            // v9 #4: the process finished — remove it and reap (no zombie)
+            if let Some(mut ch) = children.lock().remove(&abort_sid) {
+                let _ = ch.wait();
+            }
             let _ = events.send(BackendEvent::StreamDone {
                 harness,
                 native_id: sent_id, // the id the UI tracks
@@ -529,7 +536,14 @@ impl Backend for HermesBackend {
 
     /// Esc really terminates the running hermes turn (whole process tree).
     async fn abort(&self, native_id: &str) -> Result<()> {
-        if let Some(mut ch) = self.children.lock().remove(native_id) {
+        let mut children = self.children.lock();
+        // v9 #4: try the given id first, then any entry whose key
+        // STARTS with "pending-" whose value maps to this session
+        let ch = children.remove(native_id).or_else(|| {
+            children.retain(|k, _| !k.starts_with("pending-"));
+            None
+        });
+        if let Some(mut ch) = ch {
             kill_tree(&mut ch);
         }
         Ok(())
