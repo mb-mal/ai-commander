@@ -348,6 +348,13 @@ impl BoardStore {
         self.store.read_since(since, n).unwrap_or_default()
     }
 
+    /// v10 #5: incremental read for OTel — only events AFTER `after_seq`.
+    pub fn events_since(&self, after_seq: u64) -> Vec<StoredEvent> {
+        self.store
+            .read_since(after_seq, usize::MAX)
+            .unwrap_or_default()
+    }
+
     /// The ONLY mutation path (review v2 Б7): write the event to the journal
     /// FIRST; on success fold it into the projection. On failure the caller
     /// sees the error — the projection stays untouched.

@@ -126,11 +126,31 @@ impl Editor {
     }
 
     pub fn delete(&mut self) {
-        let chars = self.line_chars();
-        if self.col < chars.len() {
-            let mut chars = chars;
-            chars.remove(self.col);
-            self.set_line_from_chars(chars);
+        use unicode_segmentation::UnicodeSegmentation;
+        let line = self.lines[self.row].clone();
+        let len = line.chars().count();
+        if self.col < len {
+            // v10: delete the WHOLE grapheme (not one char)
+            let mut start = 0usize;
+            let mut end = self.col;
+            for g in line.graphemes(true) {
+                let glen = g.chars().count();
+                if self.col < start + glen {
+                    end = start + glen;
+                    break;
+                }
+                start += glen;
+            }
+            if end <= self.col {
+                end = self.col + 1;
+            }
+            let kept: String = line
+                .chars()
+                .enumerate()
+                .filter(|(i, _)| *i < self.col || *i >= end)
+                .map(|(_, c)| c)
+                .collect();
+            self.lines[self.row] = kept;
         } else if self.row + 1 < self.lines.len() {
             let next = self.lines.remove(self.row + 1);
             self.lines[self.row].push_str(&next);
@@ -139,7 +159,9 @@ impl Editor {
 
     pub fn left(&mut self) {
         if self.col > 0 {
-            self.col -= 1;
+            // v10: step to the START of the previous GRAPHEME (not char)
+            let line = self.lines[self.row].clone();
+            self.col = self.floor_grapheme(&line, self.col);
         } else if self.row > 0 {
             self.row -= 1;
             self.col = self.lines[self.row].chars().count();
@@ -147,9 +169,21 @@ impl Editor {
     }
 
     pub fn right(&mut self) {
-        let len = self.lines[self.row].chars().count();
+        use unicode_segmentation::UnicodeSegmentation;
+        let line = &self.lines[self.row];
+        let len = line.chars().count();
         if self.col < len {
-            self.col += 1;
+            // v10: skip the WHOLE grapheme (emoji+ZWJ = one step)
+            let mut start = 0usize;
+            for g in line.graphemes(true) {
+                let glen = g.chars().count();
+                if self.col < start + glen {
+                    self.col = start + glen;
+                    return;
+                }
+                start += glen;
+            }
+            self.col = len;
         } else if self.row + 1 < self.lines.len() {
             self.row += 1;
             self.col = 0;
@@ -182,22 +216,20 @@ impl Editor {
     /// v9 #5: display width via UnicodeWidthStr (CJK/emoji = 2 cells).
     pub fn screen_cursor(&self) -> (u16, u16) {
         let line = self.lines.get(self.row).map(|s| s.as_str()).unwrap_or("");
-        let prefix = &line[..self.col.min(line.len())];
-        let col = unicode_width::UnicodeWidthStr::width(prefix);
+        let c = self.col.min(line.chars().count());
+        let col = self.display_col(line, c);
         (self.row as u16, col as u16)
     }
 
     /// Display position of the cursor after soft-wrapping at `width`:
     /// (wrapped_line_index, column_within_line).
     pub fn screen_cursor_wrapped(&self, width: usize) -> (u16, u16) {
+        let width = width.max(1); // v10: no div-by-zero
         let mut row_offset = 0u16;
         for (i, line) in self.lines.iter().enumerate() {
             let n = unicode_width::UnicodeWidthStr::width(line.as_str());
-            let wrapped: u16 = if width == 0 {
-                1
-            } else {
-                n.div_ceil(width) as u16
-            };
+            // v10: an empty line still occupies ONE screen row
+            let wrapped: u16 = if n == 0 { 1 } else { n.div_ceil(width) as u16 };
             if i == self.row {
                 let c = self.col.min(line.chars().count());
                 let w = self.display_col(line, c);
