@@ -134,11 +134,6 @@ pub fn draw_board(app: &mut App, f: &mut Frame, area: Rect) {
             } else {
                 TH.fg
             };
-            let title: String = task
-                .title
-                .chars()
-                .take(inner.width.saturating_sub(10) as usize)
-                .collect();
             let badge = if task.attempts > 1 {
                 format!("R{}", task.attempts)
             } else {
@@ -146,6 +141,11 @@ pub fn draw_board(app: &mut App, f: &mut Frame, area: Rect) {
             };
             let assignee = task.harness.clone().unwrap_or_default();
             let right = format!("{badge}{assignee:>4}");
+            // truncate to what actually remains beside the right side
+            let avail = (inner.width as usize)
+                .saturating_sub(right.chars().count() + 2)
+                .max(3);
+            let title: String = task.title.chars().take(avail).collect();
             let pad = (inner.width as usize)
                 .saturating_sub(title.chars().count() + right.chars().count() + 3);
             lines.push(Line::from(vec![

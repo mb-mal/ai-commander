@@ -92,13 +92,19 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         ));
     }
 
-    let chat_rows = Layout::vertical([
-        Constraint::Min(4),
-        Constraint::Length(composer_height(app, cols[1])),
-    ])
-    .split(cols[1]);
-    draw_chat(app, f, chat_rows[0]);
-    draw_composer(app, f, chat_rows[1]);
+    if app.mode == super::UiMode::Board {
+        // Ctrl+B: the kanban board replaces the chat + composer area
+        // (the sidebar and the status lines stay)
+        super::board::draw_board(app, f, cols[1]);
+    } else {
+        let chat_rows = Layout::vertical([
+            Constraint::Min(4),
+            Constraint::Length(composer_height(app, cols[1])),
+        ])
+        .split(cols[1]);
+        draw_chat(app, f, chat_rows[0]);
+        draw_composer(app, f, chat_rows[1]);
+    }
 
     draw_status_info(app, f, info);
     draw_statusbar(app, f, status);
@@ -780,23 +786,43 @@ fn draw_statusbar(app: &mut App, f: &mut Frame, area: Rect) {
     let lang = app.lang();
     let mut spans = vec![];
 
-    let keys: Vec<(&str, &str)> = vec![
-        ("F1", t(lang, Str::Help)),
-        ("F2", t(lang, Str::Settings)),
-        ("^N", t(lang, Str::NewChat)),
-        ("^K", t(lang, Str::ModelPicker)),
-        ("^P", t(lang, Str::FilePicker)),
-        ("^H", t(lang, Str::HarnessPicker)),
-        ("^O", t(lang, Str::History)),
-        (
-            "F10",
-            if lang == crate::i18n::Lang::Ru {
-                "Выход"
-            } else {
-                "Quit"
-            },
-        ),
-    ];
+    let keys: Vec<(&str, &str)> = if app.mode == super::UiMode::Board {
+        // board screen: the hints match board_key() bindings
+        vec![
+            ("F1", t(lang, Str::Help)),
+            ("n", t(lang, Str::BoardNew)),
+            ("e", t(lang, Str::BoardEdit)),
+            ("a", t(lang, Str::BoardAssign)),
+            ("m", t(lang, Str::BoardAdvance)),
+            ("^B", t(lang, Str::BoardChat)),
+            (
+                "F10",
+                if lang == crate::i18n::Lang::Ru {
+                    "Выход"
+                } else {
+                    "Quit"
+                },
+            ),
+        ]
+    } else {
+        vec![
+            ("F1", t(lang, Str::Help)),
+            ("F2", t(lang, Str::Settings)),
+            ("^N", t(lang, Str::NewChat)),
+            ("^K", t(lang, Str::ModelPicker)),
+            ("^P", t(lang, Str::FilePicker)),
+            ("^H", t(lang, Str::HarnessPicker)),
+            ("^O", t(lang, Str::History)),
+            (
+                "F10",
+                if lang == crate::i18n::Lang::Ru {
+                    "Выход"
+                } else {
+                    "Quit"
+                },
+            ),
+        ]
+    };
     let mut x = area.x;
     for (i, (k, label)) in keys.iter().enumerate() {
         let seg_start = x;
