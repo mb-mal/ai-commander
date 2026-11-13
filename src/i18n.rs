@@ -120,6 +120,13 @@ pub enum Str {
     SettingsAutoApprove,
     Approvals,
     Activity,
+    // kanban board status bar
+    BoardNew,
+    BoardEdit,
+    BoardAdvance,
+    BoardAssign,
+    BoardRole,
+    BoardChat,
     // check mode
     CheckOk,
     CheckModels,
@@ -214,6 +221,13 @@ pub fn t(lang: Lang, key: Str) -> &'static str {
             Str::CheckOk => "OK",
             Str::CheckModels => "models",
             Str::CheckSessions => "sessions",
+
+            Str::BoardNew => "New task",
+            Str::BoardEdit => "Edit",
+            Str::BoardAdvance => "Advance",
+            Str::BoardAssign => "Assign",
+            Str::BoardRole => "Role",
+            Str::BoardChat => "Chat",
         },
         Lang::Ru => match key {
             Str::Ok => "ОК",
@@ -301,6 +315,13 @@ pub fn t(lang: Lang, key: Str) -> &'static str {
             Str::CheckOk => "ОК",
             Str::CheckModels => "модели",
             Str::CheckSessions => "сессии",
+
+            Str::BoardNew => "Новая задача",
+            Str::BoardEdit => "Правка",
+            Str::BoardAdvance => "Далее",
+            Str::BoardAssign => "Назначить",
+            Str::BoardRole => "Роль",
+            Str::BoardChat => "Чат",
         },
     }
 }

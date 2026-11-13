@@ -1573,7 +1573,9 @@ impl App {
         }
     }
 
-    fn on_input(&mut self, ev: crossterm::event::Event) {
+    /// Public for external drivers (demo replay, integration tests): the
+    /// same entry the production loop uses for key/mouse/paste dispatch.
+    pub fn on_input(&mut self, ev: crossterm::event::Event) {
         use crossterm::event::Event;
         match ev {
             Event::Key(k) => self.on_key(k),

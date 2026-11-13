@@ -403,3 +403,23 @@ Type a message, Enter → approve the permission dialog → the reply arrives,
 then `usage_update` 53k fills the mini-map and the streamed compaction
 opens the Context Defrag dialog (a compact map strip, tokens before -> after, progress bar; Esc closes it). On a real harness:
 OpenCode — type `/compact`; DSH — let the history pass 80% of the window.
+
+## Demo video (deterministic screencast)
+
+The repo can render a **1920x1080 MP4 screencast** of the whole UI without
+recording the screen: the real `App` is driven through a scripted scenario
+on a ratatui `TestBackend`, every frame is rasterized with Cascadia Mono /
+Consolas and piped raw into ffmpeg. No harness is contacted (an in-process
+scripted backend), and the config dir / kanban store / worktrees live in a
+throwaway temp dir.
+
+```sh
+cargo run --example demo_video --release -- demo.mp4   # ffmpeg on PATH
+```
+
+What it shows: typing (Cyrillic + latin) and `Ctrl+Enter` multiline,
+streamed reply with a `[N tok]` tool line and the live status bar
+(harness · model · ctx · cost), `Ctrl+F` search, line selection + copy,
+`Ctrl+R` rename, mouse-drag sidebar resize, the Ctrl+B kanban board
+(columns, new task, Start), a permission dialog, the DEFRAG compaction
+animation, and F1 help. Movements take ~1s with 3s holds on key states.
