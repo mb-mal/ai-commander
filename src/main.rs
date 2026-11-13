@@ -577,7 +577,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
         };
         // v9 #6: periodic tasks (cron, watchdog, launch, OTel) run ONLY
         // on the timer tick or when a turn finishes — not on every PartDelta
-        let do_periodic = periodic;
+        let mut do_periodic = periodic;
         // v9 #1: process the FIRST event from select! + drain the rest
         // 1) drain finished turns via TaskRunner (Б8: classify + transition)
         use backend::PartKind;
@@ -665,6 +665,9 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                     }
                 }
                 backend::BackendEvent::StreamDone { native_id, harness } => {
+                    // v10 #5: a finished turn should immediately trigger the
+                    // launch/watchdog cycle (no 2s wait for DAG dependencies)
+                    do_periodic = true;
                     let task_id = {
                         let b = board.lock();
                         b.find_by_session(harness, native_id).map(|t| t.id)
@@ -952,7 +955,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
         }
         // OTel export: new events since the last pass -> spans.jsonl
         {
-            let last = board.lock().last_events(usize::MAX);
+            let last = board.lock().events_since(otel_last_seq);
             if let Some(newest) = last.last() {
                 if newest.seq > otel_last_seq {
                     let fresh: Vec<_> = last

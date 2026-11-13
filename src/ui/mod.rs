@@ -952,6 +952,14 @@ impl App {
                         }
                     }
                 }
+                // v10 #4: record the CURRENT CHAT's rebind too (apply_part
+                // and future events need to map pending → real for the chat)
+                if self.cur.harness == harness && self.cur.native_id.starts_with("pending-") {
+                    self.rebound_sessions.insert(
+                        (harness.clone(), self.cur.native_id.clone()),
+                        native_id.clone(),
+                    );
+                }
                 let old = if self.cur.harness == harness {
                     if self.cur.native_id.is_empty() || self.cur.native_id.starts_with("pending-") {
                         self.cur.prev_native_id = Some(self.cur.native_id.clone());
@@ -1325,6 +1333,12 @@ impl App {
                 cost_usd,
                 ..
             } => {
+                // v10 #4: normalize pending-* -> real_id
+                let native_id = self
+                    .rebound_sessions
+                    .get(&(harness.clone(), native_id.clone()))
+                    .cloned()
+                    .unwrap_or(native_id);
                 // К1: remember the fill; К6: a sharp unreported drop in the
                 // SAME session means the harness compacted on its own
                 let key = (harness.clone(), native_id.clone());
@@ -1372,6 +1386,12 @@ impl App {
                 source,
                 ..
             } => {
+                // v10 #4: normalize pending-* -> real_id
+                let native_id = self
+                    .rebound_sessions
+                    .get(&(harness.clone(), native_id.clone()))
+                    .cloned()
+                    .unwrap_or(native_id);
                 let key = (harness.clone(), native_id.clone());
                 let open_chat = self.cur.harness == harness && self.cur.native_id == native_id;
                 if source == crate::backend::CompactionSource::Reported {

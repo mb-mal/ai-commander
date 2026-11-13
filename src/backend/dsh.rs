@@ -658,7 +658,7 @@ impl Backend for DshBackend {
             if !real_id.is_empty() && real_id != sent_id {
                 let _ = events.send(BackendEvent::SessionCreated {
                     harness: harness.clone(),
-                    native_id: real_id,
+                    native_id: real_id.clone(),
                     title: user_text.chars().take(48).collect(),
                 });
             }
@@ -668,7 +668,14 @@ impl Backend for DshBackend {
                 let chars: usize = g
                     .sessions
                     .iter()
-                    .find(|s| s.native_id == *sent_id)
+                    .find(|s| {
+                        &s.native_id
+                            == if real_id.is_empty() {
+                                &sent_id
+                            } else {
+                                &real_id
+                            }
+                    })
                     .map(|s| s.msgs.iter().map(|m| m.text.len()).sum::<usize>())
                     .unwrap_or(0);
                 let _ = events.send(BackendEvent::Usage {
@@ -694,9 +701,14 @@ impl Backend for DshBackend {
 
     async fn abort(&self, native_id: &str) -> Result<()> {
         let mut children = self.children.lock();
+        // v10 #3: find and EXTRACT the pending-* child so kill_tree
+        // actually stops it — retain() just dropped it without killing
         let ch = children.remove(native_id).or_else(|| {
-            children.retain(|k, _| !k.starts_with("pending-"));
-            None
+            let pending_key = children
+                .keys()
+                .find(|k| k.starts_with("pending-"))
+                .cloned()?;
+            children.remove(&pending_key)
         });
         if let Some(mut ch) = ch {
             kill_tree(&mut ch);
