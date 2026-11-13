@@ -806,7 +806,9 @@ impl App {
         // finished turn reloads via history on StreamDone, the next prompt
         // steers. Hermes is a child process — Esc really kills it.
         if let Some(b) = self.backends.get(&self.cur.harness).cloned() {
-            if !self.cur.native_id.is_empty() && !self.cur.native_id.starts_with("pending-") {
+            // v11 #3: abort works for pending-* too (hermes/dsh/acp all
+            // support it — the first turn must be cancellable by Esc)
+            if !self.cur.native_id.is_empty() {
                 let native_id = self.cur.native_id.clone();
                 tokio::spawn(async move {
                     let _ = b.abort(&native_id).await;
@@ -1527,7 +1529,9 @@ impl App {
         text: String,
         is_delta: bool,
     ) {
-        if self.cur.harness != harness || self.cur.native_id != native_id {
+        let matches_cur = self.cur.native_id == native_id
+            || self.cur.prev_native_id.as_deref() == Some(native_id.as_str());
+        if self.cur.harness != harness || !matches_cur {
             return;
         }
 
@@ -2858,6 +2862,8 @@ impl App {
                         self.modal = None;
                         if let Some((id, _)) = items.into_iter().nth(sel) {
                             self.apply_list(id, action);
+                            // v11 #2: show the next queued permission
+                            self.show_next_pending_permission();
                         }
                     }
                     _ => {}
@@ -3174,6 +3180,8 @@ impl App {
                 session_id,
                 request_id,
             } => {
+                // v11 #2: the request was answered — decrement the counter
+                self.approvals_pending = self.approvals_pending.saturating_sub(1);
                 let reply = match id.as_str() {
                     "always" => "always",
                     "reject" => "reject",
