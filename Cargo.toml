@@ -46,3 +46,7 @@ strip = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+# demo_video example: TTF rasterization for the 1920x1080 screencast frames
+ab_glyph = "0.2"

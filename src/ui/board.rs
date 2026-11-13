@@ -142,8 +142,9 @@ pub fn draw_board(app: &mut App, f: &mut Frame, area: Rect) {
             let assignee = task.harness.clone().unwrap_or_default();
             let right = format!("{badge}{assignee:>4}");
             // truncate to what actually remains beside the right side
+            // (keep a 2-space gap before the badge/assignee)
             let avail = (inner.width as usize)
-                .saturating_sub(right.chars().count() + 2)
+                .saturating_sub(right.chars().count() + 3)
                 .max(3);
             let title: String = task.title.chars().take(avail).collect();
             let pad = (inner.width as usize)
