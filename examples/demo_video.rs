@@ -480,6 +480,62 @@ impl Studio {
     fn toast_off(&mut self) {
         self.app.toast = None;
     }
+
+    /// 2s full-screen title card before a feature beat — same NC language
+    /// as the app (blue bg, double border, title + key hint)
+    fn chapter(&mut self, title: &str, sub: &str) -> Result<()> {
+        use ratatui::layout::{Alignment, Rect};
+        use ratatui::style::{Modifier, Style};
+        use ratatui::text::{Line, Span};
+        use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget as _};
+
+        let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, COLS, ROWS));
+        buf.set_style(*buf.area(), Style::new().bg(THEME.bg));
+
+        let w = 66u16.min(COLS - 4);
+        let h = 7u16;
+        let area = Rect {
+            x: (COLS - w) / 2,
+            y: (ROWS - h) / 2,
+            width: w,
+            height: h,
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Double)
+            .border_style(Style::new().fg(THEME.border).bg(THEME.bg))
+            .style(Style::new().bg(THEME.bg));
+        let inner = block.inner(area);
+        block.render(area, &mut buf);
+
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                title,
+                Style::new()
+                    .fg(THEME.accent)
+                    .bg(THEME.bg)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(sub, Style::new().fg(THEME.dim).bg(THEME.bg))),
+        ];
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .style(Style::new().bg(THEME.bg))
+            .render(inner, &mut buf);
+
+        eprintln!("[frame {:5}] chapter: {}", self.frame, title);
+        // render once, hold the pixels for the full 2 seconds
+        let mut px = vec![0u8; W * H * 4];
+        self.painter.paint(&buf, &mut px, None, false);
+        let frames = (2.0 * FPS as f64).round() as u64;
+        for _ in 0..frames {
+            self.stdin.write_all(&px).context("ffmpeg pipe")?;
+            self.frame += 1;
+        }
+        Ok(())
+    }
 }
 
 // ---------- the scenario ----------
@@ -718,10 +774,15 @@ fn scenario(st: &mut Studio) -> Result<()> {
     use crossterm::event::KeyCode;
 
     // ===== 1. opening frame
+    st.chapter("AI COMMANDER", "ChatGPT-style TUI for AI agent harnesses")?;
     st.beat("opening");
     st.hold(3.0)?;
 
     // ===== 2. typing a question (unicode editor, Cyrillic + latin)
+    st.chapter(
+        "MULTILINE COMPOSER",
+        "unicode editor · Ctrl+Enter = newline",
+    )?;
     st.beat("typing the question");
     st.type_str("Привет! How does the DEFRAG view track compaction?", 2.2)?;
     st.hold(0.6)?;
@@ -734,6 +795,10 @@ fn scenario(st: &mut Studio) -> Result<()> {
     st.hold(0.6)?;
 
     // ===== 3. Enter -> send, streamed reply with a tool line
+    st.chapter(
+        "STREAMING REPLY",
+        "tool lines with [N tok] · live ctx & cost",
+    )?;
     st.beat("send + stream");
     st.key(key!(KeyCode::Enter));
     st.emit()?;
@@ -780,6 +845,7 @@ blocks move. /compact triggers it manually where the harness supports it."
     st.toast_off();
 
     // ===== 4. Ctrl+F search
+    st.chapter("SEARCH THE TRANSCRIPT", "Ctrl+F · F3 next match")?;
     st.beat("search");
     st.key(key!(KeyCode::Char('f'), ctrl));
     st.emit()?;
@@ -793,6 +859,7 @@ blocks move. /compact triggers it manually where the harness supports it."
     st.toast_off();
 
     // ===== 5. selection + copy
+    st.chapter("SELECT & COPY", "Ctrl+Up/Down select · Ctrl+C copy")?;
     st.beat("select + copy");
     for _ in 0..4 {
         st.key(key!(KeyCode::Down, ctrl));
@@ -804,6 +871,7 @@ blocks move. /compact triggers it manually where the harness supports it."
     st.toast_off();
 
     // ===== 6. Ctrl+R rename
+    st.chapter("RENAME SESSION", "Ctrl+R from anywhere")?;
     st.beat("rename");
     st.key(key!(KeyCode::Char('r'), ctrl));
     st.emit()?;
@@ -819,6 +887,7 @@ blocks move. /compact triggers it manually where the harness supports it."
     st.toast_off();
 
     // ===== 7. sidebar resize by mouse drag on the ┊ handle
+    st.chapter("RESIZABLE SIDEBAR", "drag the ┊ handle · Ctrl+minus/equal")?;
     st.beat("sidebar drag");
     let handle_x = st.app.sidebar_width - 1; // ┊ column
     st.emit()?; // populate hit targets
@@ -848,6 +917,7 @@ blocks move. /compact triggers it manually where the harness supports it."
     }
 
     // ===== 8. the kanban board
+    st.chapter("KANBAN BOARD", "Ctrl+B · n new task · m advance")?;
     st.beat("board");
     st.key(key!(KeyCode::Char('b'), ctrl));
     st.hold(3.0)?;
@@ -880,6 +950,7 @@ blocks move. /compact triggers it manually where the harness supports it."
     st.toast_off();
 
     // a permission request arrives from the running task
+    st.chapter("PERMISSION GATE", "allow once · this session · reject")?;
     st.beat("permission ask");
     st.ev(BackendEvent::PermissionRequest {
         harness: HARNESS.into(),
@@ -914,6 +985,10 @@ blocks move. /compact triggers it manually where the harness supports it."
     st.emit()?;
     st.hold(1.0)?;
 
+    st.chapter(
+        "CONTEXT COMPACTION — DEFRAG",
+        "watch the window get defragmented",
+    )?;
     st.beat("DEFRAG animation");
     st.ev(BackendEvent::Compaction {
         harness: HARNESS.into(),
@@ -972,6 +1047,7 @@ blocks move. /compact triggers it manually where the harness supports it."
     st.hold(3.5)?;
 
     // ===== 10. F1 help, then hold the final frame
+    st.chapter("KEY REFERENCE", "F1 help · every binding in one screen")?;
     st.beat("help");
     st.key(key!(KeyCode::F(1)));
     st.hold(3.0)?;

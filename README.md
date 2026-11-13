@@ -422,4 +422,5 @@ streamed reply with a `[N tok]` tool line and the live status bar
 (harness · model · ctx · cost), `Ctrl+F` search, line selection + copy,
 `Ctrl+R` rename, mouse-drag sidebar resize, the Ctrl+B kanban board
 (columns, new task, Start), a permission dialog, the DEFRAG compaction
-animation, and F1 help. Movements take ~1s with 3s holds on key states.
+animation, and F1 help. Every feature is preceded by a 2s title card
+(what is demonstrated + the keys), movements take ~1s, key states hold 3s.
