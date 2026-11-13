@@ -193,14 +193,21 @@ impl Editor {
     pub fn up(&mut self) {
         if self.row > 0 {
             self.row -= 1;
-            self.col = self.col.min(self.lines[self.row].chars().count());
+            // v12 #3: snap to the START of a grapheme (col may land in
+            // the middle of an emoji+ZWJ sequence from a different line)
+            let line = self.lines[self.row].clone();
+            let c = self.col.min(line.chars().count());
+            self.col = self.floor_grapheme(&line, c);
         }
     }
 
     pub fn down(&mut self) {
         if self.row + 1 < self.lines.len() {
             self.row += 1;
-            self.col = self.col.min(self.lines[self.row].chars().count());
+            // v12 #3: same grapheme-boundary snap
+            let line = self.lines[self.row].clone();
+            let c = self.col.min(line.chars().count());
+            self.col = self.floor_grapheme(&line, c);
         }
     }
 

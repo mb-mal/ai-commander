@@ -948,9 +948,16 @@ impl App {
                         self.rebound_sessions
                             .insert((harness.clone(), p.clone()), native_id.clone());
                         // transfer the accumulated reply buffer
-                        if let Some(reply) = self.task_replies.remove(&(harness.clone(), p)) {
+                        if let Some(reply) = self.task_replies.remove(&(harness.clone(), p.clone()))
+                        {
                             self.task_replies
                                 .insert((harness.clone(), native_id.clone()), reply);
+                        }
+                        // v12 #1: transfer the error flag too (StreamError
+                        // arrives under pending-* BEFORE SessionCreated)
+                        if self.task_errors.remove(&(harness.clone(), p)) {
+                            self.task_errors
+                                .insert((harness.clone(), native_id.clone()));
                         }
                     }
                 }
@@ -2862,13 +2869,17 @@ impl App {
                         self.modal = None;
                         if let Some((id, _)) = items.into_iter().nth(sel) {
                             self.apply_list(id, action);
-                            // v11 #2: show the next queued permission
-                            self.show_next_pending_permission();
                         }
                     }
                     _ => {}
                 }
             }
+        }
+        // v12 #2: after ANY modal closes (Esc, Enter, any key), show the
+        // next queued permission request — covers Help/About/Confirm/
+        // Input/ModelPicker/HarnessPicker/FilePicker, not just List
+        if self.modal.is_none() {
+            self.show_next_pending_permission();
         }
     }
 
