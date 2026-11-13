@@ -161,7 +161,7 @@ impl Editor {
         if self.col > 0 {
             // v10: step to the START of the previous GRAPHEME (not char)
             let line = self.lines[self.row].clone();
-            self.col = self.floor_grapheme(&line, self.col);
+            self.col = self.floor_grapheme(&line, self.col - 1);
         } else if self.row > 0 {
             self.row -= 1;
             self.col = self.lines[self.row].chars().count();

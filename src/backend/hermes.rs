@@ -515,7 +515,12 @@ impl Backend for HermesBackend {
             // history when it compacted during the turn
             {
                 let g = store.lock();
-                let compacted = hermes_compacted(&g, &sent_id);
+                let eff_id = if real_id.is_empty() {
+                    &sent_id
+                } else {
+                    &real_id
+                };
+                let compacted = hermes_compacted(&g, eff_id);
                 if compacted {
                     let _ = events.send(BackendEvent::Compaction {
                         harness: harness.clone(),
