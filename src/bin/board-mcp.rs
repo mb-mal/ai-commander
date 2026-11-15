@@ -8,8 +8,8 @@
 //! in direct mode (no owner) the role comes from AI_COMMANDER_ROLE.
 //!
 //! Tools (snake_case — MCP clients accept [a-zA-Z0-9_-] only):
-//!   board_create_task, board_update_task, board_comment, board_handoff,
-//!   board_artifact, board_read_inbox, board_ask_human
+//! board_create_task, board_update_task, board_comment, board_handoff,
+//! board_artifact, board_read_inbox, board_ask_human
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
@@ -106,7 +106,7 @@ impl BoardService {
     /// store (direct mode). Soft errors become tool errors the agent sees.
     fn dispatch(&self, name: &str, args: Value) -> Result<String, ErrorData> {
         let out = match self.direct.as_ref().map(parking_lot::Mutex::lock) {
-            // v8 #6: delegate to the ONE board_tool_call — it has the
+            // delegate to the ONE board_tool_call — it has the
             // Actor::Human check for NeedsHuman promote that the local
             // copy was missing (agents could self-unpark in direct mode)
             Some(mut board) => ai_commander::kanban::board_tool_call(
@@ -271,7 +271,7 @@ async fn main() {
         match BoardStore::open_redb(&Kanban::path()) {
             Ok(b) => Some(parking_lot::Mutex::new(b)),
             Err(e) => {
-                // redb takes an exclusive lock (review v2 Б1): the TUI or
+                // redb takes an exclusive lock : the TUI or
                 // daemon owns the DB but serves no IPC (older owner build).
                 eprintln!("board-mcp: cannot open the kanban store: {e:#}");
                 eprintln!("hint: the board is likely open in ai-commander (TUI or daemon).");

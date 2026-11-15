@@ -1,4 +1,4 @@
-//! v6 #2: precise policy rules must not be bypassable — shell
+//! precise policy rules must not be bypassable — shell
 //! metacharacters, path traversal and multi-location requests all resolve
 //! to the STRICTEST effect.
 

@@ -1,9 +1,9 @@
-//! Probes from the v3 review, turned into tests. Each must fail on the
-//! pre-fix code and pass after the fix.
+//! Task reliability: retry caps with exponential backoff, strict DONE
+//! classification, lease heartbeats, worktree cwd isolation.
 
 use ai_commander::kanban::{TaskAction, TaskStatus, runner, store::BoardStore};
 
-/// Н1 probe: a task that always fails must NOT be retried indefinitely.
+/// probe: a task that always fails must NOT be retried indefinitely.
 /// After max_attempts (3) it must land in NeedsHuman and not be launchable.
 #[test]
 fn no_infinite_retry_after_max_attempts() {
@@ -31,14 +31,14 @@ fn no_infinite_retry_after_max_attempts() {
         }
     }
 
-    // Н1 acceptance: the task is NOT launchable after escalation
+    // acceptance: the task is NOT launchable after escalation
     assert!(
         !b.launchable().iter().any(|x| x.id == t.id),
         "escalated task must not be launchable"
     );
 }
 
-/// Н1: exponential backoff — a Failed task is not launchable immediately,
+/// exponential backoff — a Failed task is not launchable immediately,
 /// but becomes launchable after the backoff window.
 #[test]
 fn backoff_prevents_immediate_retry() {
@@ -65,7 +65,7 @@ fn backoff_prevents_immediate_retry() {
     );
 }
 
-/// Н2 probe: error text longer than 20 chars must NOT count as done.
+/// probe: error text longer than 20 chars must NOT count as done.
 #[test]
 fn error_text_is_not_done() {
     let mut b = BoardStore::open_memory();
@@ -83,7 +83,7 @@ fn error_text_is_not_done() {
     );
 }
 
-/// Н2: only an explicit DONE: prefix means Finished.
+/// only an explicit DONE: prefix means Finished.
 #[test]
 fn done_marker_required() {
     let mut b = BoardStore::open_memory();
@@ -95,7 +95,7 @@ fn done_marker_required() {
     assert_eq!(after.status, TaskStatus::Review, "DONE: marker → Review");
 }
 
-/// Н3: a launched task carries its worktree as the cwd so the agent works
+/// a launched task carries its worktree as the cwd so the agent works
 /// in isolation, not in the shared repo checkout.
 #[test]
 fn launch_runs_in_worktree() {
@@ -149,7 +149,7 @@ fn launch_runs_in_worktree() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Д4: a manual Start of a task whose dependencies are not Done must be
+/// a manual Start of a task whose dependencies are not Done must be
 /// refused — the DAG gates every Start, not just the daemon scheduler.
 #[test]
 fn manual_start_blocked_by_unfinished_dependency() {

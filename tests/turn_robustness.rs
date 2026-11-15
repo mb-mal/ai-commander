@@ -1,9 +1,9 @@
-//! Probes from the v4 review. Each must fail on the pre-fix code and pass
-//! after the fix.
+//! Turn robustness: silent tool calls renew the lease, a stream error
+//! poisons the turn, a failed Start escalates to a human.
 
 use ai_commander::kanban::{TaskAction, TaskStatus, runner, store::BoardStore};
 
-/// Д1: a tool call that runs silently for 3 minutes must NOT be
+/// a tool call that runs silently for 3 minutes must NOT be
 /// watchdog-interrupted — the PartUpdated heartbeat (runner::on_activity)
 /// covers the whole window (old lease was 60 s).
 #[test]
@@ -33,7 +33,7 @@ fn tool_call_silence_does_not_interrupt() {
     assert_eq!(stuck.len(), 1, "an expired lease must still interrupt");
 }
 
-/// Н2 leftover: a stream that printed `DONE:` and then died must NOT land
+/// leftover: a stream that printed `DONE:` and then died must NOT land
 /// in Review — the errored turn is Failed (and the retry cap applies).
 #[test]
 fn done_marker_after_stream_error_is_not_finished() {
@@ -55,7 +55,7 @@ fn done_marker_after_stream_error_is_not_finished() {
     assert_ne!(
         after.status,
         TaskStatus::Review,
-        "an errored stream must not reach Review (v4 Н2)"
+        "an errored stream must not reach Review "
     );
 }
 

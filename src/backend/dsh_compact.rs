@@ -1,4 +1,4 @@
-//! К7: context compaction FOR the dsh harness — ai-commander owns the
+//! context compaction FOR the dsh harness — ai-commander owns the
 //! history, so it can compact it itself (dsh replays the whole history
 //! every turn and has no compaction of its own).
 //!

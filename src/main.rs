@@ -1,11 +1,11 @@
 //! ai-commander — ChatGPT-style TUI for AI agent harnesses.
 //!
 //! Usage:
-//!   ai-commander                 interactive TUI (autostarts `opencode serve`)
-//!   ai-commander --check         headless backend check: health, models, sessions
-//!   ai-commander --server URL    connect to a running opencode server
-//!   ai-commander --lang ru|en    UI language override
-//!   ai-commander --workdir PATH  working directory for the harness
+//! ai-commander                 interactive TUI (autostarts `opencode serve`)
+//! ai-commander --check         headless backend check: health, models, sessions
+//! ai-commander --server URL    connect to a running opencode server
+//! ai-commander --lang ru|en    UI language override
+//! ai-commander --workdir PATH  working directory for the harness
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
@@ -482,7 +482,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
     // v5: the same policy engine the TUI uses — the daemon decides
     // unattended permission requests (allow/deny auto, ask → NeedsHuman).
     // A broken USER policy refuses to start: silently dropping the user's
-    // own deny rules would be a security hole (v5 issues #1).
+    // own deny rules would be a security hole.
     let policy = match ai_commander::policy::Policy::load_checked(
         &std::env::current_dir().unwrap_or_default(),
     ) {
@@ -493,7 +493,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
         println!("[policy] {w}");
         ai_commander::log_warn!("daemon", "policy: {w}");
     }
-    // v5 #6: role files that failed to load are loud — a typo must not
+    // role files that failed to load are loud — a typo must not
     // silently drop a role
     for e in
         ai_commander::kanban::roles::RoleSet::cached(&std::env::current_dir().unwrap_or_default())
@@ -517,7 +517,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
     if backends.is_empty() {
         anyhow::bail!("daemon: no usable harness backends");
     }
-    // Б1: the daemon owns the board exclusively and serves board tool calls
+    // the daemon owns the board exclusively and serves board tool calls
     // over IPC so secondary processes (board-mcp per agent) don't need the
     // redb lock and never open a second store.
     let board = std::sync::Arc::new(parking_lot::Mutex::new(BoardStore::open_redb(
@@ -527,7 +527,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
         Ok(port) => println!("board IPC owner on 127.0.0.1:{port}"),
         Err(e) => println!("[warn] board IPC server: {e}"),
     }
-    // v5 #3: drop worktrees of tasks that no longer exist (crash leftovers)
+    // drop worktrees of tasks that no longer exist (crash leftovers)
     {
         let ids: Vec<String> = board
             .lock()
@@ -548,22 +548,22 @@ async fn run_daemon(cfg: Config) -> Result<()> {
     let mut busy: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut task_replies: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    // v4 Н2: task ids whose turn stream errored — their StreamDone is
+    // task ids whose turn stream errored — their StreamDone is
     // Failed even if a DONE: marker was printed before the break
     let mut task_errors: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // v5 #10: permission asks parked in NeedsHuman + their one-time permits
+    // permission asks parked in NeedsHuman + their one-time permits
     let mut permits = ai_commander::kanban::runner::PermitBook::new();
     let mut prev_statuses: std::collections::HashMap<String, TaskStatus> =
         std::collections::HashMap::new();
-    // v6 #3: high-water mark of processed human  comments
+    // high-water mark of processed human  comments
     let mut last_permit_ts: i64 = 0;
-    // v9 #2: (harness, pending_id) -> real_id for event normalization
+    // (harness, pending_id) -> real_id for event normalization
     let mut rebound: std::collections::HashMap<(String, String), String> =
         std::collections::HashMap::new();
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        // v8 #8 / v9 #1: wait for EITHER an event (immediate) or the 2s
+        // wait for EITHER an event (immediate) or the 2s
         // tick. The event from select! is KEPT and processed first —
         // the old code dropped it (every lone event was lost).
         let (first_ev, periodic) = tokio::select! {
@@ -575,10 +575,10 @@ async fn run_daemon(cfg: Config) -> Result<()> {
             }
             _ = tick.tick() => (None, true)
         };
-        // v9 #6: periodic tasks (cron, watchdog, launch, OTel) run ONLY
+        // periodic tasks (cron, watchdog, launch, OTel) run ONLY
         // on the timer tick or when a turn finishes — not on every PartDelta
         let mut do_periodic = periodic;
-        // v9 #1: process the FIRST event from select! + drain the rest
+        // process the FIRST event from select! + drain the rest
         // 1) drain finished turns via TaskRunner (Б8: classify + transition)
         use backend::PartKind;
         let mut events: Vec<backend::BackendEvent> = Vec::new();
@@ -589,7 +589,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
             events.push(ev);
         }
         for ev in &events {
-            // v9 #2: handle SessionCreated (rebind pending tasks on the board)
+            // handle SessionCreated (rebind pending tasks on the board)
             if let backend::BackendEvent::SessionCreated {
                 harness, native_id, ..
             } = ev
@@ -613,7 +613,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                 }
                 continue;
             }
-            // v9 #2: normalize native_id through the rebind map
+            // normalize native_id through the rebind map
             let ev = normalize_event_id(ev, &rebound);
             let ev = &ev;
             match ev {
@@ -647,9 +647,9 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                     part,
                     ..
                 } => {
-                    // v4 Д1: tool-call progress (PartUpdated, no delta text)
+                    // tool-call progress (PartUpdated, no delta text)
                     // is a liveness signal — renew the task lease.
-                    // v8 #1: Text-kind PartUpdated REPLACES the reply (dsh)
+                    // Text-kind PartUpdated REPLACES the reply (dsh)
                     let task_id = {
                         let b = board.lock();
                         b.find_by_session(harness, native_id).map(|t| t.id)
@@ -659,13 +659,13 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                         ai_commander::kanban::runner::on_activity(&mut b, &id);
                         drop(b);
                         if part.kind == backend::PartKind::Text {
-                            // v8 #1: the daemon keys replies by TASK id
+                            // the daemon keys replies by TASK id
                             task_replies.insert(id, part.text.clone());
                         }
                     }
                 }
                 backend::BackendEvent::StreamDone { native_id, harness } => {
-                    // v10 #5: a finished turn should immediately trigger the
+                    // a finished turn should immediately trigger the
                     // launch/watchdog cycle (no 2s wait for DAG dependencies)
                     do_periodic = true;
                     let task_id = {
@@ -721,7 +721,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                     let Some(b) = backends.get(harness).cloned() else {
                         continue;
                     };
-                    // v5 #10: the human already approved this exact ask when
+                    // the human already approved this exact ask when
                     // un-parking the task — honor it once
                     let task_for_permit = {
                         let bb = board.lock();
@@ -734,7 +734,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                             continue;
                         }
                     }
-                    // v6 #2: strictest across every touched location
+                    // strictest across every touched location
                     match policy.check_all(action, resources) {
                         ai_commander::policy::Effect::Allow => {
                             println!("[policy] auto-allow {action}: {resource}");
@@ -776,7 +776,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                 backend::BackendEvent::StreamError {
                     native_id, harness, ..
                 } => {
-                    // v4 Н2: remember the broken stream; the following
+                    // remember the broken stream; the following
                     // StreamDone must not honor a printed DONE: marker
                     let task_id = {
                         let b = board.lock();
@@ -791,7 +791,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
         }
 
         if !do_periodic {
-            // v9 #6: skip the heavy periodic work on event-only iterations
+            // skip the heavy periodic work on event-only iterations
             continue;
         }
 
@@ -806,7 +806,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
         }
 
         // 2) watchdog: scan stuck tasks → abort their sessions → apply (Б6)
-        // Д2: aborts are awaited (abort_stuck joins every handle) so a task
+        // aborts are awaited (abort_stuck joins every handle) so a task
         // is never re-launched while its old agent process is still alive
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -828,7 +828,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
             }
         }
 
-        // v6 #3: the ONLY grant path is an explicit human action — new
+        // the ONLY grant path is an explicit human action — new
         // `permit` journal comments (written by the human-only board_unpark
         // tool over IPC). Merely observing NeedsHuman→Ready granted agents
         // their own permits via `promote`.
@@ -869,7 +869,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
             if busy.contains(&task.id) {
                 continue;
             }
-            // v5 #6: a task assigned to a role that failed to load (or does
+            // a task assigned to a role that failed to load (or does
             // not exist) must not be launched blind — escalate with the cause
             if let Some(role_id) = &task.role {
                 if !roles_snapshot.roles.contains_key(role_id) {
@@ -906,7 +906,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                     // still Ready) escalates to a human — retrying the same
                     // broken Start every 30 s would loop forever (attempts
                     // never grow on a failed Start).
-                    // Д5: a failure AFTER Start (session/send) still ends the
+                    // a failure AFTER Start (session/send) still ends the
                     // turn via the Н1 retry cap.
                     let still_ready = {
                         let b = board.lock();
@@ -979,7 +979,7 @@ async fn run_daemon(cfg: Config) -> Result<()> {
                 }
             }
         }
-        // v9 #6: no unconditional sleep — tick.tick() above IS the timer
+        // no unconditional sleep — tick.tick() above IS the timer
     }
 }
 
@@ -1065,13 +1065,13 @@ async fn run_tui(cfg: Config) -> Result<()> {
     for b in app.backends.values() {
         b.shutdown();
     }
-    // Б1: the TUI owned the board — unpublish the IPC port file
+    // the TUI owned the board — unpublish the IPC port file
     ai_commander::kanban::ipc::cleanup();
     guard.release();
     run_result
 }
 
-/// v9 #2: rewrite the native_id of an event through the rebind map so all
+/// rewrite the native_id of an event through the rebind map so all
 /// handlers see the real session id even when the backend sends pending-*.
 fn normalize_event_id(
     ev: &backend::BackendEvent,

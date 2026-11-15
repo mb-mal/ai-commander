@@ -116,7 +116,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         super::modals::draw_modal(app, f, size);
     }
 
-    // К10: the DEFRAG compaction overlay over everything; Esc collapses
+    // the DEFRAG compaction overlay over everything; Esc collapses
     // it into the mini-map (the animation keeps running in the status bar)
     if app.modal.is_none() {
         if let Some((_, _, _, an)) = app.defrag.as_ref() {

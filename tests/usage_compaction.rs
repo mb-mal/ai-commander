@@ -1,4 +1,4 @@
-//! К1 + К2 acceptance: the ACP backend surfaces usage_update as `Usage`
+//! acceptance: the ACP backend surfaces usage_update as `Usage`
 //! with the same numbers, and the RFD compaction stream (in_progress →
 //! chunks → completed) arrives as `Compaction` events with ONE stable
 //! compaction id.
@@ -107,11 +107,11 @@ async fn acp_usage_and_compaction_stream_through() {
     b.shutdown();
     unsafe { std::env::remove_var("FAKE_ACP_COMPACTION") };
 
-    // К1: usage with the exact reported numbers (before and after)
+    // usage with the exact reported numbers (before and after)
     assert!(usages.contains(&(53_000, 200_000)), "usages: {usages:?}");
     assert!(usages.contains(&(41_000, 200_000)), "usages: {usages:?}");
 
-    // К2: in_progress → 3 chunks → completed, ONE compaction id
+    // in_progress → 3 chunks → completed, ONE compaction id
     assert_eq!(compactions.len(), 6, "events: {compactions:?}");
     assert!(
         compactions.iter().all(|(id, ..)| id == "c-0042"),

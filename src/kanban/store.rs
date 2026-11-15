@@ -311,7 +311,7 @@ pub struct BoardStore {
 }
 
 /// Stuck-task info for the watchdog: the caller aborts the session
-/// BEFORE calling `watchdog_apply` (review v2 Б6: no duplicate agents).
+/// BEFORE calling `watchdog_apply` .
 #[derive(Debug, Clone)]
 pub struct StuckTask {
     pub task_id: String,
@@ -348,14 +348,14 @@ impl BoardStore {
         self.store.read_since(since, n).unwrap_or_default()
     }
 
-    /// v10 #5: incremental read for OTel — only events AFTER `after_seq`.
+    /// incremental read for OTel — only events AFTER `after_seq`.
     pub fn events_since(&self, after_seq: u64) -> Vec<StoredEvent> {
         self.store
             .read_since(after_seq, usize::MAX)
             .unwrap_or_default()
     }
 
-    /// The ONLY mutation path (review v2 Б7): write the event to the journal
+    /// The ONLY mutation path : write the event to the journal
     /// FIRST; on success fold it into the projection. On failure the caller
     /// sees the error — the projection stays untouched.
     fn commit(&mut self, task_id: &str, action: &str, task: Option<Task>) -> Result<(), String> {
@@ -408,7 +408,7 @@ impl BoardStore {
             updated_ms: crate::kanban::now_ms(),
         };
         self.proj.tasks.push(t.clone());
-        // Б7: journal is the source of truth; on failure the projection entry
+        // journal is the source of truth; on failure the projection entry
         // is stale — log loudly so the discrepancy is visible
         if let Err(e) = self.commit(&t.id, "created", Some(t.clone())) {
             crate::log_error!("kanban", "add_task journal write failed: {e}");
@@ -437,7 +437,7 @@ impl BoardStore {
                     Err(e) => return Err(format!("{e:#}")),
                     Ok(hook) => {
                         if let Some(t) = self.proj.tasks.iter_mut().find(|t| t.id == task.id) {
-                            // v5 #2: remember where the task branch was cut
+                            // remember where the task branch was cut
                             // from, so Approve merges into the right place
                             if let Some(base) = &hook.base_branch {
                                 if t.base_branch.is_empty() {
@@ -467,7 +467,7 @@ impl BoardStore {
             self.budget_ok(task_id)?;
         }
         {
-            // Д4: dependencies gate EVERY Start — manual board action or
+            // dependencies gate EVERY Start — manual board action or
             // daemon alike; a dep that is not Done/Cancelled blocks the launch
             if action == TaskAction::Start {
                 let blocking: Vec<String> = self
@@ -690,7 +690,7 @@ impl BoardStore {
         Ok(())
     }
 
-    /// Д8: attach a concrete output (file/branch/link) to a task. Attached
+    /// attach a concrete output (file/branch/link) to a task. Attached
     /// artifacts survive handoffs and are visible to the next owner.
     pub fn add_artifact(
         &mut self,
@@ -810,7 +810,7 @@ Open questions: {open_questions}"
     /// Set DAG dependencies (forward references to not-yet-created task ids
     /// are allowed; a missing dependency counts as settled at launch time).
     pub fn set_depends(&mut self, task_id: &str, deps: Vec<String>) -> Result<(), String> {
-        // cycle detection: DFS through the hypothetical graph (review v2)
+        // cycle detection: DFS through the hypothetical graph
         {
             let mut hypothetical = self.proj.clone();
             if let Some(t) = hypothetical.tasks.iter_mut().find(|t| t.id == task_id) {
@@ -837,7 +837,7 @@ Open questions: {open_questions}"
         Ok(())
     }
 
-    /// Cron triggers — DISABLED (review v2 Б3): the schedule string is not
+    /// Cron triggers — DISABLED : the schedule string is not
     /// parsed as cron, so any non-empty value spawned a child every 60 s.
     /// Returning empty until a real cron parser (croner) + next_fire_at
     /// events are in place.
@@ -869,13 +869,13 @@ Open questions: {open_questions}"
             .collect()
     }
 
-    /// Heartbeat (review v2 Б6): renew the lease on an agent progress event.
+    /// Heartbeat : renew the lease on an agent progress event.
     /// The watchdog won't touch a task whose lease is still valid.
     pub fn renew_lease(&mut self, task_id: &str) {
         self.renew_lease_at(task_id, crate::kanban::now_ms());
     }
 
-    /// Н1: exponential backoff — set the earliest next-launch timestamp.
+    /// exponential backoff — set the earliest next-launch timestamp.
     pub fn set_not_before(&mut self, task_id: &str, not_before_ms: i64) {
         if let Some(t) = self.proj.tasks.iter_mut().find(|t| t.id == task_id) {
             t.not_before_ms = Some(not_before_ms);
@@ -898,7 +898,7 @@ Open questions: {open_questions}"
             .tasks
             .iter()
             .filter(|t| {
-                // Б6: use the lease (heartbeat-renewed) instead of raw start time
+                // use the lease (heartbeat-renewed) instead of raw start time
                 let lease_expired = t.lease_until_ms.map(|l| now > l).unwrap_or(true); // no lease = treat as expired
                 let over_budget = t
                     .started_ms
@@ -1157,7 +1157,7 @@ mod tests {
         assert!(inbox[0].text.contains("second"));
     }
 
-    /// Д8: artifacts are first-class — attached by the working role, they
+    /// artifacts are first-class — attached by the working role, they
     /// survive a handoff so the next owner finds the work.
     #[test]
     fn artifacts_survive_handoff() {
@@ -1241,8 +1241,7 @@ mod tests {
         assert!(gw(&["commit", "-qm", "task work"]).status.success());
 
         // Review -> Done merges the branch into the task's base branch and
-        // removes the worktree (v5 #2: the user's checkout is untouched —
-        // the branch ref moves, not the working tree)
+        // removes the worktree
         b.transition_in(&dir, &t.id, TaskAction::Finish).unwrap();
         b.transition_in(&dir, &t.id, TaskAction::Approve).unwrap();
         assert!(!wt.exists(), "worktree removed after merge");
@@ -1258,7 +1257,7 @@ mod tests {
             "branch merged into the task base ({base})"
         );
         let checkout = std::fs::read_to_string(dir.join("f.txt")).unwrap();
-        // v6 #1: the user is ON the base with a clean tree — the ff-merge
+        // the user is ON the base with a clean tree — the ff-merge
         // makes the agent's work APPEAR in the checkout (never look deleted)
         assert_eq!(
             checkout, "task change",
@@ -1318,7 +1317,7 @@ mod tests {
 
     #[test]
     fn scheduled_tasks_are_disabled_until_cron_parser() {
-        // review v2 Б3: spawn_due_scheduled is a no-op; verify no task is
+        // review spawn_due_scheduled is a no-op; verify no task is
         // created regardless of schedule string or elapsed time
         let mut b = BoardStore::open_memory();
         let _t = b.add_task("nightly");

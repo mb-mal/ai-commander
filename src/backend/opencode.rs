@@ -645,7 +645,7 @@ impl Backend for OpenCodeBackend {
                 );
             }
         }
-        // Н3: move the session to the task's worktree so the agent works in
+        // move the session to the task's worktree so the agent works in
         // isolation (POST /api/session/{id}/move, verified against the live
         // server: switches the session's projectID). Idempotent per session.
         if let Some(cwd) = opts.cwd {
@@ -723,7 +723,7 @@ impl Backend for OpenCodeBackend {
 
     /// This server build exposes no abort endpoint; the next prompt "steers"
     /// (interrupts) the current turn. The UI detaches locally on Esc.
-    /// К11: opencode has a real compact endpoint (verified live)
+    /// opencode has a real compact endpoint (verified live)
     fn supports_compact(&self) -> bool {
         true
     }
@@ -925,7 +925,7 @@ fn handle_sse_event(
                 format!("{action}: {resource}")
             };
             if !sid.is_empty() && !request_id.is_empty() {
-                // v8 #7: ALL touched resources, not just the first —
+                // ALL touched resources, not just the first —
                 // the policy engine checks the strictest across them
                 let resources: Vec<String> = props
                     .get("resources")
@@ -953,7 +953,7 @@ fn handle_sse_event(
                 });
             }
         }
-        // К1: context window fill (verified live: session.usage.updated
+        // context window fill (verified live: session.usage.updated
         // carries {sessionID, cost, tokens:{input,output,reasoning,cache}});
         // the WINDOW SIZE is not part of the event — size=0 means unknown
         "session.usage.updated" => {
@@ -986,7 +986,7 @@ fn handle_sse_event(
                 estimated: false,
             });
         }
-        // К4 (verified live): the compaction lifecycle + STREAMED summary.
+        // (verified live): the compaction lifecycle + STREAMED summary.
         // opencode sends no compaction id — the STARTED event defines one
         // per session; delta/ended reuse it (one history line per run)
         "session.compaction.started" => {

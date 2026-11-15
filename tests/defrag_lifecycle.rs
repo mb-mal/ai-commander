@@ -1,5 +1,5 @@
-//! v7 #1: the DEFRAG dialog lifecycle — a second compaction in the same
-//! session creates a FRESH animator, Esc closes the current dialog without
+//! The DEFRAG dialog lifecycle — a second compaction in the same session
+//! creates a FRESH animator, Esc closes the current dialog without
 //! changing the user preference, and switching chats drops a foreign one.
 
 use ai_commander::backend::{BackendEvent, CompactionMethod, CompactionSource, CompactionStatus};
@@ -42,7 +42,7 @@ fn esc(app: &mut App) {
     ));
 }
 
-/// v7 #1 acceptance: two compactions, Esc between them — the second
+/// acceptance: two compactions, Esc between them — the second
 /// creates a NEW animator with compaction_id = c-2; `compaction_view`
 /// stays Defrag (the user preference is not permanently changed).
 #[tokio::test]
@@ -85,7 +85,7 @@ async fn second_compaction_creates_new_animator_after_esc() {
     );
 }
 
-/// v7 #1: a finished animator is REPLACED by a new compaction_id even
+/// a finished animator is REPLACED by a new compaction_id even
 /// without Esc (auto-replacement).
 #[tokio::test]
 async fn finished_animator_replaced_by_new_id() {
@@ -107,7 +107,7 @@ async fn finished_animator_replaced_by_new_id() {
     );
 }
 
-/// v7 #1: switching to another chat drops the dialog of the old session.
+/// switching to another chat drops the dialog of the old session.
 #[tokio::test]
 async fn switching_chat_drops_foreign_dialog() {
     let mut a = app();
@@ -134,7 +134,7 @@ async fn switching_chat_drops_foreign_dialog() {
     );
 }
 
-/// v7 #1: any key dismisses a DONE dialog (not just Esc).
+/// any key dismisses a DONE dialog (not just Esc).
 #[tokio::test]
 async fn any_key_dismisses_done_dialog() {
     let mut a = app();

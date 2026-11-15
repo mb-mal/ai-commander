@@ -1,8 +1,8 @@
 //! Hermes Agent backend — verified against the local `hermes` CLI.
 //!
 //! Drives the `hermes chat` subprocess per message:
-//!   hermes chat --query-file - --format stream-json --oneshot -Q [--yolo]
-//!              [--resume <session>] [--image p]… [-m model --provider p]
+//! hermes chat --query-file - --format stream-json --oneshot -Q [--yolo]
+//! [--resume <session>] [--image p]… [-m model --provider p]
 //! The task text goes over **stdin** (`--query-file -`): argv would break on
 //! messages starting with `-` and on the 32k Windows command-line limit.
 //! stdout carries NDJSON events (incremental `text` deltas, final `result`
@@ -54,7 +54,7 @@ struct HermesStore {
     sessions: Vec<StoredSession>,
 }
 
-/// К5: hermes signals a compaction with a message whose text starts with
+/// hermes signals a compaction with a message whose text starts with
 /// the `[CONTEXT COMPACTION]` marker (verified against hermes docs/streams;
 /// no dedicated NDJSON event exists).
 fn hermes_compacted(store: &HermesStore, native_id: &str) -> bool {
@@ -72,7 +72,7 @@ pub struct HermesBackend {
     events: UnboundedSender<BackendEvent>,
     store_path: PathBuf,
     store: Arc<Mutex<HermesStore>>,
-    /// v8 #9: children keyed by session id — parallel sessions
+    /// children keyed by session id — parallel sessions
     /// must not overwrite each other's process handles
     children: std::sync::Arc<Mutex<std::collections::HashMap<String, Child>>>,
     connected: AtomicBool,
@@ -319,7 +319,7 @@ impl Backend for HermesBackend {
         }
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let mut cmd = self.build_command(&arg_refs);
-        // Н3: prefer the task's worktree cwd over the harness default
+        // prefer the task's worktree cwd over the harness default
         if let Some(cwd) = opts.cwd {
             cmd.current_dir(cwd);
         }
@@ -486,7 +486,7 @@ impl Backend for HermesBackend {
                     title: user_text.chars().take(48).collect(),
                 });
             }
-            // К1: chars/4 estimate after every stored turn
+            // chars/4 estimate after every stored turn
             {
                 let g = store.lock();
                 let chars: usize = g
@@ -511,7 +511,7 @@ impl Backend for HermesBackend {
                     estimated: true,
                 });
             }
-            // К5: hermes leaves a [CONTEXT COMPACTION] message in the
+            // hermes leaves a [CONTEXT COMPACTION] message in the
             // history when it compacted during the turn
             {
                 let g = store.lock();
@@ -534,7 +534,7 @@ impl Backend for HermesBackend {
                     });
                 }
             }
-            // v9 #4: the process finished — remove it and reap (no zombie)
+            // the process finished — remove it and reap (no zombie)
             if let Some(mut ch) = children.lock().remove(&abort_sid) {
                 let _ = ch.wait();
             }
@@ -549,9 +549,9 @@ impl Backend for HermesBackend {
     /// Esc really terminates the running hermes turn (whole process tree).
     async fn abort(&self, native_id: &str) -> Result<()> {
         let mut children = self.children.lock();
-        // v9 #4: try the given id first, then any entry whose key
+        // try the given id first, then any entry whose key
         // STARTS with "pending-" whose value maps to this session
-        // v10 #3: find and EXTRACT the pending-* child so kill_tree
+        // find and EXTRACT the pending-* child so kill_tree
         // actually stops it — retain() just dropped it without killing
         let ch = children.remove(native_id).or_else(|| {
             let pending_key = children
@@ -713,7 +713,7 @@ mod compaction_tests {
         }
     }
 
-    /// К5: the marker → one Reported Completed event; no marker → nothing;
+    /// the marker → one Reported Completed event; no marker → nothing;
     /// a marker NOT in the last message → nothing (old compactions are not
     /// re-reported on every turn).
     #[test]

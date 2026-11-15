@@ -111,7 +111,7 @@ fn draw_agents_panel(app: &mut App, f: &mut Frame, size: Rect) {
             Span::styled(status, TH.dlg_accent_style()),
         ]));
     }
-    // v5 #6: files that failed to load are VISIBLE here, not silently gone
+    // files that failed to load are VISIBLE here, not silently gone
     for e in roles.errors.iter().take(4) {
         let file = e
             .path

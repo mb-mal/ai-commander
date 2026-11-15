@@ -1,4 +1,4 @@
-//! Fake ACP agent for conformance tests (review v3 Б2, extended in v4/v5).
+//! Fake ACP agent for conformance tests.
 //!
 //! Speaks the Agent Client Protocol over stdio like a real agent, but
 //! validates EVERY incoming client message against the schema types —
@@ -20,9 +20,9 @@
 //! permission request and expects a -32602 error reply (not silence).
 //!
 //! Results are appended to the file named by FAKE_ACP_LOG:
-//!   OK <method> / FAIL <method> <error> — schema validation
-//!   PERM selected <id> <sid> / PERM cancelled <sid> — permission outcomes
-//!   MALFORMED <code> — reply to the malformed permission request
+//! OK <method> / FAIL <method> <error> — schema validation
+//! PERM selected <id> <sid> / PERM cancelled <sid> — permission outcomes
+//! MALFORMED <code> — reply to the malformed permission request
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
@@ -290,11 +290,11 @@ fn main() {
                     continue;
                 }
 
-                // v4 Б2: ask permission (typed, STRING id) before answering;
+                // ask permission (typed, STRING id) before answering;
                 // the turn completes when the client replies (see above)
                 let mut fields = ToolCallUpdateFields::default();
                 fields.title = Some("rm -rf probe".into());
-                // v5 issues #1: real kind + raw command so the client's
+                // real kind + raw command so the client's
                 // policy engine sees what the agent wants to do
                 fields.kind = Some(ToolKind::Execute);
                 fields.raw_input = Some(serde_json::json!({"command": "rm -rf probe"}));

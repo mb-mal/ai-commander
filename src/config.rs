@@ -39,7 +39,7 @@ pub struct HarnessCfg {
     /// Run the harness with unattended tool execution (hermes --yolo).
     /// Off by default: the agent asks before running tools that need it.
     pub auto_approve: bool,
-    /// v5 #7: let the dsh backend reuse the DeepSeek key stored by opencode
+    /// let the dsh backend reuse the DeepSeek key stored by opencode
     /// (~/.local/share/opencode/auth.json). Off by default — another app's
     /// credential store must not be read in secret.
     pub reuse_opencode_key: bool,
@@ -151,7 +151,7 @@ impl Config {
         let path = config_path();
         let raw = toml::to_string_pretty(self).context("serialize config")?;
         fs::write(&path, raw).context("write config.toml")?;
-        // owner-only permissions (review v2: password in plaintext, 0644 default)
+        // owner-only permissions
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

@@ -1,4 +1,4 @@
-//! v5 issues #1 acceptance: the policy engine must not auto-allow from an
+//! acceptance: the policy engine must not auto-allow from an
 //! untrusted project file, and ACP permission requests must carry real
 //! action/resource. HOME/USERPROFILE are pointed at a throwaway directory
 //! (this test binary sets the env before any policy load; the only test

@@ -1,4 +1,4 @@
-//! v5 #5: kill_tree must take down the WHOLE process tree on Unix — the
+//! kill_tree must take down the WHOLE process tree on Unix — the
 //! child runs in its own process group and the group gets TERM→KILL.
 //! Windows covers this with `taskkill /T`; here we prove the Unix half.
 
@@ -57,6 +57,6 @@ fn kill_tree_kills_grandchildren_too() {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     for k in &kids {
-        assert!(!alive(*k), "descendant {k} survived kill_tree (v5 #5)");
+        assert!(!alive(*k), "descendant {k} survived kill_tree ");
     }
 }

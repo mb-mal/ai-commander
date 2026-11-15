@@ -1,4 +1,4 @@
-//! Б1: single board owner + local IPC, hardened (review v4).
+//! single board owner + local IPC, hardened.
 //!
 //! The redb store takes an exclusive lock, so exactly ONE process may have
 //! the board open — the owner (TUI or daemon). The owner serves board tool
@@ -7,8 +7,8 @@
 //! the exclusive lock (and instead of opening a second store, which used to
 //! duplicate task ids).
 //!
-//! v4 hardening — the socket is reachable by any local process, and
-//! browsers can shoot blind `no-cors` POSTs at ephemeral ports, so:
+//! Hardening — the socket is reachable by any local process, and browsers
+//! can shoot blind `no-cors` POSTs at ephemeral ports, so:
 //!
 //! * the port file carries a 32-byte transport token (file mode 0600);
 //!   every request must present it,
@@ -39,7 +39,7 @@ pub fn port_file() -> PathBuf {
 }
 
 /// Handler that executes one board tool call against the owner's store.
-/// The actor is the resolved identity (role or human) — v6 #3.
+/// The actor is the resolved identity (role or human)
 pub type ToolHandler =
     Arc<dyn Fn(&str, &Value, super::Actor) -> Result<String, String> + Send + Sync>;
 
@@ -190,7 +190,7 @@ fn serve_conn(
             break;
         }
         // v4: the acting role comes from the role token only;
-        // v6 #3: the HUMAN token is a separate authority
+        // the HUMAN token is a separate authority
         let role_token = v.get("role_token").and_then(Value::as_str).unwrap_or("");
         let actor = if role_token == human_token {
             Some(super::Actor::Human)
