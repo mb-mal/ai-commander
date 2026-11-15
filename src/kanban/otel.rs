@@ -1,4 +1,4 @@
-//! OpenTelemetry export (review "Позже"): write board events as OTLP-compatible
+//! OpenTelemetry export: write board events as OTLP-compatible
 //! JSON spans to a file, ready for `otelcol --config file_exporter` ingestion.
 //! Zero-dependency: spans are plain OTLP/JSON bodies.
 

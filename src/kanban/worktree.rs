@@ -1,12 +1,9 @@
 //! Git worktree isolation: every code task runs in its own worktree + branch.
 //!
 //! `start` → `ai-commander/t-0007` branch in a worktree OUTSIDE the user's
-//! working tree (v5 #3: `<cache>/ai-commander/worktrees/<repo>/<task>` —
-//! `git add -A` in the user's repo must never pick agent worktrees up as
-//! embedded repositories; the legacy `<repo>/.aic-worktrees/` location is
-//! still resolved for tasks created before the move).
+//! working tree.
 //! `finish` (Review→Done) merges the task branch into the task's BASE
-//! branch via a temporary worktree and moves the branch ref (v5 #2) — the
+//! branch via a temporary worktree and moves the branch ref  — the
 //! user's checkout is never touched. A base checked out with uncommitted
 //! changes blocks the merge (task stays in Review for a human). Merge
 //! conflicts abort the transition with an error. Cancel drops the worktree.
@@ -123,9 +120,7 @@ fn repo_is_dirty(repo: &Path) -> bool {
 }
 
 /// Create the worktree + branch for a task (Start). Returns the worktree
-/// path and the base branch it was cut from (v5 #2: the base is recorded
-/// on the task so Approve merges into IT, not whatever the user has
-/// checked out by then). Idempotent: reuses an existing worktree.
+/// path and the base branch it was cut from. Idempotent: reuses an existing worktree.
 pub fn start(repo: &Path, task: &Task) -> Result<(PathBuf, String)> {
     let wt = worktree_path(repo, task);
     let branch = format!("ai-commander/{}", sanitize(&task.id));
@@ -153,9 +148,9 @@ pub fn start(repo: &Path, task: &Task) -> Result<(PathBuf, String)> {
 }
 
 /// Merge the task branch into the task's BASE branch via a temporary
-/// worktree and fast-forward the branch ref (v5 #2). The user's checkout
+/// worktree and fast-forward the branch ref. The user's checkout
 /// is never touched; a base checked out dirty blocks the merge.
-/// Commits any uncommitted agent work first (review v2 Б4).
+/// Commits any uncommitted agent work first.
 pub fn finish(repo: &Path, task: &Task) -> Result<()> {
     let wt = worktree_path(repo, task);
     let branch = format!("ai-commander/{}", sanitize(&task.id));
@@ -163,7 +158,7 @@ pub fn finish(repo: &Path, task: &Task) -> Result<()> {
         return Ok(()); // nothing to merge (non-code task)
     }
 
-    // commit the agent's uncommitted work (review v2 Б4: --force lost it)
+    // commit the agent's uncommitted work
     let _ = git(&wt, &["add", "-A"]);
     let author = format!(
         "{} <{}@ai-commander>",
@@ -181,7 +176,7 @@ pub fn finish(repo: &Path, task: &Task) -> Result<()> {
         ],
     );
 
-    // v5 #2: the target is the task's base branch (stored at Start), not
+    // the target is the task's base branch (stored at Start), not
     // whatever branch the user happens to have checked out now
     let stored_base = task.base_branch.trim().to_string();
     let base = if stored_base.is_empty() {
@@ -202,7 +197,7 @@ pub fn finish(repo: &Path, task: &Task) -> Result<()> {
         );
     }
 
-    // v6 #1: two safe paths, never a bare `update-ref` under the user's
+    // two safe paths, never a bare `update-ref` under the user's
     // feet — moving the ref below a CHECKED OUT base makes the agent's
     // files look DELETED in the user's tree (and their next `commit -am`
     // would record the deletion).
@@ -283,7 +278,7 @@ pub fn drop(repo: &Path, task: &Task) -> Result<()> {
 fn cleanup(repo: &Path, task: &Task) -> Result<()> {
     let wt = worktree_path(repo, task);
     let branch = format!("ai-commander/{}", sanitize(&task.id));
-    // commit stray changes first so nothing is lost (review v2 Б4)
+    // commit stray changes first so nothing is lost
     let _ = git(&wt, &["add", "-A"]);
     let _ = git(&wt, &["commit", "-m", &format!("cleanup {}", task.id)]);
     // try without --force first; fall back only for Cancel (agent opted out)
@@ -297,7 +292,7 @@ fn cleanup(repo: &Path, task: &Task) -> Result<()> {
     Ok(())
 }
 
-/// v5 #3: drop worktrees of tasks that no longer exist on the board
+/// drop worktrees of tasks that no longer exist on the board
 /// (crash leftovers). Returns the removed worktree ids.
 pub fn prune_orphans(repo: &Path, live_task_ids: &[String]) -> Vec<String> {
     let _ = git(repo, &["worktree", "prune"]);
@@ -321,7 +316,7 @@ pub fn prune_orphans(repo: &Path, live_task_ids: &[String]) -> Vec<String> {
 }
 
 /// Hook the FSM: returns a human-readable note when isolation applies,
-/// and the base branch to record on the task for Start (v5 #2).
+/// and the base branch to record on the task for Start.
 pub fn on_transition(
     repo: &Path,
     task: &Task,
@@ -372,7 +367,7 @@ pub fn on_transition(
 #[derive(Debug, Default)]
 pub struct HookNote {
     pub note: Option<String>,
-    /// Start: the base branch the task worktree was cut from (v5 #2)
+    /// Start: the base branch the task worktree was cut from
     pub base_branch: Option<String>,
     /// Start: where the worktree was created (v6: recorded on the task)
     pub worktree_path: Option<String>,

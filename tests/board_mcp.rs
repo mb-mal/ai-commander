@@ -104,7 +104,7 @@ fn mcp_board_full_dialog() {
     let db = tmpdb("dialog");
     let mut c = McpClient::spawn(&db, "coder");
 
-    // initialize + tools/list. v5 #8: the server is on the official rmcp
+    // initialize + tools/list. the server is on the official rmcp
     // SDK — a current client must negotiate a CURRENT protocol version
     // (the hand-rolled one was stuck on 2024-11-05 forever)
     let init = c.request(

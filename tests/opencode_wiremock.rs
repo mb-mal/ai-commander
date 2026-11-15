@@ -235,7 +235,7 @@ fn spawn_recorder() -> (u16, ReqLog) {
     (port, log)
 }
 
-/// Н3: a task send with a cwd must move the session to that directory
+/// a task send with a cwd must move the session to that directory
 /// (the task's worktree) BEFORE the prompt is posted.
 #[tokio::test]
 async fn send_with_cwd_moves_session_before_prompt() {

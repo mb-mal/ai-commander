@@ -1,4 +1,4 @@
-//! v5 #10 + v6 #3: a permission ask parked in NeedsHuman becomes a
+//! a permission ask parked in NeedsHuman becomes a
 //! one-time permit ONLY through an explicit human grant (the `permit`
 //! journal comment from human-only board_unpark). Observing a
 //! NeedsHuman-to-Ready transition grants nothing — agents used to trigger
@@ -17,7 +17,7 @@ fn human_approval_grants_the_ask_once() {
         "no permit before the human acts"
     );
 
-    // v6 #3: the explicit human grant is the ONLY path
+    // the explicit human grant is the ONLY path
     assert!(pb.grant("t-0001"), "the human grant works");
     assert!(
         pb.take_permit("t-0001", "execute", "git push origin main"),

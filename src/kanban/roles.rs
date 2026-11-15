@@ -1,6 +1,6 @@
 //! Agent roles, declared as files (git-friendly, Claude-Code-style):
 //!
-//!   .ai-commander/agents/<id>.md   — YAML frontmatter + markdown instructions
+//! .ai-commander/agents/<id>.md   — YAML frontmatter + markdown instructions
 //!
 //! Teams (.ai-commander/teams) are NOT implemented yet — the loader ignores
 //! them (README marks them as planned; no dead surface).
@@ -37,7 +37,7 @@ pub struct RoleSet {
     pub roles: BTreeMap<String, Role>,
     /// paths that contributed (for UI/debug)
     pub sources: Vec<PathBuf>,
-    /// v5 #6: files that failed to load (bad YAML, unknown fields) — shown
+    /// files that failed to load (bad YAML, unknown fields) — shown
     /// in the agents panel and the daemon log instead of vanishing silently
     pub errors: Vec<LoadError>,
 }
@@ -150,7 +150,7 @@ impl RoleSet {
         rs
     }
 
-    /// Д7: cached load — the role/team files are re-read only when their
+    /// cached load — the role/team files are re-read only when their
     /// (path, mtime, len) fingerprint changes, not on every task launch.
     /// Returns the process-wide cached view for `cwd`.
     pub fn cached(cwd: &Path) -> RoleSet {
@@ -174,7 +174,7 @@ impl RoleSet {
     }
 }
 
-/// Д7: cache of the loaded RoleSet, keyed by a cheap filesystem fingerprint
+/// cache of the loaded RoleSet, keyed by a cheap filesystem fingerprint
 /// (sorted list of (path, mtime, len) for every role/team file). A hit
 /// avoids re-reading and re-parsing the .md/.yaml files per task launch.
 #[derive(Debug, Default)]
@@ -359,7 +359,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Д7: repeated `get` calls hit the cache (no extra loads); a file edit
+    /// repeated `get` calls hit the cache (no extra loads); a file edit
     /// bumps the mtime fingerprint and the change IS picked up.
     #[test]
     fn role_cache_hits_and_refreshes_on_change() {

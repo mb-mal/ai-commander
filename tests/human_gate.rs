@@ -1,4 +1,4 @@
-//! v6 #3: an agent must not un-park NeedsHuman tasks (the review probe:
+//! an agent must not un-park NeedsHuman tasks (the probe:
 //! `board_update_task promote` used to return Ok and PermitBook granted
 //! the parked ask). Only a HUMAN (the local-user IPC token / TUI) can.
 
@@ -15,7 +15,7 @@ fn needs_human_board() -> (BoardStore, String) {
     (b, id)
 }
 
-/// The review probe: an agent promoting a NeedsHuman task is refused.
+/// An agent promoting a NeedsHuman task is refused.
 #[test]
 fn agent_cannot_unpark_needs_human() {
     let (mut b, id) = needs_human_board();

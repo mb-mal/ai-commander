@@ -1,9 +1,9 @@
-//! v7 #2 + #3: security (human token not in board.port; config_dir
-//! always denied) and hint consistency (no Alt+Enter anywhere).
+//! Security defaults: the human token is never in board.port, config_dir
+//! is always denied, and no Alt+Enter hints anywhere.
 
 use ai_commander::policy::{Effect, Policy};
 
-/// v7 #2: the port file does NOT contain the human token (only 2 lines:
+/// the port file does NOT contain the human token (only 2 lines:
 /// port and transport token — the agent must not see the human one).
 #[test]
 fn board_port_has_no_human_token() {
@@ -32,7 +32,7 @@ fn board_port_has_no_human_token() {
     let _ = std::fs::remove_file(&pf);
 }
 
-/// v7 #2: requests for the config dir are DENIED regardless of any rules.
+/// requests for the config dir are DENIED regardless of any rules.
 #[test]
 fn config_dir_is_always_denied() {
     // a policy that allows everything
@@ -71,7 +71,7 @@ fn config_dir_is_always_denied() {
     );
 }
 
-/// v7 #3: no source file or README mentions Alt+Enter (it is the
+/// no source file or README mentions Alt+Enter (it is the
 /// Windows-terminal fullscreen toggle, not a newline).
 #[test]
 fn no_alt_enter_in_hints() {

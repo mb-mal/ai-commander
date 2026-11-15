@@ -61,7 +61,7 @@ struct AcpStore {
 }
 
 /// A server→client permission request awaiting the user's answer.
-/// v4 Б2: options keep the schema kind so the reply can match exactly, and
+/// options keep the schema kind so the reply can match exactly, and
 /// the jsonrpc id stays raw (numbers AND strings are legal request ids).
 #[derive(Clone)]
 struct PendingPermission {
@@ -289,7 +289,7 @@ impl AcpBackend {
                 });
             }
             SessionUpdate::UsageUpdate(u) => {
-                // К1: the context window fill — the "disk" of the DEFRAG map
+                // the context window fill — the "disk" of the DEFRAG map
                 let _ = events.send(BackendEvent::Usage {
                     harness: harness.into(),
                     native_id: sent_id.into(),
@@ -329,10 +329,10 @@ impl Backend for AcpBackend {
         *self.child.lock() = Some(child);
 
         // initialize; the response flips `connected` from the reader thread
-        // (Б2: params built from the schema types, not hand-rolled json!)
+        // params built from the schema types, not hand-rolled json!)
         let init = InitializeRequest::new(agent_client_protocol::schema::ProtocolVersion::V1);
         let mut init_v = serde_json::to_value(&init).unwrap_or(Value::Null);
-        // К2: declare the session-compaction capability (ACP RFD, Preview).
+        // declare the session-compaction capability (ACP RFD, Preview).
         // The schema crate 1.1.0 does not know this field yet, so it is
         // added to the serialized value; agents that do not support the
         // RFD ignore unknown capability keys.
@@ -364,7 +364,7 @@ impl Backend for AcpBackend {
                     let params = v.get("params").cloned().unwrap_or(Value::Null);
                     match method.as_str() {
                         "session/update" => {
-                            // К2: the compaction RFD types are not in schema
+                            // the compaction RFD types are not in schema
                             // crate 1.1.0 — intercept by the sessionUpdate
                             // discriminator BEFORE the typed parse
                             let update_kind = params
@@ -452,7 +452,7 @@ impl Backend for AcpBackend {
                                         };
                                         Self::handle_update(&events, &acc, &harness, &sent, note);
                                     } else if !update_kind.is_empty() {
-                                        // К2: unknown update types are LOGGED,
+                                        // unknown update types are LOGGED,
                                         // not silently dropped
                                         crate::log_debug!(
                                             "acp",
@@ -463,7 +463,7 @@ impl Backend for AcpBackend {
                             }
                         }
                         "session/request_permission" => {
-                            // v4 Б2: typed params; the raw jsonrpc id is kept
+                            // typed params; the raw jsonrpc id is kept
                             // (string ids are legal and must not be dropped)
                             let Ok(req) =
                                 serde_json::from_value::<RequestPermissionRequest>(params.clone())
@@ -486,14 +486,14 @@ impl Backend for AcpBackend {
                                 continue;
                             }
                             let sid = req.session_id.to_string();
-                            // v5 issues #1: the policy engine must see WHAT
+                            // the policy engine must see WHAT
                             // the agent wants — action from the tool kind,
                             // resource from locations / the raw command, and
                             // a human-readable title from the tool call
                             let f = &req.tool_call.fields;
                             let kind = f.kind.unwrap_or_default();
                             let action = tool_kind_name(kind).to_string();
-                            // v6 #2: every touched location matters — the
+                            // every touched location matters — the
                             // policy engine takes the strictest across them
                             let resources = if action == "execute" {
                                 let cmd = raw_input_text(f.raw_input.as_ref());
@@ -518,7 +518,7 @@ impl Backend for AcpBackend {
                                 .clone()
                                 .filter(|t| !t.trim().is_empty())
                                 .unwrap_or_else(|| {
-                                    // v4 Б2: fall back to option names
+                                    // fall back to option names
                                     req.options
                                         .iter()
                                         .map(|o| o.name.clone())
@@ -690,7 +690,7 @@ impl Backend for AcpBackend {
         let resume = !native_id.is_empty() && !native_id.starts_with("pending-");
         let cwd = self.cwd().to_string_lossy().into_owned();
 
-        // Б2: prompt content blocks are schema ContentBlock values
+        // prompt content blocks are schema ContentBlock values
         let mut blocks: Vec<ContentBlock> = vec![ContentBlock::Text(TextContent::new(text))];
         for a in attachments {
             if a.mime.starts_with("image/") {
@@ -718,7 +718,7 @@ impl Backend for AcpBackend {
         let mcp_role = opts.mcp_role.map(str::to_owned);
         let blocks_clone = blocks.clone();
         let cwd_base = cwd.clone();
-        // Н3: owned copy for the thread (opts.cwd borrows from the caller)
+        // owned copy for the thread (opts.cwd borrows from the caller)
         let cwd_override = opts.cwd.map(|p| p.to_path_buf());
 
         std::thread::spawn(move || {
@@ -735,17 +735,17 @@ impl Backend for AcpBackend {
             };
 
             // board MCP server: same binaries dir, role token via env
-            // (Б2: typed McpServer list, not json!)
+            // typed McpServer list, not json!)
             let mcp_servers = |role: Option<&str>| -> Vec<McpServer> {
                 role.and_then(board_mcp_entry).into_iter().collect()
             };
-            // Н3: prefer the task's worktree cwd over the harness default
+            // prefer the task's worktree cwd over the harness default
             let cwd_str = cwd_override
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or(cwd_base.clone());
             let real_id: String = if resume {
-                // Б2: schema-typed session/load params
+                // schema-typed session/load params
                 let load = LoadSessionRequest::new(sent_id.clone(), cwd_str.clone())
                     .mcp_servers(mcp_servers(mcp_role.as_deref()));
                 let _load = rpc(
@@ -754,7 +754,7 @@ impl Backend for AcpBackend {
                 );
                 sent_id.clone()
             } else {
-                // Б2: schema-typed session/new params
+                // schema-typed session/new params
                 let new = NewSessionRequest::new(cwd_str.clone())
                     .mcp_servers(mcp_servers(mcp_role.as_deref()));
                 let rx = rpc(
@@ -820,7 +820,7 @@ impl Backend for AcpBackend {
                 });
             }
 
-            // Б2: schema-typed session/prompt params
+            // schema-typed session/prompt params
             let prompt = PromptRequest::new(real_id.clone(), blocks_clone);
             let rx = rpc(
                 "session/prompt",
@@ -919,7 +919,7 @@ impl Backend for AcpBackend {
             }
         };
         if let Some(real) = &real {
-            // Б2: schema-typed CancelNotification (sessionId only — the old
+            // schema-typed CancelNotification (sessionId only — the old
             // hand-rolled payload carried an off-schema "reason" field)
             let cancel = CancelNotification::new(real.to_string());
             self.notify(
@@ -927,7 +927,7 @@ impl Backend for AcpBackend {
                 serde_json::to_value(&cancel).unwrap_or(Value::Null),
             );
         }
-        // v5 Б2: the spec REQUIRES answering pending permission requests
+        // the spec REQUIRES answering pending permission requests
         // with `cancelled` when their turn is cancelled — but ONLY the ones
         // of THIS session; another session's open questions stay alive
         let (mine, others): (Vec<PendingPermission>, Vec<PendingPermission>) = {
@@ -945,7 +945,7 @@ impl Backend for AcpBackend {
         Ok(())
     }
 
-    /// Map the user's answer to the schema option kinds (v4 Б2):
+    /// Map the user's answer to the schema option kinds :
     /// "once"→allow_once, "always"→allow_always, "reject"→reject_once.
     /// No matching option → `cancelled` (never a blind first-option pick).
     async fn permission_reply(
@@ -966,7 +966,7 @@ impl Backend for AcpBackend {
         let p = perms.remove(idx);
         drop(perms);
 
-        // v4 Б2: choose strictly by the schema kind, in preference order;
+        // choose strictly by the schema kind, in preference order;
         // no fallback to "whatever option is first"
         let want: &[PermissionOptionKind] = match reply {
             "reject" => &[
@@ -985,7 +985,7 @@ impl Backend for AcpBackend {
                 o.option_id.clone(),
             )),
             None => {
-                // v4 Б2: nothing matched — cancel (never a blind allow)
+                // nothing matched — cancel (never a blind allow)
                 crate::log_warn!(
                     "acp",
                     "no permission option of kind {:?} offered — cancelling",
@@ -994,7 +994,7 @@ impl Backend for AcpBackend {
                 RequestPermissionOutcome::Cancelled
             }
         };
-        // v4 Б2: typed response; the raw id (number or string) round-trips
+        // typed response; the raw id (number or string) round-trips
         let resp = RequestPermissionResponse::new(outcome);
         let msg = json!({"jsonrpc": "2.0", "id": jsonrpc_id,
             "result": serde_json::to_value(&resp).unwrap_or(Value::Null)});
@@ -1034,7 +1034,7 @@ fn board_mcp_entry(role: &str) -> Option<McpServer> {
     board_mcp_at(&dir, role)
 }
 
-/// Policy action name for a tool kind (v5 issues #1): matches the ACP
+/// Policy action name for a tool kind : matches the ACP
 /// snake_case kinds; an absent kind is `other`, to which `allow` rules
 /// never apply (the policy engine decides ask/deny only).
 fn tool_kind_name(kind: ToolKind) -> &'static str {
@@ -1092,7 +1092,7 @@ fn board_mcp_at(dir: &std::path::Path, role: &str) -> Option<McpServer> {
 mod tests {
     use super::*;
 
-    /// Б2: the board MCP descriptor embedded in session/new must be
+    /// the board MCP descriptor embedded in session/new must be
     /// schema-canonical — strict agents reject the old hand-rolled json
     /// (env as a map, missing server name). Round-trip through the typed
     /// NewSessionRequest proves the payload a strict agent accepts.

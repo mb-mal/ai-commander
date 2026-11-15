@@ -301,7 +301,7 @@ pub struct App {
     /// approvals queue length shown in the header (permission requests)
     pub approvals_pending: usize,
     pub board: Arc<parking_lot::Mutex<kanban::store::BoardStore>>,
-    /// v6 #3: true when another process owns the store — human board
+    /// true when another process owns the store — human board
     /// actions are forwarded to the owner over IPC
     pub board_is_view: bool,
     /// UX: resizable sidebar (drag the border or Ctrl+minus/Ctrl+equal)
@@ -313,33 +313,33 @@ pub struct App {
     pub sel_cursor: usize,
     /// UX: Ctrl+F search — the query and the current match line
     pub search: Option<SearchState>,
-    /// v9 #2: (harness, pending_id) -> real_id — populated on
+    /// (harness, pending_id) -> real_id — populated on
     /// SessionCreated; all event handlers normalize native_id through it
     pub rebound_sessions: std::collections::HashMap<(String, String), String>,
-    /// v8 #10: permission requests queued while another modal is open —
+    /// permission requests queued while another modal is open —
     /// a parallel task's request must not silently overwrite the current
     /// one (the backend would hang waiting for a reply)
     pub pending_permissions:
         std::collections::VecDeque<(String, String, String, String, String, Vec<String>)>,
-    /// К1: last context-window usage per (harness, session):
+    /// last context-window usage per (harness, session):
     /// (used tokens, window size, cumulative session cost USD)
     pub ctx_usage: std::collections::HashMap<(String, String), (u64, u64, Option<f64>)>,
-    /// К6: sessions with a Reported compaction (suppresses inference)
+    /// sessions with a Reported compaction (suppresses inference)
     pub compaction_reported: std::collections::HashSet<(String, String)>,
-    /// К10: running compaction animator for the open chat — bound to
+    /// running compaction animator for the open chat — bound to
     /// (harness, native_id, compaction_id) so a new compaction replaces
     /// a finished one, and switching chats drops a foreign dialog
     pub defrag: Option<(String, String, String, crate::ui::defrag::DefragAnimator)>,
-    /// К10: finished compaction history lines (one per compaction id)
+    /// finished compaction history lines (one per compaction id)
     pub compaction_lines: Vec<(String, u64, u64)>,
-    /// К12: compaction view mode (defrag | mini | off)
+    /// compaction view mode (defrag | mini | off)
     pub compaction_view: crate::ui::defrag::CompactionView,
     pub board_col: usize,
     pub board_row: usize,
     pub board_sel: Option<String>,
     /// (harness, session) -> accumulated agent reply for a task turn
     pub task_replies: std::collections::HashMap<(String, String), String>,
-    /// v4 Н2: sessions whose stream errored mid-turn — StreamDone for them
+    /// sessions whose stream errored mid-turn — StreamDone for them
     /// is Failed even if a DONE: marker was printed before the break
     pub task_errors: std::collections::HashSet<(String, String)>,
     /// render cache: (harness, session, msg_id, part_id) -> (width, text_len, lines)
@@ -361,7 +361,7 @@ impl App {
     ) -> Self {
         let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
         let active = cfg.default_harness_id();
-        // Б1: the TUI owns the board when it wins the exclusive redb lock,
+        // the TUI owns the board when it wins the exclusive redb lock,
         // and then serves board IPC for secondary processes (board-mcp).
         // If another process owns the store, degrade to a local view and
         // do NOT serve IPC.
@@ -386,7 +386,7 @@ impl App {
                     }
                     Err(e) => crate::log_warn!("board", "IPC server failed: {e}"),
                 }
-                // v5 #3: drop worktrees of tasks that no longer exist
+                // drop worktrees of tasks that no longer exist
                 let ids: Vec<String> = arc
                     .lock()
                     .projection()
@@ -679,7 +679,7 @@ impl App {
             return;
         }
         let text = self.editor.text();
-        // К11: /compact — manual context compaction where supported
+        // /compact — manual context compaction where supported
         if text.trim() == "/compact" {
             self.editor.set_text("");
             let harness = self.cur.harness.clone();
@@ -806,7 +806,7 @@ impl App {
         // finished turn reloads via history on StreamDone, the next prompt
         // steers. Hermes is a child process — Esc really kills it.
         if let Some(b) = self.backends.get(&self.cur.harness).cloned() {
-            // v11 #3: abort works for pending-* too (hermes/dsh/acp all
+            // abort works for pending-* too (hermes/dsh/acp all
             // support it — the first turn must be cancellable by Esc)
             if !self.cur.native_id.is_empty() {
                 let native_id = self.cur.native_id.clone();
@@ -866,7 +866,7 @@ impl App {
                         b.watchdog_scan(now)
                     };
                     if !stuck.is_empty() {
-                        // Д2: abort each stuck session and WAIT (no
+                        // abort each stuck session and WAIT (no
                         // fire-and-forget) — the board must not re-launch
                         // while the old agent process is still alive
                         kanban::runner::abort_stuck(&self.backends, &stuck).await;
@@ -924,7 +924,7 @@ impl App {
                 native_id,
                 title,
             } => {
-                // v8 #2 / v9 #2: rebind ONLY the ONE pending task that
+                // rebind ONLY the ONE pending task that
                 // belongs to this harness; record the mapping so ALL event
                 // handlers (PartDelta, StreamDone, Usage, Compaction) can
                 // normalize the old pending-* id to the real one
@@ -953,7 +953,7 @@ impl App {
                             self.task_replies
                                 .insert((harness.clone(), native_id.clone()), reply);
                         }
-                        // v12 #1: transfer the error flag too (StreamError
+                        // transfer the error flag too (StreamError
                         // arrives under pending-* BEFORE SessionCreated)
                         if self.task_errors.remove(&(harness.clone(), p)) {
                             self.task_errors
@@ -961,7 +961,7 @@ impl App {
                         }
                     }
                 }
-                // v10 #4: record the CURRENT CHAT's rebind too (apply_part
+                // record the CURRENT CHAT's rebind too (apply_part
                 // and future events need to map pending → real for the chat)
                 if self.cur.harness == harness && self.cur.native_id.starts_with("pending-") {
                     self.rebound_sessions.insert(
@@ -1021,7 +1021,7 @@ impl App {
                 kind,
                 delta,
             } => {
-                // v9 #2: normalize pending-* -> real_id (backends stream
+                // normalize pending-* -> real_id (backends stream
                 // deltas under the OLD id even after SessionCreated)
                 let native_id = self
                     .rebound_sessions
@@ -1030,7 +1030,7 @@ impl App {
                     .unwrap_or(native_id);
                 // heartbeat (Д1): renew lease on ANY progress event — Text,
                 // Reasoning, tool calls all indicate the agent is alive.
-                // v8 #1: ALSO accumulate the reply text so StreamDone has
+                // ALSO accumulate the reply text so StreamDone has
                 // something to classify (was always empty → Failed)
                 {
                     let task_id = {
@@ -1059,16 +1059,16 @@ impl App {
                 msg_id,
                 part,
             } => {
-                // v9 #2: normalize pending-* -> real_id
+                // normalize pending-* -> real_id
                 let native_id = self
                     .rebound_sessions
                     .get(&(harness.clone(), native_id.clone()))
                     .cloned()
                     .unwrap_or(native_id);
-                // v4 Д1: tool-call progress (PartUpdated, no delta text) is a
+                // tool-call progress (PartUpdated, no delta text) is a
                 // liveness signal — renew the task lease so a long tool call
                 // inside one turn is not watchdog-interrupted.
-                // v8 #1: Text-kind PartUpdated REPLACES the accumulated
+                // Text-kind PartUpdated REPLACES the accumulated
                 // reply (dsh emits cumulative updates, not deltas)
                 {
                     let task_id = {
@@ -1108,7 +1108,7 @@ impl App {
             } => {
                 self.approvals_pending += 1;
                 // policy engine: deny wins over ask over allow; no rule -> ask
-                // v6 #2: strictest across every touched location
+                // strictest across every touched location
                 match self.policy.check_all(&action, &resources) {
                     crate::policy::Effect::Allow => {
                         self.approvals_pending = self.approvals_pending.saturating_sub(1);
@@ -1135,7 +1135,7 @@ impl App {
                     crate::policy::Effect::Ask => {}
                 }
                 // the agent asks before acting — surface a modal (NC silver).
-                // v8 #10: if a permission modal is ALREADY open, QUEUE this
+                // if a permission modal is ALREADY open, QUEUE this
                 // request instead of overwriting (the backend would hang)
                 let lang = self.cfg.lang;
                 let items = vec![
@@ -1189,7 +1189,7 @@ impl App {
                 }
             }
             BackendEvent::StreamDone { harness, native_id } => {
-                // v9 #2: normalize pending-* -> real_id FIRST — the board
+                // normalize pending-* -> real_id FIRST — the board
                 // already has the real id, the event carries the old one
                 let native_id = self
                     .rebound_sessions
@@ -1217,12 +1217,12 @@ impl App {
                         .task_replies
                         .remove(&(harness.clone(), native_id.clone()))
                         .unwrap_or_default();
-                    // v4 Н2: an errored stream poisons the turn — the DONE:
+                    // an errored stream poisons the turn — the DONE:
                     // marker printed before the break must not count
                     let errored = self
                         .task_errors
                         .remove(&(harness.clone(), native_id.clone()));
-                    // Д3: use runner::on_stream_done — same path as the daemon
+                    // use runner::on_stream_done — same path as the daemon
                     // (includes Н1 backoff, Н2 strict DONE: marker, max_attempts)
                     let mut b = self.board.lock();
                     if let Ok(t) =
@@ -1262,14 +1262,14 @@ impl App {
                 native_id,
                 error,
             } => {
-                // v9 #2: normalize pending-* -> real_id
+                // normalize pending-* -> real_id
                 let native_id = self
                     .rebound_sessions
                     .get(&(harness.clone(), native_id.clone()))
                     .cloned()
                     .unwrap_or(native_id);
                 self.busy.remove(&(harness.clone(), native_id.clone()));
-                // v4 Н2: mark the task session so the following StreamDone
+                // mark the task session so the following StreamDone
                 // classifies as Failed regardless of any DONE: marker
                 {
                     let is_task = {
@@ -1342,13 +1342,13 @@ impl App {
                 cost_usd,
                 ..
             } => {
-                // v10 #4: normalize pending-* -> real_id
+                // normalize pending-* -> real_id
                 let native_id = self
                     .rebound_sessions
                     .get(&(harness.clone(), native_id.clone()))
                     .cloned()
                     .unwrap_or(native_id);
-                // К1: remember the fill; К6: a sharp unreported drop in the
+                // remember the fill; К6: a sharp unreported drop in the
                 // SAME session means the harness compacted on its own
                 let key = (harness.clone(), native_id.clone());
                 let prev = self.ctx_usage.insert(key.clone(), (used, size, cost_usd));
@@ -1395,7 +1395,7 @@ impl App {
                 source,
                 ..
             } => {
-                // v10 #4: normalize pending-* -> real_id
+                // normalize pending-* -> real_id
                 let native_id = self
                     .rebound_sessions
                     .get(&(harness.clone(), native_id.clone()))
@@ -1465,7 +1465,7 @@ impl App {
                         if let Some((_, _, _, an)) = self.defrag.as_mut() {
                             an.complete(self.ctx_usage.get(&key).map(|(u, _, _)| *u), None);
                         }
-                        // К10: ONE history line per compaction id
+                        // ONE history line per compaction id
                         if !self
                             .compaction_lines
                             .iter()
@@ -1783,7 +1783,7 @@ impl App {
             return;
         }
 
-        // К10: Esc closes the CURRENT defrag dialog. The user
+        // Esc closes the CURRENT defrag dialog. The user
         // preference `compaction_view` stays — the NEXT compaction opens
         // a fresh dialog. Any other key also dismisses a DONE dialog.
         if k.code == crossterm::event::KeyCode::Esc && self.defrag.is_some() {
@@ -2422,7 +2422,7 @@ impl App {
         let Some(t) = self.selected_board_task() else {
             return;
         };
-        // v8 #3: transition_in so Approve MERGES the worktree and Cancel
+        // transition_in so Approve MERGES the worktree and Cancel
         // drops it — plain transition() skipped the git side-effects
         let repo = std::env::current_dir().unwrap_or_default();
         let outcome = {
@@ -2444,7 +2444,7 @@ impl App {
         let Some(t) = self.selected_board_task() else {
             return;
         };
-        // v6 #3: un-parking a NeedsHuman task is a HUMAN action — in
+        // un-parking a NeedsHuman task is a HUMAN action — in
         // view-only mode it goes to the owner via the human IPC token
         if t.status == S::NeedsHuman && self.board_is_view {
             if let Some(tok) = kanban::ipc::human_token() {
@@ -2538,7 +2538,7 @@ impl App {
                 Err(e) => Err(e),
             };
             if let Err(e) = launched {
-                // Д5: a failed send must still end the turn — empty reply →
+                // a failed send must still end the turn — empty reply →
                 // Failed → the Н1 retry cap/backoff applies
                 {
                     let mut board = board.lock();
@@ -2554,7 +2554,7 @@ impl App {
 
     // ---------------- modal key handling ----------------
 
-    /// v8 #10: open the next queued permission request (if any) after the
+    /// open the next queued permission request (if any) after the
     /// current modal closes. A parallel task's request must not be lost.
     fn show_next_pending_permission(&mut self) {
         if self.modal.is_some() {
@@ -2588,7 +2588,7 @@ impl App {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
 
         // Esc closes any modal; on a permission modal it also REJECTS
-        // so the backend doesn't hang waiting for a reply (v9 #3)
+        // so the backend doesn't hang waiting for a reply
         if k.code == KeyCode::Esc {
             if let Some(Modal::List {
                 action:
@@ -2877,7 +2877,7 @@ impl App {
                 }
             }
         }
-        // v12 #2: after ANY modal closes (Esc, Enter, any key), show the
+        // after ANY modal closes (Esc, Enter, any key), show the
         // next queued permission request — covers Help/About/Confirm/
         // Input/ModelPicker/HarnessPicker/FilePicker, not just List
         if self.modal.is_none() {
@@ -3193,7 +3193,7 @@ impl App {
                 session_id,
                 request_id,
             } => {
-                // v11 #2: the request was answered — decrement the counter
+                // the request was answered — decrement the counter
                 self.approvals_pending = self.approvals_pending.saturating_sub(1);
                 let reply = match id.as_str() {
                     "always" => "always",
@@ -3628,7 +3628,7 @@ mod compaction_ui_tests {
         App::new(crate::config::Config::default(), rx)
     }
 
-    /// К6 thresholds: a >30% and >10k drop in the SAME session infers a
+    /// thresholds: a >30% and >10k drop in the SAME session infers a
     /// compaction; smaller drops and cross-session resets do not.
     #[tokio::test]
     async fn usage_drop_infers_compaction_only_on_threshold() {
@@ -3664,7 +3664,7 @@ mod compaction_ui_tests {
         );
     }
 
-    /// К10: a Reported compaction suppresses the inference for its session.
+    /// a Reported compaction suppresses the inference for its session.
     #[tokio::test]
     async fn reported_compaction_suppresses_inference() {
         let mut a = app();
@@ -3715,7 +3715,7 @@ mod compaction_ui_tests {
         );
     }
 
-    /// К10: two compactions → two history lines; the overlay does NOT open
+    /// two compactions → two history lines; the overlay does NOT open
     /// for a background session.
     #[tokio::test]
     async fn background_compaction_records_lines_without_overlay() {

@@ -105,7 +105,7 @@ fn is_path_action(action: &str) -> bool {
     )
 }
 
-/// v6 #2: shell metacharacters make a command un-matchable by `allow`
+/// shell metacharacters make a command un-matchable by `allow`
 /// rules — `cargo build && curl … | sh` must never inherit an allow for
 /// `cargo *` (the glob would happily match the whole string).
 fn command_has_metachars(cmd: &str) -> bool {
@@ -113,7 +113,7 @@ fn command_has_metachars(cmd: &str) -> bool {
         .any(|c| matches!(c, ';' | '|' | '&' | '$' | '`' | '>' | '<' | '\n' | '\r'))
 }
 
-/// v6 #2: lexical normalization of path resources — `src/../../.ssh/x`
+/// lexical normalization of path resources — `src/../../.ssh/x`
 /// must not look like it lives under `src/*`.
 pub fn normalize_path(p: &str) -> String {
     let p = p.replace(char::from(0x5c), "/");
@@ -122,7 +122,7 @@ pub fn normalize_path(p: &str) -> String {
         match c {
             "" | "." => {}
             ".." => {
-                // v8 #5: leading ".." must SURVIVE — dropping it turns
+                // leading ".." must SURVIVE — dropping it turns
                 // ../src/lib.rs into src/lib.rs which matches scoped allows
                 if out.last().is_some_and(|x| *x != "..") {
                     out.pop();
@@ -145,12 +145,12 @@ impl Policy {
             return Effect::Deny;
         }
         let mut decision: Option<Effect> = None;
-        // v6 #2: allow rules cannot match a command with shell
+        // allow rules cannot match a command with shell
         // metacharacters — a second command hidden behind `;`/`&&`/`$()`
         // must go through ask/deny, whatever the prefix allows
         let allow_blocked =
             action == "other" || (is_command_action(action) && command_has_metachars(resource));
-        // v6 #2: path resources are normalized before matching
+        // path resources are normalized before matching
         let resource_norm = if is_path_action(action) {
             normalize_path(resource)
         } else {
@@ -179,7 +179,7 @@ impl Policy {
         decision.unwrap_or(Effect::Ask)
     }
 
-    /// v6 #2: strictest result across ALL resources of a request (an edit
+    /// strictest result across ALL resources of a request (an edit
     /// touching `src/a.rs` AND `.ssh/keys` is as strict as its worst path).
     pub fn check_all(&self, action: &str, resources: &[String]) -> Effect {
         let mut decision = Effect::Allow;
@@ -195,7 +195,7 @@ impl Policy {
     }
 
     /// Project policies may only tighten (deny > ask > allow), never weaken
-    /// a user-level rule on the same target (review v2 security #7).
+    /// a user-level rule on the same target.
     fn merge_tighten(user: Vec<Rule>, project: Vec<Rule>) -> Vec<Rule> {
         let rank = |e: Effect| match e {
             Effect::Deny => 3,

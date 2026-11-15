@@ -1,5 +1,5 @@
 //! TaskRunner: the single execution path for board tasks, used by both the
-//! TUI and the daemon (review v2 Б8+Б9). Builds the launch context from
+//! TUI and the daemon. Builds the launch context from
 //! the task + role (instructions, model, MCP), tracks progress with
 //! heartbeats, and finishes the task on StreamDone via classify_reply.
 
@@ -15,7 +15,7 @@ pub struct LaunchCtx {
     pub model: Option<crate::config::ModelRef>,
     pub agent: Option<String>,
     pub mcp_role: Option<String>,
-    /// Н3: the worktree path the agent should work in (set by launch_task)
+    /// the worktree path the agent should work in (set by launch_task)
     pub cwd: Option<std::path::PathBuf>,
 }
 
@@ -60,7 +60,7 @@ pub fn launch_ctx(task: &Task, cfg: &Config, roles: &RoleSet) -> LaunchCtx {
     }
 }
 
-/// Н3 sync phase: Start (which creates the worktree) and build the launch
+/// sync phase: Start (which creates the worktree) and build the launch
 /// context with `cwd` pointing at the task's worktree. Split out of
 /// `launch_task` so the TUI can run it under its board lock, then do the
 /// async session/send without holding the lock across `.await`.
@@ -91,7 +91,7 @@ pub fn prepare_launch(
     Ok(ctx)
 }
 
-/// Н3: launch a task in its worktree — Start (creates worktree) →
+/// launch a task in its worktree — Start (creates worktree) →
 /// create_session(cwd=worktree) → send. Returns the linked session id.
 /// Takes the shared board (Б1: the owner serves it over IPC); the lock is
 /// taken per sync segment only, never held across an `.await`.
@@ -134,7 +134,7 @@ pub fn on_progress_no_reply(board: &mut BoardStore, task_id: &str, delta: &str) 
     }
 }
 
-/// v4 Д1: any liveness signal renews the lease — including `PartUpdated`
+/// any liveness signal renews the lease — including `PartUpdated`
 /// (tool-call status changes, ACP tool calls), which carries no delta text.
 pub fn on_activity(board: &mut BoardStore, task_id: &str) {
     board.renew_lease(task_id);
@@ -169,12 +169,12 @@ pub fn on_permission_ask(
 
 /// Classify the accumulated reply and transition the task (Б8: StreamDone
 /// must finish the task, not just clear a busy flag).
-/// Н1: Failed retries are capped by max_attempts and delayed exponentially.
+/// Failed retries are capped by max_attempts and delayed exponentially.
 pub fn on_stream_done(board: &mut BoardStore, task_id: &str, reply: &str) -> Result<Task, String> {
     on_stream_done_ex(board, task_id, reply, false)
 }
 
-/// v4 Н2: `errored` marks a turn whose stream died mid-reply — the
+/// `errored` marks a turn whose stream died mid-reply — the
 /// `DONE:` marker printed before the break must NOT count; the turn is
 /// Failed regardless of the accumulated text.
 pub fn on_stream_done_ex(
@@ -193,7 +193,7 @@ pub fn on_stream_done_ex(
         TurnOutcome::Blocked => TaskAction::Block,
         TurnOutcome::NeedsHuman => TaskAction::Ask,
         TurnOutcome::Failed => {
-            // Н1: cap retries — after max_attempts the task escalates
+            // cap retries — after max_attempts the task escalates
             let t = board
                 .projection()
                 .tasks
@@ -204,7 +204,7 @@ pub fn on_stream_done_ex(
                 if t.attempts >= t.max_attempts {
                     TaskAction::Ask // escalate: exhausted retries
                 } else {
-                    // Н1: exponential backoff before the next launch
+                    // exponential backoff before the next launch
                     let delay_secs = backoff_secs(t.attempts);
                     let not_before = crate::kanban::now_ms() + delay_secs * 1000;
                     board.set_not_before(task_id, not_before);
@@ -228,7 +228,7 @@ fn backoff_secs(attempts: u32) -> i64 {
     }
 }
 
-/// Д2: abort every stuck session and WAIT for all aborts to settle before
+/// abort every stuck session and WAIT for all aborts to settle before
 /// the caller applies transitions. Fire-and-forget aborts raced the apply:
 /// the board re-launched a task while its agent process was still alive.
 pub async fn abort_stuck(
@@ -357,7 +357,7 @@ mod tests {
         assert!(reply.contains("writing code…"));
     }
 
-    /// Д2: a slow abort — completion is recorded only after a delay.
+    /// a slow abort — completion is recorded only after a delay.
     struct SlowAbortBackend {
         aborted: Arc<std::sync::atomic::AtomicBool>,
     }
@@ -416,7 +416,7 @@ mod tests {
         }
     }
 
-    /// Д2: abort_stuck must WAIT for every abort to finish — a
+    /// abort_stuck must WAIT for every abort to finish — a
     /// fire-and-forget spawn would return before the abort completed.
     #[tokio::test]
     async fn abort_stuck_waits_for_aborts_to_settle() {
@@ -443,7 +443,7 @@ mod tests {
     }
 }
 
-/// v5 #10 + v6 #3: one-time permits for permission asks. The daemon parks
+/// one-time permits for permission asks. The daemon parks
 /// an ask in NeedsHuman; the permit is granted ONLY by an explicit human
 /// action (the `permit` journal comment written by the human-only
 /// board_unpark tool) — never by merely observing a NeedsHuman→Ready
@@ -469,7 +469,7 @@ impl PermitBook {
         );
     }
 
-    /// v6 #3: a HUMAN un-parked the task (the `permit` journal comment).
+    /// a HUMAN un-parked the task (the `permit` journal comment).
     /// Grants the parked ask once — this is the only grant path.
     pub fn grant(&mut self, task_id: &str) -> bool {
         if let Some((a, r)) = self.asks.remove(task_id) {

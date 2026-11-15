@@ -1,4 +1,4 @@
-//! v5 #7: the dsh backend must NOT read another app's credential store
+//! the dsh backend must NOT read another app's credential store
 //! (opencode auth.json) without explicit consent (reuse_opencode_key).
 
 use ai_commander::backend::create_backend;

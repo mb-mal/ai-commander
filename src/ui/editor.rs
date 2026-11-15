@@ -193,7 +193,7 @@ impl Editor {
     pub fn up(&mut self) {
         if self.row > 0 {
             self.row -= 1;
-            // v12 #3: snap to the START of a grapheme (col may land in
+            // snap to the START of a grapheme (col may land in
             // the middle of an emoji+ZWJ sequence from a different line)
             let line = self.lines[self.row].clone();
             let c = self.col.min(line.chars().count());
@@ -204,7 +204,7 @@ impl Editor {
     pub fn down(&mut self) {
         if self.row + 1 < self.lines.len() {
             self.row += 1;
-            // v12 #3: same grapheme-boundary snap
+            // same grapheme-boundary snap
             let line = self.lines[self.row].clone();
             let c = self.col.min(line.chars().count());
             self.col = self.floor_grapheme(&line, c);
@@ -220,7 +220,7 @@ impl Editor {
     }
 
     /// Display position of the cursor (unwrapped, width in cells).
-    /// v9 #5: display width via UnicodeWidthStr (CJK/emoji = 2 cells).
+    /// display width via UnicodeWidthStr (CJK/emoji = 2 cells).
     pub fn screen_cursor(&self) -> (u16, u16) {
         let line = self.lines.get(self.row).map(|s| s.as_str()).unwrap_or("");
         let c = self.col.min(line.chars().count());

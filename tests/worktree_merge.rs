@@ -1,6 +1,6 @@
-//! v5 #2 + #3: Approve merges into the task's BASE branch (the user's
-//! checkout is never touched), and worktrees live OUTSIDE the repository
-//! (no embedded-repo pollution of `git add -A`); orphans are pruned.
+//! Approve merges into the task's BASE branch (the user's checkout is
+//! never touched); worktrees live OUTSIDE the repository; orphans are
+//! pruned.
 
 use std::path::Path;
 use std::process::Command;
@@ -52,7 +52,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// v5 #2: the merge lands on the task's base branch; the branch the user
+/// the merge lands on the task's base branch; the branch the user
 /// switched to meanwhile stays clean, and their checkout is untouched.
 #[test]
 fn approve_merges_into_task_base_branch() {
@@ -103,7 +103,7 @@ fn approve_merges_into_task_base_branch() {
     let _ = std::fs::remove_dir_all(&repo);
 }
 
-/// v5 #2: the base branch checked out with uncommitted changes blocks the
+/// the base branch checked out with uncommitted changes blocks the
 /// merge — nothing is lost, the task stays in Review.
 #[test]
 fn dirty_base_checkout_blocks_approve() {
@@ -134,7 +134,7 @@ fn dirty_base_checkout_blocks_approve() {
     let _ = std::fs::remove_dir_all(&repo);
 }
 
-/// v5 #3: worktrees live outside the repo — `git status` in the user's
+/// worktrees live outside the repo — `git status` in the user's
 /// checkout stays clean; orphaned worktrees are pruned at startup.
 #[test]
 fn worktrees_stay_outside_and_orphans_pruned() {
@@ -170,7 +170,7 @@ fn worktrees_stay_outside_and_orphans_pruned() {
     let _ = std::fs::remove_dir_all(&repo);
 }
 
-/// v6 #1 (the review probe): the user stands on the base branch with a
+/// (the review probe): the user stands on the base branch with a
 /// CLEAN tree — Approve must make the agent's files APPEAR in their
 /// checkout, never look deleted (a following `commit -am` must not wipe
 /// the agent's work).
@@ -220,7 +220,7 @@ fn approve_on_clean_base_shows_work_in_the_checkout() {
     let _ = std::fs::remove_dir_all(&repo);
 }
 
-/// v6 #1: update-ref with an expected-old value must REFUSE to move a ref
+/// update-ref with an expected-old value must REFUSE to move a ref
 /// that changed in between (a concurrent user commit is never overwritten).
 #[test]
 fn update_ref_guard_refuses_moved_base() {

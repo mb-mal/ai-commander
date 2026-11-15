@@ -1,9 +1,9 @@
-//! Probes from the v5 review follow-up. Each must fail on the pre-fix
-//! code and pass after the fix.
+//! Policy & launch: a failed Start records its reason, a permission ASK
+//! parks the task in NeedsHuman with the question in its thread.
 
 use ai_commander::kanban::{TaskAction, TaskStatus, runner, store::BoardStore};
 
-/// v5 М3: a failed Start escalates WITH the reason recorded in the task
+/// a failed Start escalates WITH the reason recorded in the task
 /// thread — the human sees why the launch broke.
 #[test]
 fn launch_failure_reason_lands_in_the_task() {

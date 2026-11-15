@@ -1,4 +1,4 @@
-//! v5 #6: role files with errors are VISIBLE (path + message), never
+//! role files with errors are VISIBLE (path + message), never
 //! silently dropped; the rest of the roles still load. serde_yaml is
 //! replaced by the maintained serde_norway fork.
 

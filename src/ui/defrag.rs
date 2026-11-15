@@ -1,10 +1,10 @@
-//! К9: the DEFRAG animator — a deterministic state machine that turns
+//! the DEFRAG animator — a deterministic state machine that turns
 //! compaction events + a context map into animation frames, and the
 //! ratatui widget that draws a frame. Pure data; `App` drives the clock.
 
 use crate::ui::context_map::{Block, HistoryShape, build_after, build_before};
 
-/// К12: how compaction is shown. `defrag` — full-screen animation,
+/// how compaction is shown. `defrag` — full-screen animation,
 /// `mini` — status-bar strip only, `off` — history line only.
 /// `NO_COLOR` forces the monochrome palette; ASCII mode (old conhost)
 /// replaces the map glyphs with plain ASCII.
@@ -660,7 +660,7 @@ mod render_tests {
     }
 }
 
-/// К12: ASCII glyphs (`/G0`) — env `AI_COMMANDER_ASCII=1`; monochrome
+/// ASCII glyphs (`/G0`) — env `AI_COMMANDER_ASCII=1`; monochrome
 /// (`/BW`) — `NO_COLOR`.
 pub fn ascii_mode() -> bool {
     std::env::var("AI_COMMANDER_ASCII")

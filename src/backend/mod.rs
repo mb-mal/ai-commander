@@ -147,7 +147,7 @@ pub struct ChatMsg {
     pub attachments: Vec<AttachmentMeta>,
 }
 
-/// К1: how full the model context window is.
+/// how full the model context window is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactionStatus {
     InProgress,
@@ -206,7 +206,7 @@ pub enum BackendEvent {
         action: String,
         /// primary resource (path/command) for pattern rules
         resource: String,
-        /// v6 #2: ALL resources of the request (every touched location);
+        /// ALL resources of the request (every touched location);
         /// the policy engine resolves the strictest across them
         resources: Vec<String>,
     },
@@ -249,7 +249,7 @@ pub enum BackendEvent {
         harness: String,
         agents: Vec<AgentInfo>,
     },
-    /// К1: context window fill (ACP usage_update; opencode usage events;
+    /// context window fill (ACP usage_update; opencode usage events;
     /// chars/4 estimate for hermes/dsh). `size` is the window in tokens.
     Usage {
         harness: String,
@@ -281,7 +281,7 @@ pub struct SendOpts<'a> {
     pub agent: Option<&'a str>,
     /// role token: the ACP backend injects the board MCP server bound to it
     pub mcp_role: Option<&'a str>,
-    /// Н3: working directory for this session (the task's worktree);
+    /// working directory for this session (the task's worktree);
     /// backends pass it as `session/new` cwd / process current_dir
     pub cwd: Option<&'a std::path::Path>,
 }
@@ -321,12 +321,12 @@ pub trait Backend: Send + Sync {
     async fn list_models(&self) -> Result<Vec<ModelInfo>>;
     async fn list_agents(&self) -> Result<Vec<AgentInfo>>;
 
-    /// К11: does this harness support manual context compaction?
+    /// does this harness support manual context compaction?
     fn supports_compact(&self) -> bool {
         false
     }
 
-    /// К11: ask the harness to compact the session context now.
+    /// ask the harness to compact the session context now.
     async fn compact(&self, _native_id: &str) -> Result<()> {
         anyhow::bail!("this harness does not support manual compaction")
     }
@@ -371,7 +371,7 @@ pub fn supported_kind(kind: &str) -> bool {
     )
 }
 
-/// К1: assumed window for chars/4 estimates (harnesses that report
+/// assumed window for chars/4 estimates (harnesses that report
 /// nothing). Marked `estimated: true` in the Usage event.
 pub const ESTIMATED_WINDOW: u64 = 128_000;
 
@@ -380,8 +380,7 @@ pub const ESTIMATED_WINDOW: u64 = 128_000;
 pub const MAX_ATTACHMENT_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Platform spawn preparation for harness child processes: no console
-/// window on Windows, own process group on Unix (v5 #5 — so `kill_tree`
-/// can take the whole tree down with one signal).
+/// window on Windows, own process group on Unix.
 pub fn spawn_prep(cmd: &mut std::process::Command) {
     #[cfg(windows)]
     {
@@ -398,7 +397,7 @@ pub fn spawn_prep(cmd: &mut std::process::Command) {
 
 /// Kill a child process *tree*: `Child::kill` only hits the direct process,
 /// leaving interpreters/node spawned underneath alive as orphans.
-/// Unix (v5 #5): the child runs in its own process group — SIGTERM the
+/// Unix : the child runs in its own process group — SIGTERM the
 /// group, grace period, then SIGKILL.
 pub fn kill_tree(child: &mut std::process::Child) {
     #[cfg(windows)]

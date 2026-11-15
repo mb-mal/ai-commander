@@ -1,4 +1,4 @@
-//! Б2: the ACP backend must speak schema-canonical Agent Client Protocol.
+//! the ACP backend must speak schema-canonical Agent Client Protocol.
 //! This conformance test drives AcpBackend against the fake-acp-agent
 //! binary, which validates EVERY client message against the schema types
 //! (deserialize + exact round-trip) and logs OK/FAIL per method. The test
@@ -128,7 +128,7 @@ async fn acp_backend_speaks_schema_canonical_protocol() {
     let _ = std::fs::remove_file(&log);
 }
 
-/// v4 Б2 permission scenarios: the user's answer must map to the option
+/// permission scenarios: the user's answer must map to the option
 /// with the matching schema `kind` (never a blind first-option pick), and
 /// cancelling the turn answers every pending request with `cancelled`.
 /// The fake agent uses a STRING jsonrpc id ("perm-1") — routing the reply
@@ -187,7 +187,7 @@ async fn permission_scenario(tag: &str, user_reply: Option<String>, expected_log
                     resource,
                     ..
                 } => {
-                    // v5 issues #1: the event must describe WHAT the agent
+                    // the event must describe WHAT the agent
                     // wants — the tool_call title and a real action
                     assert!(
                         title.contains("rm -rf probe"),
@@ -248,7 +248,7 @@ async fn acp_permission_replies_match_schema_kinds() {
     permission_scenario("cancel", None, "PERM cancelled").await;
 }
 
-/// v5 М1: abort cancels only ITS session's pending permission — another
+/// abort cancels only ITS session's pending permission — another
 /// session's open question survives and is answered normally afterwards.
 #[tokio::test]
 async fn abort_cancels_only_its_own_session_permission() {
@@ -383,7 +383,7 @@ async fn abort_cancels_only_its_own_session_permission() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// v5 М2: a malformed permission request is answered with -32602, not
+/// a malformed permission request is answered with -32602, not
 /// silence — the agent's turn still finishes.
 #[tokio::test]
 async fn malformed_permission_request_gets_32602() {

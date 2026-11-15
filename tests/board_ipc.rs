@@ -1,4 +1,4 @@
-//! Б1: single board owner + IPC. When an owner process (TUI/daemon shape:
+//! single board owner + IPC. When an owner process (TUI/daemon shape:
 //! a BoardStore behind Arc<Mutex> serving IPC) is alive, board-mcp must
 //! work as its CLIENT: tool calls land in the owner's store, and board-mcp
 //! must never open the redb file itself (exclusive lock, and the old
@@ -111,7 +111,7 @@ fn board_mcp_uses_owner_store_over_ipc() {
     ai_commander::kanban::ipc::cleanup();
 
     // 3) the task and artifact live in the OWNER's store — one store,
-    //    no duplicates, no second projection
+    // no duplicates, no second projection
     {
         let b = owner.lock();
         let t = b

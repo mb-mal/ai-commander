@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 /// Lease duration: renewed on every agent progress event.
-/// v4 Д1: tool calls can run silently for minutes (PartUpdated renews
+/// tool calls can run silently for minutes (PartUpdated renews
 /// the lease, but a single long call emits no updates) — 5 minutes before
 /// the watchdog intervenes.
 pub const LEASE_MS: i64 = 300_000;
@@ -29,7 +29,7 @@ pub fn default_max_turns() -> u32 {
 /// A turn is considered stuck after this long without a StreamDone.
 pub const STUCK_AFTER_MS: i64 = 10 * 60 * 1000;
 
-/// Max delegation chain depth (review §8: ограничить глубину делегирования).
+/// Max delegation chain depth (caps runaway delegation).
 pub const MAX_DELEGATION_DEPTH: usize = 3;
 
 pub fn now_ms() -> i64 {
@@ -136,7 +136,7 @@ pub struct Comment {
     pub ts_ms: i64,
 }
 
-/// Д8: a concrete output of a task turn — files written, the worktree branch,
+/// a concrete output of a task turn — files written, the worktree branch,
 /// a report link. Handoffs and DONE turns attach these so the next owner can
 /// find the work without scraping the chat log.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -168,10 +168,10 @@ pub struct Task {
     /// task thread: comments, handoffs, system notes (agent inbox)
     #[serde(default)]
     pub comments: Vec<Comment>,
-    /// Д8: concrete outputs (files/branches/links) produced by task turns
+    /// concrete outputs (files/branches/links) produced by task turns
     #[serde(default)]
     pub artifacts: Vec<Artifact>,
-    /// v5 #2: the branch the task worktree was cut from — Approve merges
+    /// the branch the task worktree was cut from — Approve merges
     /// into IT (via a temporary worktree), not the user's current checkout
     #[serde(default)]
     pub base_branch: String,
@@ -191,10 +191,10 @@ pub struct Task {
     #[serde(default)]
     pub started_ms: Option<i64>,
     /// lease expiry: renewed by agent progress events (heartbeat); the
-    /// watchdog only intervenes when this has passed (review v2 Б6)
+    /// watchdog only intervenes when this has passed
     #[serde(default)]
     pub lease_until_ms: Option<i64>,
-    /// Н1: don't launch this task before this timestamp (exponential backoff)
+    /// don't launch this task before this timestamp (exponential backoff)
     #[serde(default)]
     pub not_before_ms: Option<i64>,
     /// max attempts before the task escalates to NeedsHuman
@@ -295,12 +295,11 @@ pub enum TurnOutcome {
     Finished,   // → Review
     Blocked,    // → Blocked
     NeedsHuman, // → NeedsHuman
-    Failed,     // → retry (empty/short reply, review v2 Б5)
+    Failed,     // → retry (empty/short reply)
 }
 
-/// Classify an agent reply. An empty or trivially-short reply is a failure
-/// (review v2 Б5: "done" was inferred from any text, including errors and
-/// timeouts). `DONE:` prefix → Finished; `BLOCKED:` → Blocked; `ASK:` →
+/// Classify an agent reply. An empty or trivially-short reply is a failure.
+/// `DONE:` prefix → Finished; `BLOCKED:` → Blocked; `ASK:` →
 /// NeedsHuman; anything else ≥ 20 chars is treated as a finished summary.
 pub fn classify_reply(reply: &str) -> TurnOutcome {
     let trimmed = reply.trim();
@@ -315,7 +314,7 @@ pub fn classify_reply(reply: &str) -> TurnOutcome {
     } else if head.starts_with("DONE") {
         TurnOutcome::Finished
     } else {
-        // Н2: no explicit DONE: marker → not a completion (error text,
+        // no explicit DONE: marker → not a completion (error text,
         // timeouts, partial replies all land here)
         TurnOutcome::Failed
     }
@@ -323,7 +322,7 @@ pub fn classify_reply(reply: &str) -> TurnOutcome {
 
 /// Execute a board.* tool call (shared by the board-mcp binary and the IPC
 /// gateway's /board proxy endpoint). Returns human-readable text or an error.
-/// v6 #3: who is acting on the board. `Human` is the local user (the TUI
+/// who is acting on the board. `Human` is the local user (the TUI
 /// keyboard or the IPC human token); `Role` is an agent. Agents may never
 /// un-park NeedsHuman tasks — that was a self-approval hole.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -380,7 +379,7 @@ pub fn board_tool_call(
         }
         "board_update_task" => {
             let id = str_arg("task_id");
-            // v6 #3: leaving NeedsHuman is a HUMAN decision — an agent
+            // leaving NeedsHuman is a HUMAN decision — an agent
             // promoting the task used to grant itself the parked permit
             if str_arg("action") == "promote" && !matches!(actor, Actor::Human) {
                 if let Some(t) = board.projection().tasks.iter().find(|t| t.id == id) {
@@ -420,7 +419,7 @@ pub fn board_tool_call(
                     "you cannot approve your own work — a different role must review".into(),
                 );
             }
-            // v8 #3: transition_in so Approve merges the worktree back
+            // transition_in so Approve merges the worktree back
             // and Cancel drops it — but ONLY for tasks that HAVE a worktree
             // (base_branch or worktree_path set); memory-store tasks
             // (tests, IPC without a git repo) use plain transition
@@ -469,7 +468,7 @@ pub fn board_tool_call(
             ))
         }
         "board_unpark" => {
-            // v6 #3: the HUMAN answers a parked ask: NeedsHuman → Ready with
+            // the HUMAN answers a parked ask: NeedsHuman → Ready with
             // a journal record — the daemon grants the parked permit on it
             if !matches!(actor, Actor::Human) {
                 return Err("board_unpark is human-only".into());
@@ -609,7 +608,7 @@ mod tests {
             TurnOutcome::Failed,
             "no DONE: marker → not a completion (Н2)"
         );
-        // review v2 Б5: short/empty replies are failures
+        // review short/empty replies are failures
         assert_eq!(classify_reply(""), TurnOutcome::Failed);
         assert_eq!(classify_reply("ok"), TurnOutcome::Failed);
     }

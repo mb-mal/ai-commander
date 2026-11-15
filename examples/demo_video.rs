@@ -34,7 +34,7 @@ const FPS: u64 = 25;
 const CELL_W: usize = 12;
 const CELL_H: usize = 24;
 const COLS: u16 = 160; // 160 * 12 = 1920
-const ROWS: u16 = 45; //  45 * 24 = 1080
+const ROWS: u16 = 45; // 45 * 24 = 1080
 const W: usize = COLS as usize * CELL_W;
 const H: usize = ROWS as usize * CELL_H;
 

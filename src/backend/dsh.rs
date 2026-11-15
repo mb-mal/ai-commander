@@ -1,13 +1,13 @@
 //! DeepSeek Harness (dsh) backend — verified against @deepseek-ai/dsh 0.2.2-rc.1.
 //!
 //! dsh is a profile-based CLI; ai-commander drives the headless profile:
-//!   dsh --profile headless --json [--session-id <id>] -   (task over stdin)
+//! dsh --profile headless --json [--session-id <id>] -   (task over stdin)
 //! stdout is NDJSON run events:
-//!   {"type":"session","sessionId":"session-…","cwd":…}          (first line)
-//!   {"type":"thinking","text":"…"}                              (reasoning, replace)
-//!   {"type":"text","text":"…"}                                  (answer, cumulative)
-//!   {"type":"status","phase":"turn_end","reason":{"kind":…}}
-//!   {"type":"final","sessionId":"…","reason":{…},"text":"…"}
+//! {"type":"session","sessionId":"session-…","cwd":…}          (first line)
+//! {"type":"thinking","text":"…"}                              (reasoning, replace)
+//! {"type":"text","text":"…"}                                  (answer, cumulative)
+//! {"type":"status","phase":"turn_end","reason":{"kind":…}}
+//! {"type":"final","sessionId":"…","reason":{…},"text":"…"}
 //! Caveat (0.2.2-rc.1): `--session-id` adopts the session but does NOT feed
 //! prior turns into the model context — so this backend replays the stored
 //! conversation inside the task text. The DEEPSEEK_API_KEY comes from the
@@ -61,7 +61,7 @@ pub struct DshBackend {
     events: UnboundedSender<BackendEvent>,
     store_path: PathBuf,
     store: Arc<Mutex<DshStore>>,
-    /// v8 #9: children keyed by session id — parallel sessions
+    /// children keyed by session id — parallel sessions
     /// must not overwrite each other's process handles
     children: std::sync::Arc<Mutex<std::collections::HashMap<String, Child>>>,
     connected: AtomicBool,
@@ -181,7 +181,7 @@ impl DshBackend {
                 return Some(k);
             }
         }
-        // v5 #7: another app's credential store is read ONLY with explicit
+        // another app's credential store is read ONLY with explicit
         // consent (reuse_opencode_key) — and the source is logged
         if !self.cfg.reuse_opencode_key {
             return None;
@@ -205,7 +205,7 @@ impl DshBackend {
             .filter(|k| !k.is_empty())
     }
 
-    /// К7: one blocking dsh call (the self-compaction summarizer). Runs
+    /// one blocking dsh call (the self-compaction summarizer). Runs
     /// on a worker thread so the async send path stays responsive.
     async fn run_once(
         &self,
@@ -400,7 +400,7 @@ impl Backend for DshBackend {
             .find(|s| s.native_id == native_id)
             .map(|s| s.msgs.clone())
             .unwrap_or_default();
-        // К7: dsh has no compaction of its own — ai-commander owns the
+        // dsh has no compaction of its own — ai-commander owns the
         // history, so compact it here when the replay estimate is too big
         {
             let turns: Vec<crate::backend::dsh_compact::Turn> = history
@@ -501,7 +501,7 @@ impl Backend for DshBackend {
         extra.push("-".into()); // task over stdin
 
         let mut cmd = self.build_command(&extra);
-        // Н3: prefer the task's worktree cwd over the harness default
+        // prefer the task's worktree cwd over the harness default
         if let Some(cwd) = opts.cwd {
             cmd.current_dir(cwd);
         }
@@ -662,7 +662,7 @@ impl Backend for DshBackend {
                     title: user_text.chars().take(48).collect(),
                 });
             }
-            // К1: chars/4 estimate after the turn (dsh reports nothing)
+            // chars/4 estimate after the turn (dsh reports nothing)
             {
                 let g = store.lock();
                 let chars: usize = g
@@ -687,7 +687,7 @@ impl Backend for DshBackend {
                     estimated: true,
                 });
             }
-            // v9 #4: the process finished — remove and reap
+            // the process finished — remove and reap
             if let Some(mut ch) = children.lock().remove(&sent_id) {
                 let _ = ch.wait();
             }
@@ -701,7 +701,7 @@ impl Backend for DshBackend {
 
     async fn abort(&self, native_id: &str) -> Result<()> {
         let mut children = self.children.lock();
-        // v10 #3: find and EXTRACT the pending-* child so kill_tree
+        // find and EXTRACT the pending-* child so kill_tree
         // actually stops it — retain() just dropped it without killing
         let ch = children.remove(native_id).or_else(|| {
             let pending_key = children

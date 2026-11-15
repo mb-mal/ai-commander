@@ -1,4 +1,4 @@
-//! К8: the pure context-map model for the DEFRAG compaction view.
+//! the pure context-map model for the DEFRAG compaction view.
 //!
 //! Turns (session history, `used`/`size` tokens, map dimensions) into a
 //! flat `Vec<Block>` — one block per map cell, left-to-right top-to-bottom
@@ -85,7 +85,7 @@ pub fn build_before(
     map_cells: usize,
     pruned: bool,
 ) -> Vec<Block> {
-    // К8: the shape gives PROPORTIONS, `used` the total — segments are
+    // the shape gives PROPORTIONS, `used` the total — segments are
     // scaled so the occupied cells equal ceil(used/per) within one block.
     let per = tokens_per_block(size, map_cells).max(1);
     let mut blocks: Vec<Block> = Vec::with_capacity(map_cells);
@@ -266,7 +266,7 @@ mod tests {
 mod property_tests {
     use super::*;
 
-    /// К8 property loop (deterministic RNG): for random shapes/sizes the
+    /// property loop (deterministic RNG): for random shapes/sizes the
     /// map is exactly `cells` long, Pinned is first, and the occupied
     /// fraction equals used/size within one block.
     #[test]

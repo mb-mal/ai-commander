@@ -108,6 +108,11 @@ agent (build/plan/…), default model. Everything persists in `config.toml`.
 - `src/backend/mod.rs` — `trait Backend` (sessions, history, send, models,
   agents, event channel). New harnesses = new trait impls + a `[[harness]]`
   config entry.
+- `src/backend/acp.rs` — Agent Client Protocol over stdio: every message
+  is built from the `agent-client-protocol` schema types; the
+  `fake-acp-agent` conformance binary validates the client against the
+  schema (including permission allow/always/reject/cancel scenarios —
+  replies pick the option by schema kind, no first-option fallback).
 - `src/backend/opencode.rs` — OpenCode v2 API: `/api/*` with Basic auth,
   `prompt` + SSE `/api/event` (`session.text.delta`, `session.reasoning.*`,
   `session.tool.*`, `session.execution.succeeded`), attachments as
@@ -119,7 +124,7 @@ agent (build/plan/…), default model. Everything persists in `config.toml`.
 ## Tests
 
 ```bash
-cargo test   # 25: event mapping (SSE/NDJSON/ACP), App regression tests (busy rebind, rollback, permissions), markdown, i18n, config, wrap, grapheme editor, mime, atomic store
+cargo test   # 157: event mapping (SSE/NDJSON/ACP), App regression tests (busy rebind, rollback, permissions), markdown, i18n, config, wrap, grapheme editor, mime, atomic store
 ```
 
 ## Kanban board (Ctrl+B) — agent task execution
@@ -139,8 +144,10 @@ the log, snapshot == fold(log).
   classified (`DONE:` → Review, `BLOCKED:` → Blocked, `ASK:` → Needs human)
   and drives the FSM automatically
 - Headless: `ai-commander --task "do something" --harness oc`
-- **Watchdog**: InProgress tasks silent for 10 minutes are retried
-  (attempts++) or escalated to Needs human after `max_attempts` (default 3)
+- **Watchdog**: InProgress tasks silent for 10 minutes are retried with
+  exponential backoff (30 s → 2 m → 8 m → 15 m cap) and escalate to Needs
+  human after `max_attempts` (default 3) — no infinite retry loops. Only an
+  explicit `DONE:` prefix finishes a task; error text counts as Failed
 - **Roles**: `~/.ai-commander/agents/<id>.md` (YAML frontmatter: name/harness/
   model/autonomy + markdown instructions) and `.ai-commander/agents/…` at
   project level (project wins). Assign with `o` on the board; the role's
@@ -164,7 +171,7 @@ and start/finish are ownership-checked. Handoffs carry a validated contract
 new owner. Artifacts (`file`/`branch`/`link`/`text`) are first-class task
 outputs — they survive handoffs, so the next owner finds the work.
 
-**Single owner + IPC (hardened in v4)**: the redb store takes an exclusive
+**Single owner + IPC**: the redb store takes an exclusive
 lock, so exactly one process (TUI or daemon) owns the board and serves
 board tool calls on a loopback socket. `<config>/board.port` (mode 0600)
 holds the port AND a 32-byte transport token that every request must
@@ -196,12 +203,16 @@ store. Only when nobody owns the board does it open the store directly.
 
 ### Worktree isolation, triggers, budgets
 
-- **Git worktree per code task**: Start creates `ai-commander/t-XXXX` in
-  `.aic-worktrees/t-XXXX` (base = current branch); Review→Done merges the
-  branch back (`--no-ff`) and removes the worktree; a conflict aborts the
-  merge and keeps the task in Review; Cancel drops the worktree unmerged.
-  Engages via `transition_in` in the TUI runner and the daemon (plain
-  `transition` never touches git)
+- **Git worktree per code task**: Start creates the worktree OUTSIDE the
+  repository (`<cache>/ai-commander/worktrees/<repo-slug>/t-XXXX`, base =
+  current branch) and the session runs with `cwd` = worktree (the opencode
+  HTTP backend moves the session there via `POST /api/session/{id}/move`);
+  Approve fast-forwards the task branch into its base branch from a
+  temporary worktree with an expected-old ref guard — the user's checkout
+  is never touched, a dirty base blocks the merge; Cancel drops the
+  worktree unmerged; orphan worktrees are pruned at startup. Engages via
+  `transition_in` in the TUI runner and the daemon (plain `transition`
+  never touches git)
 - **Triggers**: `Task.schedule` (5-field cron string) — the daemon spawns a
   fresh one-shot child task per due window (`spawn_due_scheduled`)
 - **Budgets & limits**: `budget_usd` × `unit_cost_usd` blocks Starts beyond
@@ -233,57 +244,6 @@ store. Only when nobody owns the board does it open the store directly.
   against 401 (health), 500 (REST) and a broken SSE stream (mid-stream
   disconnect) without any real harness
 
-## v2 review fixes
-
-Blockers from the v2 review addressed:
-- **Б1** single board owner + IPC: the owner (TUI/daemon) serves board tool
-  calls on a loopback socket; `board-mcp` is a client while an owner is
-  alive (no second store, no duplicate ids) and only opens the redb store
-  directly when nobody owns it
-- **Б2** ACP backend builds every message from the `agent-client-protocol`
-  schema types (initialize, session/new, session/load, session/prompt,
-  session/cancel, mcpServers entries); the `fake-acp-agent` conformance
-  binary validates every client message against the schema (see v4 below
-  for the permission half)
-- **Б3** cron schedules disabled (were spawning a task every 60 s) until a
-  real parser is in place
-- **Б4** worktree: commits agent work before merge, refuses `--force` on a
-  dirty worktree (task → NeedsHuman, files preserved)
-- **Б8** daemon: transitions tasks on StreamDone (classify_reply), busy keyed
-  by task.id (was native_id → never cleared)
-- **Б9** daemon: uses the shared TaskRunner (DAG), role instructions prefix
-  the prompt, role model overrides the harness default, `mcp_role` passed
-
-Security fixes:
-- A2A gateway removed (v4): it was dead code with an unauthenticated
-  HTTP surface; the board speaks only to local, token-authenticated IPC
-- Project policies can only tighten user policies (deny > ask > allow;
-  a project `allow` never weakens a user `deny`)
-- config written with 0600 permissions on Unix
-- MCP: an agent cannot `approve` or `rework` its own task
-
-## v3 review fixes
-
-- **Н1** retry cap: a Failed turn retries with exponential backoff
-  (30 s → 2 m → 8 m → 15 m cap) and escalates to NeedsHuman after
-  `max_attempts` (default 3) — no infinite retry loops
-- **Н2** strict DONE: only an explicit `DONE:` prefix finishes a task;
-  error text (e.g. `401 Unauthorized`) counts as Failed, not Finished
-- **Н3** worktree isolation end-to-end: Start creates the worktree, the
-  session is created with `cwd` = worktree (subprocess harnesses), and the
-  opencode HTTP backend moves the session to the worktree directory before
-  the prompt (`POST /api/session/{id}/move`)
-- **Д1** lease heartbeat on every progress event (text, reasoning, tools)
-- **Д2** watchdog aborts are awaited (`abort_stuck` joins every handle,
-  bounded 10 s) before transitions apply — no re-launch while the old
-  agent process is still alive
-- **Д4** the DAG gates every Start, manual board actions included
-- **Д5** a failed send still ends the turn (empty reply → retry cap)
-- **Д7** role files are cached by fingerprint (path, mtime, len) and
-  re-read only on change
-- **Д8** artifacts: first-class task outputs, `board_artifact` MCP tool,
-  survive handoffs
-
 ## Limitations & roadmap
 
 - dsh headless does not replay session context on `--session-id`, so the
@@ -307,34 +267,7 @@ Security fixes:
 
 In-app About: `F1` → `A` (or `Ctrl+A`). © 2026 Mikhail Malyshev
 
-## v4 review fixes
-
-- **IPC security (urgent)**: transport token (32 bytes, 0600 port file)
-  mandatory in every request; the first non-JSON line closes the
-  connection (HTTP dies on its request line); the acting role comes from a
-  per-role token minted by the owner at launch — the body `role` field is
-  ignored, killing both self-approval spoofs and web-page injections
-  (tests: `http_request_is_rejected_and_connection_closed`,
-  `request_without_or_wrong_token_rejected`,
-  `approve_with_spoofed_role_rejected`, `port_file_is_owner_only`)
-- **a2a module removed**: the disabled gateway was dead code with an
-  unauthenticated HTTP surface (`POST /board` took the role from the body)
-- **Д1**: the lease renews on `PartUpdated` too (tool-call progress, no
-  delta text) and `LEASE_MS` is 5 minutes — a 3-minute silent tool call is
-  not interrupted
-- **Н2 leftover**: a turn whose stream errored is Failed even if `DONE:`
-  was printed before the break (`on_stream_done_ex`, wired in TUI+daemon)
-- **failed Start escalates**: a Start that cannot begin (broken
-  worktree/branch) goes to NeedsHuman instead of retry-looping every 30 s
-  (FSM: Ready + Ask → NeedsHuman)
-- **Б2 permissions (ACP)**: typed `RequestPermissionRequest` (label from
-  `name`), jsonrpc ids kept raw (string ids route), the reply picks the
-  option by schema `kind` with no first-option fallback (else `cancelled`),
-  and cancelling the turn answers every pending request with `cancelled`
-  as the spec requires; `fake-acp-agent` drives allow / always / reject /
-  cancel-during-request scenarios end to end
-
-## Context compaction: DEFRAG view (v6)
+## Context compaction: DEFRAG view
 
 When a harness compacts the conversation (the old middle is replaced by a
 summary), ai-commander shows it as an MS-DOS 6 style **defragmenter**:
@@ -364,7 +297,7 @@ Where you see it:
   compaction runs.
 - **One history line per compaction**: `defragmented 174k → 41k`.
 
-Settings (К12):
+Settings:
 
 - `AI_COMMANDER_COMPACTION_VIEW=defrag|mini|off` (default `defrag`)
 - `NO_COLOR` — monochrome palette (`/BW`), `AI_COMMANDER_ASCII=1` — ASCII
@@ -372,7 +305,7 @@ Settings (К12):
 - the numbers before → after are always shown as text, never only as the
   map
 
-**Claude Code via the ACP adapter (К3):** the adapter was not available in
+**Claude Code via the ACP adapter:** the adapter was not available in
 this environment for a live check; if it translates `compact_boundary`
 into `compaction_update`, the ACP path above lights up automatically,
 otherwise the usage-drop inference covers it. Re-check on a live adapter

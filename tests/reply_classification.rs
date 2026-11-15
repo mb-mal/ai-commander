@@ -1,9 +1,10 @@
-//! v8 review fixes: task reply accumulation (#1), session rebinding (#2),
-//! worktree merge on Approve (#3), leading ".." in normalize_path (#5).
+//! Task replies are classified correctly (DONE vs error vs empty),
+//! session rebinding keeps replies across pending->real ids, Approve
+//! merges the worktree, leading ".." survives path normalization.
 
 use ai_commander::kanban::{TaskAction, TaskStatus, runner, store::BoardStore};
 
-// ============ #1: task replies are classified correctly ============
+// ============ task replies are classified correctly ============
 
 #[test]
 fn accumulated_reply_classifies_done() {
@@ -40,7 +41,7 @@ fn empty_reply_is_failed_not_done() {
     );
 }
 
-// ============ #5: normalize_path keeps leading ".." ============
+// ============ normalize_path keeps leading ".." ============
 
 #[test]
 fn leading_dotdot_survives_normalization() {
@@ -68,7 +69,7 @@ fn leading_dotdot_survives_normalization() {
     );
 }
 
-// ============ #3: board_tool_call approve uses transition_in ============
+// ============ board_tool_call approve uses transition_in ============
 // The code change is verified by the existing worktree tests
 // (approve_merges_into_task_base_branch, dirty_base_checkout_blocks_approve).
 // Here we just verify the task transitions correctly through board_tool_call
